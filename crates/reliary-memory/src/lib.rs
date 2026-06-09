@@ -55,7 +55,66 @@ pub struct ScoredMemory {
     pub score: f64,
 }
 
-/// In-memory memory store (for offline use without SQLite)
+/// Open or create a persistent SQLite-backed memory store
+pub fn open_persistent(path: &str) -> Result<MemoryStore, String> {
+    let conn = rusqlite::Connection::open(path).map_err(|e| format!("DB: {}", e))?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cortex_memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL,
+            source TEXT DEFAULT '',
+            timestamp INTEGER NOT NULL,
+            tier INTEGER DEFAULT 0,
+            recall_count INTEGER DEFAULT 0
+        );"
+    ).map_err(|e| format!("schema: {}", e))?;
+
+    let mut store = MemoryStore::new(100);
+
+    let mut stmt = conn.prepare("SELECT id, content, source, timestamp, tier, recall_count, 0, 0.0 FROM cortex_memories ORDER BY id").map_err(|e| format!("query: {}", e))?;
+    let rows = stmt.query_map([], |row| {
+        Ok(MemoryRecord {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            source: row.get(2)?,
+            timestamp: row.get(3)?,
+            tier: row.get(4)?,
+            recall_count: row.get(5)?,
+            error_flag: row.get(6)?,
+            entropy: row.get(7)?,
+        })
+    }).map_err(|e| format!("rows: {}", e))?;
+
+    for row in rows.flatten() {
+        store.memories.push(row);
+    }
+    Ok(store)
+}
+
+/// Save all memories to SQLite
+pub fn save_persistent(store: &MemoryStore, path: &str) -> Result<(), String> {
+    let conn = rusqlite::Connection::open(path).map_err(|e| format!("DB: {}", e))?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cortex_memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL,
+            source TEXT DEFAULT '',
+            timestamp INTEGER NOT NULL,
+            tier INTEGER DEFAULT 0,
+            recall_count INTEGER DEFAULT 0
+        );"
+    ).map_err(|e| format!("schema: {}", e))?;
+
+    conn.execute("DELETE FROM cortex_memories", []).ok();
+    for m in &store.memories {
+        conn.execute(
+            "INSERT INTO cortex_memories (content, source, timestamp, tier, recall_count) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![m.content, m.source, m.timestamp, m.tier, m.recall_count],
+        ).ok();
+    }
+    Ok(())
+}
+
 pub struct MemoryStore {
     pub memories: Vec<MemoryRecord>,
     token_hvs: HashMap<String, Hypervector>,
@@ -66,9 +125,7 @@ pub struct MemoryStore {
 impl MemoryStore {
     pub fn new(dims: usize) -> Self {
         Self { memories: Vec::new(), token_hvs: HashMap::new(), cooccur: HashMap::new(), dims }
-    }
-
-    pub fn ensure_token_hv(&mut self, token: &str) -> Hypervector {
+    }    pub fn ensure_token_hv(&mut self, token: &str) -> Hypervector {
         let dims = self.dims;
         self.token_hvs.entry(token.to_string())
             .or_insert_with(|| make_hv(token.as_bytes().len() as u64, dims))
