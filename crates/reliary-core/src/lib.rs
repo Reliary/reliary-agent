@@ -34,10 +34,9 @@ impl FormatConfig {
     pub fn format_output(&self, label: &str, lines: &[String]) -> String {
         match self.format {
             OutputFormat::Json => {
-                let map: HashMap<&str, &[String]> = HashMap::from([(label, lines)]);
-                serde_json::to_string(&map).unwrap_or_default()
+                serde_json::to_string(&lines).unwrap_or_default()
             }
-            OutputFormat::Compact => lines.join(" | "),
+            OutputFormat::Compact => lines.join("\n"),
             OutputFormat::Default => {
                 if lines.is_empty() {
                     format!("{}: (none)", label)
