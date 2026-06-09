@@ -1,5 +1,12 @@
 // reliary-core: CLI types, config, session state, output formatting
+mod session;
+mod state_block;
+mod ingest;
 use std::collections::HashMap;
+
+pub use session::*;
+pub use state_block::*;
+pub use ingest::*;
 
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -15,9 +22,9 @@ impl Session {
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum OutputFormat {
-    Default, // human-readable tables
-    Compact, // agent-optimized (~50t per result)
-    Json,    // machine-parseable
+    Default,
+    Compact,
+    Json,
 }
 
 #[derive(Debug, Clone)]

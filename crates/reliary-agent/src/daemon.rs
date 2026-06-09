@@ -38,6 +38,24 @@ fn handle(mut stream: TcpStream) {
     let response = match p0 {
         "ping" => "pong\n".to_string(),
         "status" => "reliary-agent daemon 0.1.0\n".to_string(),
+        "session-state" => {
+            // Usage: session-state <session_file_path>
+            if p1.is_empty() {
+                "ERROR: usage: session-state <path>\n".to_string()
+            } else {
+                match reliary_core::parse_session_file(p1) {
+                    Ok(state) => {
+                        if state.turn_count < 3 {
+                            "early\n".to_string()
+                        } else {
+                            let block = reliary_core::build_state_block(&state, state.turn_count);
+                            block
+                        }
+                    }
+                    Err(e) => format!("ERROR: {}\n", e),
+                }
+            }
+        }
         "search" => {
             if p2.is_empty() {
                 "ERROR: usage: search <query> <path>\n".to_string()

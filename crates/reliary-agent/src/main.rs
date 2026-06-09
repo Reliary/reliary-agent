@@ -52,6 +52,8 @@ enum Commands {
     Dead { path: String },
     /// Cross-session memory info
     Memory { query: String },
+    /// Build session state block from Pi session file
+    SessionState { file: String },
     /// MCP stdio server
     Serve,
     /// TCP daemon
@@ -221,6 +223,18 @@ fn main() {
             match daemon::start(9799) {
                 Ok(()) => {},
                 Err(e) => eprintln!("Daemon error: {}", e),
+            }
+        }
+        Commands::SessionState { file } => {
+            match reliary_core::parse_session_file(file) {
+                Ok(state) => {
+                    if state.turn_count < 3 {
+                        println!("early");
+                    } else {
+                        println!("{}", reliary_core::build_state_block(&state, state.turn_count));
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
             }
         }
     }
