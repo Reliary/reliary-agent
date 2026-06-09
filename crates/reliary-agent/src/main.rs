@@ -1,6 +1,7 @@
 /// reliary-agent binary. Thin dispatch composing all crates.
 mod mcp;
 mod daemon;
+mod heal;
 
 use clap::{Parser, Subcommand};
 
