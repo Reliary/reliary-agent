@@ -1,5 +1,5 @@
-/// TCP daemon on :9799. Processes line-delimited JSON commands.
-/// Each connection: read one command, respond, close.
+/// TCP daemon on :9799. Processes line-delimited commands.
+/// Simple protocol: one command per connection, response written back.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -10,7 +10,6 @@ fn index_db_path(path: &str) -> String {
 }
 
 fn handle(mut stream: TcpStream) {
-    let peer = stream.peer_addr().ok();
     let mut line = String::new();
     let mut reader = BufReader::new(&stream);
 
@@ -18,20 +17,28 @@ fn handle(mut stream: TcpStream) {
         return;
     }
     let cmd = line.trim();
-    let parts: Vec<&str> = cmd.splitn(4, ' ').collect();
-    let response = match parts[0] {
+
+    let (p0, p1, p2, p3, p4) = {
+        let parts: Vec<&str> = cmd.splitn(6, ' ').collect();
+        let a = parts.first().copied().unwrap_or("");
+        let b = parts.get(1).copied().unwrap_or("");
+        let c = parts.get(2).copied().unwrap_or("");
+        let d = parts.get(3).copied().unwrap_or("");
+        let e = parts.get(4).copied().unwrap_or("");
+        (a, b, c, d, e)
+    };
+
+    let response = match p0 {
         "ping" => "pong\n".to_string(),
         "status" => "reliary-agent daemon 0.1.0\n".to_string(),
         "search" => {
-            if parts.len() < 3 {
+            if p2.is_empty() {
                 "ERROR: usage: search <query> <path>\n".to_string()
             } else {
-                let query = parts[1];
-                let path = parts[2];
-                let db_path = index_db_path(path);
+                let db_path = index_db_path(p2);
                 if let Ok(db) = rusqlite::Connection::open(&db_path) {
                     if reliary_search::schema::open_existing_db(&db).is_ok() {
-                        let results = reliary_search::search::search_fts5(&db, query, 10);
+                        let results = reliary_search::search::search_fts5(&db, p1, 10);
                         if results.is_empty() {
                             "no results\n".to_string()
                         } else {
@@ -49,11 +56,11 @@ fn handle(mut stream: TcpStream) {
             }
         }
         "compress" => {
-            if parts.len() < 2 {
+            if p1.is_empty() {
                 "ERROR: usage: compress <text>\n".to_string()
             } else {
-                let text = parts[1..].join(" ");
-                if let Some(c) = reliary_compress::compress_reasoning(&text) {
+                let text = cmd.trim_start_matches("compress ").trim();
+                if let Some(c) = reliary_compress::compress_reasoning(text) {
                     c + "\n"
                 } else {
                     "no compression\n".to_string()
@@ -61,13 +68,12 @@ fn handle(mut stream: TcpStream) {
             }
         }
         "risk" => {
-            if parts.len() < 2 {
+            if p1.is_empty() {
                 "ERROR: usage: risk <file>\n".to_string()
             } else {
-                let file = parts[1];
-                match std::fs::read_to_string(file) {
+                match std::fs::read_to_string(p1) {
                     Ok(content) => {
-                        let risk = reliary_risk::compute_file_risk(file, &content);
+                        let risk = reliary_risk::compute_file_risk(p1, &content);
                         format!("{:?}: {}\n", risk.risk, risk.reason)
                     }
                     Err(e) => format!("ERROR: {}\n", e),
@@ -75,35 +81,32 @@ fn handle(mut stream: TcpStream) {
             }
         }
         "fix" => {
-            if parts.len() < 4 {
-                "ERROR: usage: fix <file> <old> <new>\n".to_string()
+            if p4.is_empty() {
+                "ERROR: usage: fix <file> <old> <new> <workdir>\n".to_string()
             } else {
-                let file = parts[1];
-                let old = parts[2];
-                let new = parts[3];
-                match std::fs::read_to_string(file) {
-                    Ok(content) => {
-                        let fixes = vec![(old.to_string(), new.to_string())];
-                        let (_, count) = reliary_fix::apply_fixes(&content, &fixes);
-                        if count > 0 {
-                            std::fs::write(file, &reliary_fix::apply_fixes(&content, &fixes).0).ok();
-                            format!("OK: {} replacements\n", count)
-                        } else {
-                            "ERROR: no match\n".to_string()
+                if let Ok(content) = std::fs::read_to_string(p1) {
+                    let fixes = vec![(p2.to_string(), p3.to_string())];
+                    let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
+                    if count > 0 {
+                        match crate::heal::heal_edit(p1, &modified, p4) {
+                            Ok(()) => format!("OK: {} replacements, tests pass\n", count),
+                            Err(e) => format!("ERROR: {} (reverted)\n", e),
                         }
+                    } else {
+                        "ERROR: no match\n".to_string()
                     }
-                    Err(e) => format!("ERROR: {}\n", e),
+                } else {
+                    format!("ERROR: cannot read {}\n", p1)
                 }
             }
         }
         "dead" => {
-            if parts.len() < 2 {
+            if p1.is_empty() {
                 "ERROR: usage: dead <path>\n".to_string()
             } else {
-                let path = parts[1];
                 let config = reliary_dead::DeadConfig::default();
                 let mut candidates = Vec::new();
-                if let Ok(entries) = std::fs::read_dir(path) {
+                if let Ok(entries) = std::fs::read_dir(p1) {
                     for entry in entries.flatten() {
                         let fp = entry.path();
                         if fp.extension().map(|e| e == "py" || e == "rs" || e == "js").unwrap_or(false) {
@@ -126,11 +129,10 @@ fn handle(mut stream: TcpStream) {
             }
         }
         "index" => {
-            if parts.len() < 2 {
+            if p1.is_empty() {
                 "ERROR: usage: index <path>\n".to_string()
             } else {
-                let path = parts[1];
-                let db_path = index_db_path(path);
+                let db_path = index_db_path(p1);
                 if let Some(parent) = Path::new(&db_path).parent() {
                     std::fs::create_dir_all(parent).ok();
                 }
@@ -140,7 +142,7 @@ fn handle(mut stream: TcpStream) {
                         if reliary_search::schema::create_new_db(&db).is_err() {
                             "ERROR: schema creation failed\n".to_string()
                         } else {
-                            match reliary_search::ingest::index_directory(&db, path) {
+                            match reliary_search::ingest::index_directory(&db, p1) {
                                 Ok(count) => format!("indexed {} files\n", count),
                                 Err(e) => format!("ERROR: {}\n", e),
                             }
@@ -150,7 +152,7 @@ fn handle(mut stream: TcpStream) {
                 }
             }
         }
-        _ => format!("ERROR: unknown command '{}'\n", parts[0]),
+        _ => format!("ERROR: unknown command '{}'\n", p0),
     };
 
     if let Err(e) = stream.write_all(response.as_bytes()) {
