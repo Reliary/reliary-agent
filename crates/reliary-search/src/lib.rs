@@ -1,6 +1,10 @@
 /// Grammar-free phrase search with BM25 scoring and Porter stemming.
 /// Ported from stria (github.com/Reliary/stria).
 
+pub mod schema;
+pub mod search;
+pub mod ingest;
+
 /// BM25 IDF: ((N - df + 0.5) / (df + 0.5) + 1.0).ln()
 pub fn bm25_idf(n_docs: f64, df: f64) -> f64 {
     ((n_docs - df + 0.5) / (df + 0.5) + 1.0).ln()

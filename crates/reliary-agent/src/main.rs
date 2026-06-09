@@ -1,7 +1,19 @@
 /// reliary-agent binary. Thin dispatch composing all crates.
 mod mcp;
+mod daemon;
 
 use clap::{Parser, Subcommand};
+
+fn index_db_path(path: &str) -> String {
+    format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
+}
+
+fn open_or_create_index(path: &str) -> Option<rusqlite::Connection> {
+    let db_path = index_db_path(path);
+    let db = rusqlite::Connection::open(&db_path).ok()?;
+    reliary_search::schema::open_existing_db(&db).ok()?;
+    Some(db)
+}
 
 #[derive(Parser)]
 #[command(name = "reliary-agent", about = "Grammar-free code intelligence daemon, CLI, and MCP server")]
@@ -16,8 +28,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// BM25 search (from stria)
-    Search { query: String },
+    /// BM25 search against FTS5 index (from stria)
+    Search { query: String, #[arg(default_value = ".")] path: String },
+    /// Build FTS5 index from directory
+    Index { path: String },
     /// IR reasoning compression (from gate)
     Compress { text: Option<String> },
     /// Pre-edit risk analysis (from quale)
@@ -50,12 +64,46 @@ fn main() {
     let cfg = reliary_core::FormatConfig::new(fmt);
 
     match &cli.command {
-        Commands::Search { query } => {
-            let tokens = reliary_search::tokenize(query);
-            let results: Vec<String> = tokens.iter()
-                .map(|t| format!("{} (stemmed: {})", t, reliary_search::porter_stem(t)))
-                .collect();
-            println!("{}", cfg.format_output("search tokens", &results));
+        Commands::Search { query, path } => {
+            if let Some(db) = open_or_create_index(path) {
+                let results = reliary_search::search::search_fts5(&db, query, 10);
+                if results.is_empty() {
+                    println!("No results found.");
+                } else {
+                    let lines: Vec<String> = results.iter()
+                        .map(|r| format!("{:.4} {}", r.score, r.file))
+                        .collect();
+                    println!("{}", cfg.format_output("search results", &lines));
+                }
+            } else {
+                let tokens = reliary_search::tokenize(query);
+                let lines: Vec<String> = tokens.iter()
+                    .map(|t| format!("{} (stemmed: {})", t, reliary_search::porter_stem(t)))
+                    .collect();
+                println!("{}", cfg.format_output("search tokens (no index)", &lines));
+            }
+        }
+        Commands::Index { path } => {
+            // Ensure .reliary directory exists
+            let db_path_str = index_db_path(path);
+            if let Some(parent) = std::path::Path::new(&db_path_str).parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            // Remove old DB if exists
+            std::fs::remove_file(&db_path_str).ok();
+            match rusqlite::Connection::open(&db_path_str) {
+                Ok(db) => {
+                    if reliary_search::schema::create_new_db(&db).is_err() {
+                        eprintln!("Error creating database schema");
+                        return;
+                    }
+                    match reliary_search::ingest::index_directory(&db, path) {
+                        Ok(count) => println!("Indexed {} files in {}", count, path),
+                        Err(e) => eprintln!("Error: {}", e),
+                    }
+                }
+                Err(e) => eprintln!("Error creating database: {}", e),
+            }
         }
         Commands::Compress { text } => {
             let input = text.as_deref().unwrap_or("");
@@ -157,8 +205,10 @@ fn main() {
             mcp::serve_stdio();
         }
         Commands::Daemon => {
-            eprintln!("Daemon mode not yet implemented in v0.1.0");
-            eprintln!("Use 'serve' for MCP mode");
+            match daemon::start(9799) {
+                Ok(()) => {},
+                Err(e) => eprintln!("Daemon error: {}", e),
+            }
         }
     }
 }
