@@ -34,7 +34,14 @@ enum Commands {
     /// Build FTS5 index from directory
     Index { path: String },
     /// IR reasoning compression (from gate)
-    Compress { text: Option<String> },
+    /// IR reasoning compression (from gate)
+    /// Use --gentle for assistant messages (preserves code context)
+    Compress {
+        text: Option<String>,
+        /// Gentle mode: preserve code context, only strip reasoning fluff
+        #[arg(long)]
+        gentle: bool,
+    },
     /// Pre-edit risk analysis (from quale)
     Risk { file: String },
     /// Apply known fix patterns to directory (from cortex)
@@ -106,10 +113,15 @@ fn main() {
                 Err(e) => eprintln!("Error creating database: {}", e),
             }
         }
-        Commands::Compress { text } => {
+        Commands::Compress { text, gentle } => {
             let input = text.as_deref().unwrap_or("");
             if !input.is_empty() {
-                if let Some(compressed) = reliary_compress::compress_reasoning(input) {
+                let result = if *gentle {
+                    reliary_compress::gentle_compress(input)
+                } else {
+                    reliary_compress::aggressive_compress(input)
+                };
+                if let Some(compressed) = result {
                     println!("{}", cfg.format_output("compressed", &[compressed]));
                 } else {
                     println!("{}", "no compression possible");
