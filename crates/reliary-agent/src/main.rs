@@ -54,10 +54,12 @@ enum Commands {
     Memory { query: String },
     /// Build session state block from Pi session file
     SessionState { file: String },
-    /// MCP stdio server
-    Serve,
+    /// Micro-MCP server
+    Mcp,
     /// TCP daemon
     Daemon,
+    /// Self-healing apply-edit: apply content from file, test, revert on fail
+    ApplyEdit { file: String, tmp_path: String, workdir: String },
 }
 
 fn format_config(fmt: &str) -> reliary_core::OutputFormat {
@@ -215,7 +217,18 @@ fn main() {
                 .collect();
             println!("{}", cfg.format_output("memories", &lines));
         }
-        Commands::Serve => {
+        Commands::ApplyEdit { file, tmp_path, workdir } => {
+            match std::fs::read_to_string(tmp_path) {
+                Ok(new_content) => {
+                    match crate::heal::heal_edit(file, &new_content, workdir) {
+                        Ok(()) => println!("OK: tests pass"),
+                        Err(e) => eprintln!("REVERTED: {}", e),
+                    }
+                }
+                Err(e) => eprintln!("ERROR: cannot read tmp file: {}", e),
+            }
+        }
+        Commands::Mcp => {
             eprintln!("Starting MCP server on stdio");
             mcp::serve_stdio();
         }

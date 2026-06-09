@@ -125,6 +125,23 @@ fn handle(mut stream: TcpStream) {
                 }
             }
         }
+        "apply-edit" => {
+            // Usage: apply-edit <file> <tmp-path> <workdir>
+            // Reads new content from tmp-path, applies, tests, reverts on fail
+            if p3.is_empty() {
+                "ERROR: usage: apply-edit <file> <tmp-path> <workdir>\n".to_string()
+            } else {
+                match std::fs::read_to_string(p2) {
+                    Ok(new_content) => {
+                        match crate::heal::heal_edit(p1, &new_content, p3) {
+                            Ok(()) => "OK: tests pass\n".to_string(),
+                            Err(e) => format!("REVERTED: {}\n", e),
+                        }
+                    }
+                    Err(e) => format!("ERROR: cannot read tmp file: {}\n", e),
+                }
+            }
+        }
         "dead" => {
             if p1.is_empty() {
                 "ERROR: usage: dead <path>\n".to_string()

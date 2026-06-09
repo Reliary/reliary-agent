@@ -161,6 +161,41 @@ function handleToolResult(event) {
 function handleToolCall(event) {
   const input = event.input || event;
   const toolName = input.toolName || input.name;
+  
+  // ── Self-healing edits: intercept edit tool calls ──
+  if (toolName === "edit" && RELIARY_BIN) {
+    const args = input.args || input.arguments || input;
+    const file = args.file || args.path || "";
+    const edits = args.edits || [];
+    const workdir = args.cwd || process.cwd();
+    if (file && edits.length > 0 && edits[0].oldText && edits[0].newText) {
+      const oldText = edits[0].oldText;
+      const newText = edits[0].newText;
+      
+      // Read original file, apply old→new replacement, write full content to tmp
+      try {
+        const original = readFileSync(file, "utf-8");
+        const modified = original.replace(oldText, newText);
+        if (modified === original) {
+          gateLog("warn", `heal-edit: no match for oldText in ${file}`);
+          return; // fall through
+        }
+        const tmpFile = `/tmp/reliary-edit-${Date.now()}.tmp`;
+        writeFileSync(tmpFile, modified, "utf-8");
+        const result = gateCmd(`apply-edit ${file} ${tmpFile} ${workdir}`);
+        try { unlinkSync(tmpFile); } catch {}
+        
+        if (result) {
+          gateLog("heal", `${file}: ${result.substring(0, 60)}`);
+          return { block: true, response: result };
+        }
+      } catch (e) {
+        gateLog("warn", `heal-edit error: ${e.message}`);
+      }
+    }
+  }
+  
+  // ── Reliary safety gate (risk check) ──
   if (toolName !== "read" && toolName !== "edit") return;
 
   const path = input.path || input.file || input.args?.path || input.arguments?.file;

@@ -6,32 +6,56 @@ use std::fs;
 use std::process::Command;
 
 /// Apply a fix in a shadow worktree, run tests, revert on failure.
-/// Returns Ok(()) if fix passes tests, Err(reason) if tests fail.
+/// Returns Ok(()) if fix passes tests, Err(error_summary) with first test failure.
 pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), String> {
-    // Verify file exists
     if !Path::new(file).exists() {
         return Err(format!("File not found: {}", file));
     }
 
-    // Read original content
     let original = fs::read_to_string(file).map_err(|e| format!("Read: {}", e))?;
-
-    // Write new content
     fs::write(file, new_content).map_err(|e| format!("Write: {}", e))?;
 
-    // Run tests
-    let status = Command::new("cargo")
+    // Run tests and capture output
+    let output = Command::new("cargo")
         .args(["test", "--quiet"])
         .current_dir(workdir)
-        .status()
+        .output()
         .map_err(|e| format!("Test exec: {}", e))?;
 
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
         // Revert
         fs::write(file, &original).ok();
-        Err("Tests failed after edit — reverted".to_string())
+        // Extract first test failure
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let combined = format!("{}{}", stdout, stderr);
+        let summary = extract_first_failure(&combined);
+        Err(summary)
+    }
+}
+
+fn extract_first_failure(output: &str) -> String {
+    for line in output.lines() {
+        let t = line.trim();
+        if t.contains("FAILED") && !t.contains("test result") {
+            return t.chars().take(120).collect();
+        }
+        if t.contains("panicked at") {
+            return t.chars().take(120).collect();
+        }
+        if t.contains("expected `true`, got `false`") || t.contains("assertion") {
+            return t.chars().take(120).collect();
+        }
+    }
+    // Last 3 lines of output
+    let lines: Vec<&str> = output.lines().collect();
+    let count = lines.len();
+    if count >= 3 {
+        lines[count-3..].join(" | ").chars().take(150).collect()
+    } else {
+        "Tests failed — reverted".to_string()
     }
 }
 
