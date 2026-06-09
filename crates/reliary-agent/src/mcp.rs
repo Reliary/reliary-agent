@@ -60,11 +60,25 @@ pub fn serve_stdio() {
             "tools/search" => {
                 let params = msg.get("params").and_then(|v| v.as_object()).cloned().unwrap_or_default();
                 let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-                let tokens = reliary_search::tokenize(query);
-                respond(id, serde_json::json!({
-                    "tokens": tokens,
-                    "stemmed": tokens.iter().map(|t| reliary_search::porter_stem(t)).collect::<Vec<_>>()
-                }));
+                let path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                let db_path = format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'));
+                if let Ok(db) = rusqlite::Connection::open(&db_path) {
+                    if reliary_search::schema::open_existing_db(&db).is_ok() {
+                        let results = reliary_search::search::search_fts5(&db, query, 10);
+                        respond(id, serde_json::json!({
+                            "results": results.iter().map(|r| serde_json::json!({"file": r.file, "score": r.score})).collect::<Vec<_>>()
+                        }));
+                    } else {
+                        let tokens = reliary_search::tokenize(query);
+                        respond(id, serde_json::json!({
+                            "results": [],
+                            "note": "no index at path — run index first",
+                            "stemmed": tokens.iter().map(|t| reliary_search::porter_stem(t)).collect::<Vec<_>>()
+                        }));
+                    }
+                } else {
+                    respond_error(id, -1, &format!("cannot open index at {}", db_path));
+                }
             }
             "tools/compress" => {
                 let params = msg.get("params").and_then(|v| v.as_object()).cloned().unwrap_or_default();
