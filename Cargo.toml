@@ -1,0 +1,19 @@
+[workspace]
+
+members = [
+    "crates/reliary-core",
+    "crates/reliary-search",
+    "crates/reliary-compress",
+    "crates/reliary-sift",
+    "crates/reliary-risk",
+    "crates/reliary-memory",
+    "crates/reliary-fix",
+    "crates/reliary-dead",
+    "crates/reliary-agent",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Reliary/reliary-agent"
