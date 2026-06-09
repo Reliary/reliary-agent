@@ -14,8 +14,42 @@ fn fluff_patterns() -> &'static [&'static str] {
     ])
 }
 
-/// Strip LLM reasoning fluff from text. Returns None if compression < 40%.
-pub fn compress_reasoning(text: &str) -> Option<String> {
+/// Strip LLM reasoning fluff from text while preserving code context.
+/// Returns the fluff-stripped text (not [act]/[ref] format).
+/// Preserves code blocks, line references, error messages, and file paths.
+pub fn gentle_compress(text: &str) -> Option<String> {
+    let original_len = text.len();
+    if original_len < 200 { return None; }
+    if text.contains("```") || text.starts_with('{') || text.starts_with('[') { return None; }
+
+    let mut t = text.to_string();
+    // Strip fluff patterns
+    for pattern in fluff_patterns() {
+        t = t.replace(pattern, "");
+    }
+    // Strip common reasoning hedges
+    let hedges = ["I think", "I believe", "It seems", "It appears", "We can", "we need to",
+        "In order to", "Due to the fact", "The reason for", "As a result",
+        "It is important", "It is worth noting", "It should be noted",
+        "One thing to note", "Another thing", "In this case",
+        "In this situation", "In the context", "With respect to"];
+    for h in &hedges {
+        t = t.replace(h, "");
+    }
+    // Collapse repeated whitespace
+    let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // Only return if we saved at least 5%
+    if (t.len() as f64) < original_len as f64 * 0.95 {
+        Some(t)
+    } else {
+        None
+    }
+}
+
+/// Aggressive compression: strip fluff, extract actions/entities, return structured format.
+/// For bash tool results where code context isn't needed.
+pub fn aggressive_compress(text: &str) -> Option<String> {
     let original_len = text.len();
     if original_len < 200 { return None; }
     if text.contains("```") || text.starts_with('{') || text.starts_with('[') { return None; }

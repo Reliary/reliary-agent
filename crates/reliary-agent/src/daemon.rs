@@ -1,9 +1,16 @@
 /// TCP daemon on :9799. Processes line-delimited commands.
 /// Simple protocol: one command per connection, response written back.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+
+static READ_CACHE: OnceLock<Mutex<HashMap<String, (u64, usize)>>> = OnceLock::new();
+fn read_cache() -> &'static Mutex<HashMap<String, (u64, usize)>> {
+    READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 fn index_db_path(path: &str) -> String {
     format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
@@ -60,7 +67,7 @@ fn handle(mut stream: TcpStream) {
                 "ERROR: usage: compress <text>\n".to_string()
             } else {
                 let text = cmd.trim_start_matches("compress ").trim();
-                if let Some(c) = reliary_compress::compress_reasoning(text) {
+                if let Some(c) = reliary_compress::aggressive_compress(text) {
                     c + "\n"
                 } else {
                     "no compression\n".to_string()
@@ -126,6 +133,63 @@ fn handle(mut stream: TcpStream) {
                         .collect::<Vec<_>>()
                         .join("\n") + "\n"
                 }
+            }
+        }
+        "cache-read" => {
+            if p3.is_empty() {
+                "ERROR: usage: cache-read <path> <hash> <len>\n".to_string()
+            } else {
+                let path = p1.to_string();
+                let len: usize = p3.parse().unwrap_or(0);
+                let hash_val: u64 = u64::from_str_radix(&p2[..16.min(p2.len())], 16).unwrap_or(0);
+                let mut cache = read_cache().lock().unwrap();
+                cache.insert(path, (hash_val, len));
+                format!("cached {}\n", len)
+            }
+        }
+        "check-read" => {
+            if p2.is_empty() {
+                "ERROR: usage: check-read <path> <hash>\n".to_string()
+            } else {
+                let path = p1.to_string();
+                let hash_val: u64 = u64::from_str_radix(&p2[..16.min(p2.len())], 16).unwrap_or(0);
+                let cache = read_cache().lock().unwrap();
+                if let Some((cached_hash, len)) = cache.get(&path) {
+                    if *cached_hash == hash_val {
+                        format!("unchanged {}\n", len)
+                    } else {
+                        "stale\n".to_string()
+                    }
+                } else {
+                    "stale\n".to_string()
+                }
+            }
+        }
+        "should-compress" => {
+            // Usage: should-compress <turn_count> <text>
+            if p2.is_empty() {
+                "ERROR: usage: should-compress <turn> <text>\n".to_string()
+            } else {
+                let turn: usize = p1.parse().unwrap_or(0);
+                let parts: Vec<&str> = cmd.splitn(3, ' ').collect();
+                let text = if parts.len() >= 3 { parts[2].trim() } else { p2 };
+                let len = text.len();
+
+                // Skip: too short, early turn, or contains code content
+                if len < 200 { "skip\n".to_string() }
+                else if text.contains("```") || text.contains("//") || text.contains("/*")
+                    || text.contains("src/") || text.contains(".rs:") || text.contains(".py:")
+                { "skip\n".to_string() }
+                else if turn < 3 && len < 800 { "skip\n".to_string() }
+                // Gentle: medium-length reasoning, turn 3+
+                else if len >= 400 && turn >= 3 {
+                    "gentle\n".to_string()
+                }
+                // Aggressive: long text, turn 5+ (mature conversation)
+                else if len >= 1000 && turn >= 5 {
+                    "aggressive\n".to_string()
+                }
+                else { "skip\n".to_string() }
             }
         }
         "index" => {

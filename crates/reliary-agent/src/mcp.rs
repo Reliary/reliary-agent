@@ -69,7 +69,7 @@ pub fn serve_stdio() {
             "tools/compress" => {
                 let params = msg.get("params").and_then(|v| v.as_object()).cloned().unwrap_or_default();
                 let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                let compressed = reliary_compress::compress_reasoning(text);
+                let compressed = reliary_compress::aggressive_compress(text);
                 respond(id, serde_json::json!({
                     "compressed": compressed,
                     "original_len": text.len(),
