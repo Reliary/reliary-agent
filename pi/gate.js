@@ -159,18 +159,18 @@ function handleToolResult(event) {
 
 // ── Hook B: tool_call — reliary safety gate ──
 function handleToolCall(event) {
-  const input = event.input || event;
-  const toolName = input.toolName || input.name;
+  const toolName = event.toolName || event.name;
+  const input = event.input || event.arguments || event;
   
   // ── Self-healing edits: intercept edit tool calls ──
   if (toolName === "edit" && RELIARY_BIN) {
-    const args = input.args || input.arguments || input;
+    const args = input.edits ? input : input.arguments || input;
     const file = args.file || args.path || "";
-    const edits = args.edits || [];
+    const editsArr = args.edits || [];
     const workdir = args.cwd || process.cwd();
-    if (file && edits.length > 0 && edits[0].oldText && edits[0].newText) {
-      const oldText = edits[0].oldText;
-      const newText = edits[0].newText;
+    if (file && editsArr.length > 0 && editsArr[0].oldText && editsArr[0].newText) {
+      const oldText = editsArr[0].oldText;
+      const newText = editsArr[0].newText;
       
       // Read original file, apply old→new replacement, write full content to tmp
       try {
@@ -195,20 +195,20 @@ function handleToolCall(event) {
     }
   }
   
-  // ── Reliary safety gate (risk check) ──
-  if (toolName !== "read" && toolName !== "edit") return;
+  // ── Reliary safety gate: warn on risky reads (edits already handled above) ──
+  if (toolName === "read") {
+    const path = input.path || event.path || "";
+    if (!path || path.startsWith("/tmp") || path.startsWith("/dev")) return;
 
-  const path = input.path || input.file || input.args?.path || input.arguments?.file;
-  if (!path || path.startsWith("/tmp") || path.startsWith("/dev")) return;
+    const result = reliaryRisk(path);
+    if (!result) return;
 
-  const result = reliaryRisk(path);
-  if (!result) return;
-
-  blockedCount++;
-  const rf = blockedCount >= 3 ? " (circuit breaker active)" : "";
-  const reason = `Reliary blocked edit to ${path}: ${result.reason}.${rf}`;
-  gateLog("block", `#${blockedCount}: ${reason}`);
-  return { block: true, response: reason };
+    blockedCount++;
+    const rf = blockedCount >= 3 ? " (circuit breaker active)" : "";
+    const reason = `Reliary risk: ${path} — ${result.reason}.${rf}`;
+    gateLog("block", `#${blockedCount}: ${reason}`);
+    return { block: true, response: reason };
+  }
 }
 
 // ── Reasoning compression via reliary (inline heuristics + daemon) ──
