@@ -1,0 +1,17 @@
+[package]
+name = "reliary-agent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reliary-core = { path = "../reliary-core" }
+reliary-search = { path = "../reliary-search" }
+reliary-compress = { path = "../reliary-compress" }
+reliary-sift = { path = "../reliary-sift" }
+reliary-risk = { path = "../reliary-risk" }
+reliary-memory = { path = "../reliary-memory" }
+reliary-fix = { path = "../reliary-fix" }
+reliary-dead = { path = "../reliary-dead" }
