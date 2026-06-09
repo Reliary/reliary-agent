@@ -60,6 +60,53 @@ pub fn tokenize(text: &str) -> Vec<String> {
     scan_identifiers(text).into_iter().map(|t| porter_stem(&t)).collect()
 }
 
+/// Grammar-free definition detection: is `phrase` at `match_start` in `line` a definition
+/// or a call site? Uses byte-scanning for preceding keywords and following structural markers.
+pub fn is_definition(phrase: &str, line: &str, match_start: usize) -> bool {
+    let bytes = line.as_bytes();
+    let end = match_start + phrase.len();
+    if end >= bytes.len() { return false; }
+
+    // Word boundary before the phrase
+    if match_start > 0 {
+        let prev = bytes[match_start - 1];
+        if prev.is_ascii_alphanumeric() || prev == b'_' || prev == b'.' { return false; }
+
+        // Check for non-definition keywords before the phrase (new, import)
+        let mut word_start = match_start;
+        while word_start > 0 {
+            let w = bytes[word_start - 1];
+            if w.is_ascii_alphanumeric() || w == b'_' { break; }
+            word_start -= 1;
+        }
+        let mut word_begin = word_start;
+        while word_begin > 0 {
+            let w = bytes[word_begin - 1];
+            if !w.is_ascii_alphanumeric() && w != b'_' { break; }
+            word_begin -= 1;
+        }
+        let preceding_word = &bytes[word_begin..word_start];
+        if matches!(preceding_word, b"new" | b"import") { return false; }
+    }
+
+    // Scan forward for structural definition marker: (, <, [, =, :, {, ->
+    let mut pos = end;
+    while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') { pos += 1; }
+    while pos < bytes.len() && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_') { pos += 1; }
+    while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') { pos += 1; }
+    if pos < bytes.len() {
+        let c = bytes[pos];
+        if matches!(c, b'(' | b'<' | b'[' | b'=' | b':' | b'{') { return true; }
+        if c == b'-' && pos + 1 < bytes.len() && bytes[pos + 1] == b'>' { return true; }
+    }
+    false
+}
+
+/// Convenience wrapper: is `phrase` a definition in `line`?
+pub fn is_definition_str(phrase: &str, line: &str) -> bool {
+    line.find(phrase).map_or(false, |idx| is_definition(phrase, line, idx))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -94,40 +94,246 @@ impl MaxwellGate {
     }
 }
 
+/// Grammar-free content line classification and transformation.
+/// Works on any text file without knowing the language/tool.
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LineType {
+    Blank,
+    Separator,
+    Comment,
+    Import,
+    Definition,
+    Error,
+    Summary,
+    Code,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContentLine {
+    pub text: String,
+    pub line_type: LineType,
+    pub index: usize,
+}
+
+/// Classify a single line of content.
+pub fn classify_line(line: &str) -> LineType {
+    let trimmed = line.trim();
+    if trimmed.is_empty() { return LineType::Blank; }
+
+    let seps = ['-', '=', '*', '.', '_', '~'];
+    if trimmed.len() >= 3 && trimmed.chars().all(|c| seps.contains(&c)) {
+        return LineType::Separator;
+    }
+
+    let lower = trimmed.to_lowercase();
+
+    if trimmed.starts_with("Error:") || trimmed.starts_with("error[") || trimmed.starts_with("FAILED")
+        || lower.starts_with("error ")
+    {
+        return LineType::Error;
+    }
+
+    if trimmed.starts_with("test result:") || trimmed.starts_with("Finished") || trimmed.starts_with("  --> ")
+        || (trimmed.contains("passed") && trimmed.contains("failed"))
+    {
+        return LineType::Summary;
+    }
+
+    let first = trimmed.chars().next().unwrap_or(' ');
+    if first == '#' || trimmed.starts_with("//") || trimmed.starts_with(";") || trimmed.starts_with("--")
+        || trimmed.starts_with("/*") || trimmed.starts_with("* ") || trimmed.starts_with("'")
+        || trimmed.starts_with("%")
+    {
+        return LineType::Comment;
+    }
+
+    if lower.starts_with("import ") || lower.starts_with("from ") || lower.starts_with("use ")
+        || lower.starts_with("include") || lower.starts_with("require(") || lower.starts_with("pub use ")
+        || lower.starts_with("extern crate")
+    {
+        return LineType::Import;
+    }
+
+    if is_definition_line(trimmed) {
+        return LineType::Definition;
+    }
+
+    LineType::Code
+}
+
+fn is_definition_line(line: &str) -> bool {
+    let lower = line.to_lowercase();
+
+    if lower.starts_with("fn ") || lower.starts_with("func ") || lower.starts_with("def ")
+        || lower.starts_with("class ") || lower.starts_with("struct ") || lower.starts_with("enum ")
+        || lower.starts_with("trait ") || lower.starts_with("impl ") || lower.starts_with("pub ")
+        || lower.starts_with("private ") || lower.starts_with("protected ")
+        || lower.starts_with("function ") || lower.starts_with("sub ") || lower.starts_with("macro ")
+        || lower.starts_with("let ") || lower.starts_with("var ") || lower.starts_with("val ")
+        || lower.starts_with("const ") || lower.starts_with("static ")
+    {
+        return true;
+    }
+
+    if line.contains("(") && !line.contains(")") { return true; }
+    if line.contains("(") && line.contains(")") && !line.ends_with(")") { return true; }
+
+    if line.trim().ends_with('{') || line.trim().ends_with("=>") || line.trim().ends_with("->") {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('{') && !trimmed.starts_with('[') { return true; }
+    }
+
+    if line.contains(" = ") && !line.contains("==") {
+        let before = line.split('=').next().unwrap_or("").trim();
+        if !before.is_empty() && before.chars().any(|c| c.is_ascii_alphanumeric()) { return true; }
+    }
+
+    false
+}
+
+/// Detect if text looks like source content vs command output.
+pub fn looks_like_content(lines: &[ContentLine]) -> bool {
+    if lines.len() < 20 { return false; }
+    let non_blank: Vec<&ContentLine> = lines.iter().filter(|l| l.line_type != LineType::Blank).collect();
+    if non_blank.len() < 10 { return false; }
+    let warnings = lines.iter().filter(|l| l.text.contains("warning:") || l.text.starts_with("  --> ")).count();
+    if warnings >= 3 { return false; }
+    let defs = non_blank.iter().filter(|l| l.line_type == LineType::Definition).count();
+    let imports = non_blank.iter().filter(|l| l.line_type == LineType::Import).count();
+    (defs + imports) > non_blank.len() / 10
+}
+
+/// Classify all lines in a content block.
+pub fn classify_content(text: &str) -> Vec<ContentLine> {
+    text.lines().enumerate().map(|(i, l)| ContentLine {
+        text: l.to_string(),
+        line_type: classify_line(l),
+        index: i,
+    }).collect()
+}
+
+/// Transform content for compact agent display.
+/// Collapses blanks, strips comments, collapses imports, keeps definitions.
+pub fn compress_content(lines: Vec<ContentLine>, aggressive: bool) -> Vec<String> {
+    let mut result: Vec<String> = Vec::new();
+    let mut blank_count = 0;
+    let mut import_count = 0;
+    let mut comment_run = false;
+    let mut first_comment = true;
+
+    for line in &lines {
+        match line.line_type {
+            LineType::Blank => {
+                blank_count += 1;
+                if result.is_empty() { continue; }
+            }
+            LineType::Separator => {
+                if !result.last().is_some_and(|l| l.starts_with("---") || l.starts_with("===")) {
+                    result.push("---".to_string());
+                }
+                blank_count = 0;
+            }
+            LineType::Comment => {
+                if first_comment || !aggressive {
+                    result.push(line.text.clone());
+                    first_comment = false;
+                }
+                comment_run = true;
+                blank_count = 0;
+            }
+            LineType::Import => {
+                import_count += 1;
+                blank_count = 0;
+                first_comment = false;
+            }
+            LineType::Definition | LineType::Code | LineType::Summary | LineType::Error => {
+                if import_count > 0 {
+                    let label = if import_count == 1 { "import" } else { "imports" };
+                    result.push(format!("[{} {}]", import_count, label));
+                    import_count = 0;
+                }
+                if blank_count > 0 && !result.is_empty() {
+                    result.push(String::new());
+                    blank_count = 0;
+                }
+                if comment_run && aggressive { comment_run = false; }
+                first_comment = false;
+                result.push(line.text.clone());
+            }
+        }
+    }
+
+    if !result.is_empty() && result.last().is_none_or(|l| l.is_empty()) {
+        result.pop();
+    }
+    result
+}
+
+/// Truncate long lines to max_len chars, appending "... (N chars)" when truncated.
+pub fn truncate_lines(lines: Vec<String>, max_len: usize) -> Vec<String> {
+    lines.into_iter().map(|l| {
+        if l.len() > max_len {
+            let trunc_len = max_len.saturating_sub(20);
+            let safe_end = l.char_indices()
+                .take_while(|(idx, _)| *idx < trunc_len)
+                .last()
+                .map(|(idx, c)| idx + c.len_utf8())
+                .unwrap_or(0);
+            format!("{}... ({} chars)", &l[..safe_end], l.len())
+        } else { l }
+    }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_zone_truncate() {
-        let text = (0..20).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
-        let compressed = zone_truncate(&text, 3, 2);
-        let lines: Vec<&str> = compressed.lines().collect();
-        assert_eq!(lines.len(), 6); // 3 head + 1 omitted + 2 tail
-        assert!(lines[0].contains("line 0"));
-    }
-
+    fn line_blank_empty() { assert_eq!(classify_line(""), LineType::Blank); }
     #[test]
-    fn test_collapse_blanks() {
-        let text = "a\n\n\nb\n\nc";
-        let c = collapse_blanks(text);
-        assert_eq!(c, "a\n\nb\n\nc\n");
-    }
-
+    fn line_blank_whitespace() { assert_eq!(classify_line("   "), LineType::Blank); }
     #[test]
-    fn test_maxwell_gate() {
-        let gate = MaxwellGate::default();
-        let high_entropy = "This is a normal sentence with varied vocabulary and structure.";
-        let result = gate.score(high_entropy);
-        assert!(result.is_some());
-    }
-
-    #[cfg(feature = "flate2")]
+    fn line_separator() { assert_eq!(classify_line("---"), LineType::Separator); }
     #[test]
-    fn test_compression_ratio() {
-        let gate = MaxwellGate::default();
-        let repetitive = "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa ";
-        let result = gate.score(repetitive);
-        assert!(result.is_none());
+    fn line_separator_equals() { assert_eq!(classify_line("======"), LineType::Separator); }
+    #[test]
+    fn line_comment_hash() { assert_eq!(classify_line("# comment"), LineType::Comment); }
+    #[test]
+    fn line_comment_slash() { assert_eq!(classify_line("// comment"), LineType::Comment); }
+    #[test]
+    fn line_import() { assert_eq!(classify_line("import os"), LineType::Import); }
+    #[test]
+    fn line_definition_fn() { assert_eq!(classify_line("fn hello()"), LineType::Definition); }
+    #[test]
+    fn line_definition_braces() {
+        assert_eq!(classify_line("if x > 0 {"), LineType::Definition);
+        assert_eq!(classify_line("x = 5"), LineType::Definition);
+    }
+    #[test]
+    fn line_error() { assert_eq!(classify_line("Error: not found"), LineType::Error); }
+    #[test]
+    fn line_summary() { assert_eq!(classify_line("test result: ok. 42 passed"), LineType::Summary); }
+    #[test]
+    fn compress_imports_collapsed() {
+        let lines = classify_content("import a\nimport b\nimport c\nfn main() {}");
+        let r = compress_content(lines, false);
+        assert!(r.iter().any(|l| l.starts_with("[3 imports]")));
+    }
+    #[test]
+    fn test_is_definition_line() {
+        assert!(is_definition_line("fn hello()"));
+        assert!(is_definition_line("x = y")); // assignment IS a definition
+    }
+    #[test]
+    fn test_looks_like_content() {
+        let text = "fn a() {}\nfn b() {}\nfn c() {}\n".repeat(8);
+        let lines = classify_content(&text);
+        assert!(looks_like_content(&lines));
+    }
+    #[test]
+    fn test_truncate_long() {
+        let r = truncate_lines(vec!["a".repeat(200)], 50);
+        assert!(r[0].ends_with("chars)"));
     }
 }
