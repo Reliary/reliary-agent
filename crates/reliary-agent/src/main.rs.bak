@@ -2,11 +2,9 @@
 mod mcp;
 mod daemon;
 mod heal;
-mod tester;
-mod read_summary;
+mod session_state;
 mod chronicle;
-mod decompose;
-mod diffuse;
+mod scavenger;
 
 use clap::{Parser, Subcommand};
 
@@ -65,16 +63,6 @@ enum Commands {
     Daemon,
     /// Self-healing apply-edit: apply content from file, test, revert on fail
     ApplyEdit { file: String, tmp_path: String, workdir: String },
-    /// [Phase 1] FTS5 Sensory Cortex: structured file summary from index
-    ReadSummary { file: String },
-    /// [Phase 2] Chronicled Bayesian Prior: project state for session start
-    Prior { path: String },
-    /// [Phase 4] Multi-candidate beam search: parallel Pi sessions, pick winner
-    Beam { task: String, workdir: String },
-    /// [Phase 3] Recursive decomposition: heal → decompose → retry
-    Decompose { file: String, old: String, new: String, workdir: String },
-    /// [Phase 5] Code diffusion: seed, mutate, test, select, repeat
-    Diffuse { file: String, old: String, new: String, workdir: String },
 }
 
 fn format_config(fmt: &str) -> reliary_core::OutputFormat {
@@ -248,7 +236,12 @@ fn main() {
             mcp::serve_stdio();
         }
         Commands::Daemon => {
-            match daemon::start(9799) {
+            // Use cwd as workdir, or RELIARY_WORKDIR env
+            let workdir = std::env::var("RELIARY_WORKDIR")
+                .unwrap_or_else(|_| std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string()));
+            match daemon::start(9799, &workdir) {
                 Ok(()) => {},
                 Err(e) => eprintln!("Daemon error: {}", e),
             }
@@ -264,23 +257,6 @@ fn main() {
                 }
                 Err(e) => eprintln!("Error: {}", e),
             }
-        }
-        Commands::ReadSummary { file } => {
-            println!("{}", read_summary::build(file));
-        }
-        Commands::Prior { path } => {
-            println!("{}", chronicle::build_prior(&path));
-        }
-        Commands::Beam { task, workdir } => {
-            // Phase 4: multi-candidate beam search
-            eprintln!("Beam search not yet implemented (Phase 4). Task: {}, Workdir: {}", task, workdir);
-            println!("beam: not yet implemented");
-        }
-        Commands::Decompose { file, old, new, workdir } => {
-            println!("{}", decompose::heal_or_decompose(file, old, new, workdir));
-        }
-        Commands::Diffuse { file, old, new, workdir } => {
-            println!("{}", diffuse::diffuse(file, old, new, workdir));
         }
     }
 }

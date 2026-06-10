@@ -16,3 +16,4 @@ reliary-memory = { path = "../reliary-memory" }
 reliary-fix = { path = "../reliary-fix" }
 reliary-dead = { path = "../reliary-dead" }
 rusqlite = { version = "0.31", features = ["bundled"] }
+regex-lite = "0.1"
