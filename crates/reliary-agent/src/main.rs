@@ -7,6 +7,7 @@ mod chronicle;
 mod scavenger;
 
 use clap::{Parser, Subcommand};
+use std::io::Read;
 
 fn index_db_path(path: &str) -> String {
     format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
@@ -63,6 +64,8 @@ enum Commands {
     Daemon,
     /// Self-healing apply-edit: apply content from file, test, revert on fail
     ApplyEdit { file: String, tmp_path: String, workdir: String },
+    /// Identifier veto: check newText identifiers exist in project FTS5 index
+    Veto { file: String },
 }
 
 fn format_config(fmt: &str) -> reliary_core::OutputFormat {
@@ -121,7 +124,15 @@ fn main() {
             }
         }
         Commands::Compress { text, gentle } => {
-            let input = text.as_deref().unwrap_or("");
+            let input_buf: String = match text {
+                Some(ref t) if !t.is_empty() && t != "---stdin---" => t.clone(),
+                _ => {
+                    let mut buf = String::new();
+                    std::io::stdin().read_to_string(&mut buf).ok();
+                    buf
+                }
+            };
+            let input: &str = &input_buf;
             if !input.is_empty() {
                 let result = if *gentle {
                     reliary_compress::gentle_compress(input)
@@ -256,6 +267,46 @@ fn main() {
                     }
                 }
                 Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+        Commands::Veto { file } => {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf).ok();
+            let new_text = buf.trim();
+            // Find .reliary index from file path
+            match daemon::find_reliary_root(file) {
+                Some((root, index_path, _)) => {
+                    if let Ok(db) = rusqlite::Connection::open(&index_path) {
+                        if reliary_search::schema::open_existing_db(&db).is_ok() {
+                            let ids = reliary_search::scan_identifiers(new_text);
+                            let mut blocked = Vec::new();
+                            let known_libs = [
+                                "std","core","vec","string","option","result",
+                                "os","sys","json","re","math","time","datetime",
+                                "list","dict","str","int","float","bool","none",
+                                "test","assert","clone","copy","fmt","iter","into",
+                            ];
+                            for id in &ids {
+                                if id.len() <= 2 { continue; }
+                                if known_libs.contains(&id.as_str()) { continue; }
+                                let results = reliary_search::search::search_fts5(&db, id, 1);
+                                if results.is_empty() {
+                                    blocked.push(id.clone());
+                                }
+                            }
+                            if blocked.is_empty() {
+                                println!("ok");
+                            } else {
+                                println!("ERROR: veto: '{}' not found in project or known libraries", blocked.join(", "));
+                            }
+                        } else {
+                            println!("ERROR: no index at {}", index_path);
+                        }
+                    } else {
+                        println!("ok");
+                    }
+                }
+                None => println!("ERROR: no .reliary found for this file"),
             }
         }
     }
