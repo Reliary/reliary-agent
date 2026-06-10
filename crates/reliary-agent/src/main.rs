@@ -2,6 +2,9 @@
 mod mcp;
 mod daemon;
 mod heal;
+mod session_state;
+mod chronicle;
+mod scavenger;
 
 use clap::{Parser, Subcommand};
 
@@ -233,7 +236,12 @@ fn main() {
             mcp::serve_stdio();
         }
         Commands::Daemon => {
-            match daemon::start(9799) {
+            // Use cwd as workdir, or RELIARY_WORKDIR env
+            let workdir = std::env::var("RELIARY_WORKDIR")
+                .unwrap_or_else(|_| std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string()));
+            match daemon::start(9799, &workdir) {
                 Ok(()) => {},
                 Err(e) => eprintln!("Daemon error: {}", e),
             }
