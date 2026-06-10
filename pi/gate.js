@@ -87,6 +87,17 @@ function reliaryCacheRead(path, hash, size) {
   }); } catch {}
 }
 
+// ── Signatures extraction for search enrichment ──
+function extractSignatures(text) {
+  const names = []; let file = "";
+  const re = /^\s*(pub\s+)?(fn|def|class|struct|enum|trait|function|func)\s+(\w+)/;
+  for (const line of text.split("\n")) {
+    const m = line.match(re);
+    if (m) { names.push({ name: m[3], line: line.trim() }); }
+  }
+  return { names, file, found: names.length };
+}
+
 // ── Hook A: tool_result — compress read/bash if appropriate ──
 function handleToolResult(event) {
   if (event.isError) return;
@@ -122,12 +133,42 @@ function handleToolResult(event) {
     try { writeFileSync(cacheFile, `readFile`); } catch {}
 
     // Compress large exploratory reads
-    if (text.length > 2000) {
+    if (text.length > 1500) {
       const lines = text.split("\n");
-      const head = lines.slice(0, 60);
-      const tail = lines.slice(-20);
-      const compressed = head.join("\n") + `\n[... ${lines.length - 80} lines omitted ...]\n` + tail.join("\n");
-      gateLog("save", `zone: ${pathHint} ${text.length}→${compressed.length}c (${Math.round((1 - compressed.length / text.length) * 100)}%)`);
+      const head = lines.slice(0, 50);
+      const tail = lines.slice(-15);
+      let compressed = head.join("\n") + `\n[... ${lines.length - 65} lines omitted ...]\n` + tail.join("\n");
+
+      // A. Search enrichment: extract signatures, search for callers
+      const extracted = extractSignatures(text);
+      if (extracted.found > 0 && RELIARY_BIN) {
+        const callerLines = [];
+        for (const sig of extracted.names.slice(0, 5)) {
+          const sr = gateCmd(`search ${sig.name} ${pathHint}`);
+          if (sr && sr !== "no results") {
+            const callers = sr.split("\n")
+              .filter(r => !r.includes(extracted.file))
+              .slice(0, 3)
+              .map(r => r.split(" ").slice(1).join(" "))
+              .filter(Boolean);
+            if (callers.length > 0) callerLines.push(`  ${sig.name} → ${callers.join(", ")}`);
+          }
+        }
+        if (callerLines.length > 0) {
+          const hdr = `[search: ${extracted.file} — ${extracted.found} defs]\n${callerLines.join("\n")}`;
+          compressed = hdr + "\n\n" + compressed;
+          gateLog("save", `search: ${extracted.file} ${callerLines.length} callers`);
+        }
+      }
+
+      // B. Inline risk: append risk score
+      if (RELIARY_BIN) {
+        const riskOut = gateCmd(`risk ${pathHint}`);
+        if (riskOut && !riskOut.startsWith("ERROR") && !riskOut.startsWith("Low")) {
+          compressed = compressed + `\n\n[risk: ${riskOut}]`;
+        }
+      }
+
       event.content = [{ type: "text", text: compressed }];
       return;
     }
@@ -265,33 +306,41 @@ function handleBeforeProviderRequest(event) {
 
 function applyConversationWindow(msgs) {
   const n = msgs.length;
-  if (n < 10) return msgs; // need 5+ turns (10 messages) to collapse
+  if (n < 10) return msgs;
 
-  const keepFirst = 2; // keep first user msg + system response
-  const keepLast = 6;  // keep last 3 turn pairs
+  const keepFirst = 2;
+  const keepLast = 6;
   const middle = msgs.slice(keepFirst, n - keepLast);
   if (middle.length < 2) return msgs;
 
-  const summary = middle
-    .filter(m => m.role === "assistant")
-    .map(m => {
-      let text = "";
-      if (Array.isArray(m.content)) {
-        for (const b of m.content) {
-          if (b.type === "text") text += b.text;
-          else if (b.type === "thinking") text += b.thinking;
-          else if (b.type === "toolCall") text += `[${b.name || "tool"}]`;
-        }
-      }
-      const compressed = compressReasoning(text);
-      return compressed || text.slice(0, 100);
-    })
-    .filter(Boolean)
-    .join(" | ");
+  const tier = n >= 26 ? 3 : n >= 16 ? 2 : 1;
+  const parts = [];
 
+  for (const m of middle) {
+    if (m.role === "user") {
+      parts.push(`[u: ${(extractMessageText({content:m.content})||"").slice(0,tier>=3?60:120)}]`);
+      continue;
+    }
+    if (m.role !== "assistant") continue;
+    if (!Array.isArray(m.content)) continue;
+    let text = ""; let hasEdit = false; let hasError = false;
+    for (const b of m.content) {
+      if (b.type === "text") text += " " + b.text;
+      else if (b.type === "thinking") text += " " + b.thinking;
+      else if (b.type === "toolCall") { hasEdit = hasEdit || b.name === "edit"; text += ` [${b.name}]`; }
+    }
+    if (!text.trim()) continue;
+    if (tier >= 2 && !hasEdit && !hasError) { text = text.slice(0, tier>=3 ? 100 : 200) + "…"; }
+    if (tier >= 3 && !hasEdit && text.startsWith("[bash]")) { text = "[bash] …"; }
+    parts.push(text.trim());
+  }
+
+  const summary = parts.join(" | ").slice(0, tier >= 3 ? 200 : 400);
   if (!summary) return msgs;
-  gateLog("save", `conv-window: collapsed ${middle.length} msgs`);
-  return [...msgs.slice(0, keepFirst), { role: "system", content: `[collapsed ${middle.length} prior msgs: ${summary.slice(0, 300)}]` }, ...msgs.slice(n - keepLast)];
+  gateLog("save", `conv-window (tier ${tier}): ${middle.length} msgs → ${summary.length}c`);
+  return [...msgs.slice(0, keepFirst),
+    { role: "system", content: `[ctx: ${summary}]` },
+    ...msgs.slice(n - keepLast)];
 }
 
 function compressEditCalls(msgs) {
