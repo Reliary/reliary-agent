@@ -5,6 +5,7 @@ mod heal;
 mod tester;
 mod read_summary;
 mod chronicle;
+mod reindex;
 
 
 use clap::{Parser, Subcommand};
