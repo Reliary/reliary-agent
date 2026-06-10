@@ -11,16 +11,44 @@ use std::sync::atomic::Ordering;
 use crate::session_state::SessionState;
 use crate::chronicle;
 
+/// Walk up from a file path to find the project root containing .reliary/
+fn find_reliary_root(path: &str) -> Option<(String, String, String)> {
+    let path = Path::new(path);
+    let mut current = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()?.to_path_buf()
+    };
+    loop {
+        let reliary_dir = current.join(".reliary");
+        if reliary_dir.is_dir() {
+            let root = current.to_string_lossy().to_string();
+            let index = reliary_dir.join("index.sqlite").to_string_lossy().to_string();
+            let chronicle = reliary_dir.join("chronicle.sqlite").to_string_lossy().to_string();
+            return Some((root, index, chronicle));
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
 fn index_db_path(path: &str) -> String {
     format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
 }
 
 /// Identifier veto: check that all identifiers in new_text exist in the project or known libraries
-fn identifier_veto(new_text: &str, state: &SessionState) -> Result<(), String> {
+fn identifier_veto(new_text: &str, file_path: &str) -> Result<(), String> {
     let identifiers = reliary_search::scan_identifiers(new_text);
     if identifiers.is_empty() {
         return Ok(());
     }
+
+    // Find the project index from the file path
+    let index_path = match find_reliary_root(file_path) {
+        Some((_, idx, _)) => idx,
+        None => return Err("veto: no .reliary index found for this project".to_string()),
+    };
 
     // Common library/standard identifiers that don't need project definitions
     let known_libs = [
@@ -36,9 +64,8 @@ fn identifier_veto(new_text: &str, state: &SessionState) -> Result<(), String> {
     ];
 
     // Build a set of identifiers that exist in the project index
-    let index_path = &state.index_path;
     let mut project_ids = std::collections::HashSet::new();
-    if let Ok(db) = rusqlite::Connection::open(index_path) {
+    if let Ok(db) = rusqlite::Connection::open(&index_path) {
         if reliary_search::schema::open_existing_db(&db).is_ok() {
             for id in &identifiers {
                 // Query FTS5 for the identifier
@@ -105,7 +132,10 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
             if p2.is_empty() {
                 "ERROR: usage: search <query> <path>\n".to_string()
             } else {
-                let db_path = index_db_path(p2);
+                let db_path = match find_reliary_root(p2) {
+                    Some((_, idx, _)) => idx,
+                    None => index_db_path(p2),
+                };
                 if let Ok(db) = rusqlite::Connection::open(&db_path) {
                     if reliary_search::schema::open_existing_db(&db).is_ok() {
                         let results = reliary_search::search::search_fts5(&db, p1, 10);
@@ -328,8 +358,9 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
             if p2.is_empty() {
                 "ERROR: usage: veto <file> <new_text>\n".to_string()
             } else {
-                let new_text = cmd.trim_start_matches("veto ").trim();
-                match identifier_veto(new_text, &state) {
+                // p1 = file path, rest = new text (p2 onward)
+                let rest = cmd.splitn(3, ' ').nth(2).unwrap_or("").trim().to_string();
+                match identifier_veto(&rest, p1) {
                     Ok(()) => "ok\n".to_string(),
                     Err(e) => format!("ERROR: {}\n", e),
                 }
@@ -353,20 +384,24 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 "ERROR: usage: chronicle <file> [hours]\n".to_string()
             } else {
                 let hours: i64 = p2.parse().unwrap_or(24);
-                let db_path = state.chronicle_path.to_string_lossy().to_string();
-                match chronicle::init(&db_path) {
-                    Ok(db) => {
-                        let events = chronicle::recent_events(&db, p1, hours);
-                        if events.is_empty() {
-                            "no events\n".to_string()
-                        } else {
-                            events.iter()
-                                .map(|e| format!("{} {} {}: {}", e.t, e.event, e.outcome, e.detail))
-                                .collect::<Vec<_>>()
-                                .join("\n") + "\n"
+                match find_reliary_root(p1) {
+                    Some((_, _, chronicle_path)) => {
+                        match chronicle::init(&chronicle_path) {
+                            Ok(db) => {
+                                let events = chronicle::recent_events(&db, p1, hours);
+                                if events.is_empty() {
+                                    "no events\n".to_string()
+                                } else {
+                                    events.iter()
+                                        .map(|e| format!("{} {} {}: {}", e.t, e.event, e.outcome, e.detail))
+                                        .collect::<Vec<_>>()
+                                        .join("\n") + "\n"
+                                }
+                            }
+                            Err(e) => format!("ERROR: {}\n", e),
                         }
                     }
-                    Err(e) => format!("ERROR: {}\n", e),
+                    None => "ERROR: no .reliary found for this file\n".to_string()
                 }
             }
         }
