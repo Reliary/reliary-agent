@@ -74,3 +74,31 @@ pub fn heal_fix(file: &str, old: &str, new: &str, workdir: &str) -> Result<Strin
         Err(e) => Err(format!("{} (reverted)", e)),
     }
 }
+
+/// Batch heal: apply multiple edits simultaneously, run tests once, revert ALL on failure.
+pub fn batch_heal(edits: &[(String, String, String)], workdir: &str) -> String {
+    let mut originals: Vec<(String, String)> = Vec::new();
+    for (file, old, new) in edits {
+        let content = fs::read_to_string(file).map_err(|e| format!("Read: {}", e)).unwrap();
+        let fixes = vec![(old.clone(), new.clone())];
+        let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
+        if count == 0 { return format!("FAIL: no match in {}", file); }
+        originals.push((file.clone(), content));
+        fs::write(file, &modified).ok();
+    }
+    let output = Command::new("cargo").args(["test", "--quiet"]).current_dir(workdir).output();
+    match output {
+        Ok(out) if out.status.success() => {
+            format!("OK: {} files edited, tests pass", edits.len())
+        }
+        Ok(out) => {
+            for (file, original) in &originals { fs::write(file, original).ok(); }
+            let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            format!("REVERTED ({} files): {}", edits.len(), extract_first_failure(&combined))
+        }
+        Err(e) => {
+            for (file, original) in &originals { fs::write(file, original).ok(); }
+            format!("REVERTED (all files): {}", e)
+        }
+    }
+}

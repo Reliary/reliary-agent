@@ -1,5 +1,5 @@
 /// Minimal MCP server for reliary-agent.
-/// Exposes tools: search, compress, risk, fix, dead
+/// Exposes tools: search, compress, risk, fix, dead, heal, prior
 
 use std::io::{self, BufRead, Write};
 
@@ -23,6 +23,10 @@ fn respond_error(id: u64, code: i32, message: &str) {
     let mut out = io::stdout();
     writeln!(out, "{}", serde_json::to_string(&response).unwrap()).ok();
     out.flush().ok();
+}
+
+fn index_db_path(path: &str) -> String {
+    format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
 }
 
 pub fn serve_stdio() {
@@ -53,6 +57,8 @@ pub fn serve_stdio() {
                             "risk": { "description": "Pre-edit risk analysis" },
                             "fix": { "description": "Pattern-based file fix" },
                             "dead": { "description": "Grammar-free dead code detection" },
+                            "heal": { "description": "Apply edit with self-healing: tests pass → keep, fail → revert" },
+                            "prior": { "description": "Chronicled project state: recent edit failures, veto blocks, edits" },
                         }
                     }
                 }));
@@ -138,6 +144,26 @@ pub fn serve_stdio() {
                     }
                 }
                 respond(id, serde_json::json!({ "candidates": candidates.len(), "items": candidates.iter().map(|c| serde_json::json!({"name": c.name, "file": c.file, "line": c.line})).collect::<Vec<_>>() }));
+            }
+            "tools/heal" => {
+                let params = msg.get("params").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+                let file = params.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                let old = params.get("old").and_then(|v| v.as_str()).unwrap_or("");
+                let new = params.get("new").and_then(|v| v.as_str()).unwrap_or("");
+                let workdir = params.get("workdir").and_then(|v| v.as_str()).unwrap_or(".");
+                match crate::heal::heal_fix(file, old, new, workdir) {
+                    Ok(msg) => respond(id, serde_json::json!({ "success": true, "message": msg })),
+                    Err(e) => respond_error(id, -1, &e),
+                }
+            }
+            "tools/prior" => {
+                let params = msg.get("params").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+                let path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                let prior = match std::fs::read_to_string(format!("{}/.reliary/prior_block", path.trim_end_matches('/'))) {
+                    Ok(p) => p.trim().to_string(),
+                    Err(_) => String::new(),
+                };
+                respond(id, serde_json::json!({ "prior": prior }));
             }
             "notifications/initialized" => {}  // noop
             _ => {
