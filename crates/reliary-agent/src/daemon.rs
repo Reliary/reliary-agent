@@ -12,7 +12,7 @@ use crate::session_state::SessionState;
 use crate::chronicle;
 
 /// Walk up from a file path to find the project root containing .reliary/
-fn find_reliary_root(path: &str) -> Option<(String, String, String)> {
+pub fn find_reliary_root(path: &str) -> Option<(String, String, String)> {
     let path = Path::new(path);
     let mut current = if path.is_dir() {
         path.to_path_buf()
@@ -171,12 +171,32 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
             if p1.is_empty() {
                 "ERROR: usage: risk <file>\n".to_string()
             } else {
-                match std::fs::read_to_string(p1) {
-                    Ok(content) => {
-                        let risk = reliary_risk::compute_file_risk(p1, &content);
-                        format!("{:?}: {}\n", risk.risk, risk.reason)
+                // Check cache first
+                let cached = {
+                    let cache = state.risk_cache.lock().unwrap();
+                    cache.get(p1).and_then(|(text, ts)| {
+                        if ts.elapsed() < std::time::Duration::from_secs(300) {
+                            Some(text.clone())
+                        } else {
+                            None
+                        }
+                    })
+                };
+                match cached {
+                    Some(text) => text + "\n",
+                    None => {
+                        // Compute and cache
+                        match std::fs::read_to_string(p1) {
+                            Ok(content) => {
+                                let risk = reliary_risk::compute_file_risk(p1, &content);
+                                let text = format!("{:?}: {}", risk.risk, risk.reason);
+                                let mut cache = state.risk_cache.lock().unwrap();
+                                cache.insert(p1.to_string(), (text.clone(), std::time::Instant::now()));
+                                text + "\n"
+                            }
+                            Err(e) => format!("ERROR: {}\n", e),
+                        }
                     }
-                    Err(e) => format!("ERROR: {}\n", e),
                 }
             }
         }
