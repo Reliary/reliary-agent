@@ -5,18 +5,63 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
 
-static READ_CACHE: OnceLock<Mutex<HashMap<String, (u64, usize)>>> = OnceLock::new();
-fn read_cache() -> &'static Mutex<HashMap<String, (u64, usize)>> {
-    READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
+use crate::session_state::SessionState;
+use crate::chronicle;
 
 fn index_db_path(path: &str) -> String {
     format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
 }
 
-fn handle(mut stream: TcpStream) {
+/// Identifier veto: check that all identifiers in new_text exist in the project or known libraries
+fn identifier_veto(new_text: &str, state: &SessionState) -> Result<(), String> {
+    let identifiers = reliary_search::scan_identifiers(new_text);
+    if identifiers.is_empty() {
+        return Ok(());
+    }
+
+    // Common library/standard identifiers that don't need project definitions
+    let known_libs = [
+        // Rust std
+        "std", "core", "alloc", "vec", "string", "option", "result", "box", "rc", "arc",
+        "clone", "copy", "debug", "display", "fmt", "iter", "into", "from",
+        // Python std
+        "os", "sys", "json", "re", "math", "time", "datetime", "pathlib", "typing",
+        "list", "dict", "tuple", "set", "str", "int", "float", "bool", "none",
+        // Common test
+        "test", "assert", "assert_eq", "assert_ne", "assert_true", "assert_false",
+        "setup", "teardown", "before_each", "after_each",
+    ];
+
+    // Build a set of identifiers that exist in the project index
+    let index_path = &state.index_path;
+    let mut project_ids = std::collections::HashSet::new();
+    if let Ok(db) = rusqlite::Connection::open(index_path) {
+        if reliary_search::schema::open_existing_db(&db).is_ok() {
+            for id in &identifiers {
+                // Query FTS5 for the identifier
+                let results = reliary_search::search::search_fts5(&db, id, 1);
+                if !results.is_empty() {
+                    project_ids.insert(id.clone());
+                }
+            }
+        }
+    }
+
+    for id in &identifiers {
+        if project_ids.contains(id) { continue; }
+        if id.len() <= 2 { continue; }
+        if known_libs.contains(&id.as_str()) { continue; }
+        // Check if it looks like a well-known lib (all-caps const, single char, etc.)
+        if id.chars().all(|c| c.is_uppercase() || c == '_') { continue; }
+        return Err(format!("veto: '{}' not found in project or known libraries", id));
+    }
+    Ok(())
+}
+
+fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
     let mut line = String::new();
     let mut reader = BufReader::new(&stream);
 
@@ -204,7 +249,7 @@ fn handle(mut stream: TcpStream) {
                 let path = p1.to_string();
                 let len: usize = p3.parse().unwrap_or(0);
                 let hash_val: u64 = u64::from_str_radix(&p2[..16.min(p2.len())], 16).unwrap_or(0);
-                let mut cache = read_cache().lock().unwrap();
+                let mut cache = state.read_cache.lock().unwrap();
                 cache.insert(path, (hash_val, len));
                 format!("cached {}\n", len)
             }
@@ -215,7 +260,7 @@ fn handle(mut stream: TcpStream) {
             } else {
                 let path = p1.to_string();
                 let hash_val: u64 = u64::from_str_radix(&p2[..16.min(p2.len())], 16).unwrap_or(0);
-                let cache = read_cache().lock().unwrap();
+                let cache = state.read_cache.lock().unwrap();
                 if let Some((cached_hash, len)) = cache.get(&path) {
                     if *cached_hash == hash_val {
                         format!("unchanged {}\n", len)
@@ -278,6 +323,53 @@ fn handle(mut stream: TcpStream) {
                 }
             }
         }
+        // ── Veto: check new-text identifiers against project index ──
+        "veto" => {
+            if p2.is_empty() {
+                "ERROR: usage: veto <file> <new_text>\n".to_string()
+            } else {
+                let new_text = cmd.trim_start_matches("veto ").trim();
+                match identifier_veto(new_text, &state) {
+                    Ok(()) => "ok\n".to_string(),
+                    Err(e) => format!("ERROR: {}\n", e),
+                }
+            }
+        }
+        // ── Muzzle: enable/disable scavenger ──
+        "muzzle" => {
+            if p1.is_empty() {
+                "ERROR: usage: muzzle on|off\n".to_string()
+            } else {
+                match p1 {
+                    "on" => { state.set_muzzle(true); "muzzled\n".to_string() }
+                    "off" => { state.set_muzzle(false); "unmuzzled\n".to_string() }
+                    _ => "ERROR: use 'muzzle on' | 'muzzle off'\n".to_string()
+                }
+            }
+        }
+        // ── Chronicle-query: recent events for a file ──
+        "chronicle" => {
+            if p1.is_empty() {
+                "ERROR: usage: chronicle <file> [hours]\n".to_string()
+            } else {
+                let hours: i64 = p2.parse().unwrap_or(24);
+                let db_path = state.chronicle_path.to_string_lossy().to_string();
+                match chronicle::init(&db_path) {
+                    Ok(db) => {
+                        let events = chronicle::recent_events(&db, p1, hours);
+                        if events.is_empty() {
+                            "no events\n".to_string()
+                        } else {
+                            events.iter()
+                                .map(|e| format!("{} {} {}: {}", e.t, e.event, e.outcome, e.detail))
+                                .collect::<Vec<_>>()
+                                .join("\n") + "\n"
+                        }
+                    }
+                    Err(e) => format!("ERROR: {}\n", e),
+                }
+            }
+        }
         _ => format!("ERROR: unknown command '{}'\n", p0),
     };
 
@@ -286,15 +378,32 @@ fn handle(mut stream: TcpStream) {
     }
 }
 
-pub fn start(port: u16) -> std::io::Result<()> {
+pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
+    let state = Arc::new(SessionState::new(workdir));
+
+    // Start scavenger thread
+    let scavenger_state = Arc::clone(&state);
+    std::thread::Builder::new()
+        .name("scavenger".into())
+        .spawn(move || crate::scavenger::scavenger_loop(scavenger_state))
+        .ok();
+
+    eprintln!("[reliary] scavenger started (120s cycle)");
+
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr)?;
-    eprintln!("[daemon] listening on {}", addr);
+    eprintln!("[reliary] daemon listening on {} (workdir: {})", addr, workdir);
 
     for stream in listener.incoming() {
         match stream {
-            Ok(s) => { handle(s); }
-            Err(e) => eprintln!("[daemon] accept error: {}", e),
+            Ok(s) => {
+                let state = Arc::clone(&state);
+                std::thread::Builder::new()
+                    .name("handler".into())
+                    .spawn(move || daemon_handle(s, state))
+                    .ok();
+            }
+            Err(e) => eprintln!("[reliary] accept error: {}", e),
         }
     }
     Ok(())
