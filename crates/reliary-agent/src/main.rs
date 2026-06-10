@@ -5,8 +5,7 @@ mod heal;
 mod tester;
 mod read_summary;
 mod chronicle;
-mod decompose;
-mod diffuse;
+
 
 use clap::{Parser, Subcommand};
 
@@ -71,10 +70,6 @@ enum Commands {
     Prior { path: String },
     /// [Phase 4] Multi-candidate beam search: parallel Pi sessions, pick winner
     Beam { task: String, workdir: String },
-    /// [Phase 3] Recursive decomposition: heal → decompose → retry
-    Decompose { file: String, old: String, new: String, workdir: String },
-    /// [Phase 5] Code diffusion: seed, mutate, test, select, repeat
-    Diffuse { file: String, old: String, new: String, workdir: String },
 }
 
 fn format_config(fmt: &str) -> reliary_core::OutputFormat {
@@ -275,12 +270,6 @@ fn main() {
             // Phase 4: multi-candidate beam search
             eprintln!("Beam search not yet implemented (Phase 4). Task: {}, Workdir: {}", task, workdir);
             println!("beam: not yet implemented");
-        }
-        Commands::Decompose { file, old, new, workdir } => {
-            println!("{}", decompose::heal_or_decompose(file, old, new, workdir));
-        }
-        Commands::Diffuse { file, old, new, workdir } => {
-            println!("{}", diffuse::diffuse(file, old, new, workdir));
         }
     }
 }
