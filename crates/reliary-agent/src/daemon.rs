@@ -378,6 +378,30 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 }
             }
         }
+        // ── Scavenge-query: orphaned function count from chronicle ──
+        "scavenge-query" => {
+            let db_path = state.chronicle_path.to_string_lossy().to_string();
+            match chronicle::init(&db_path) {
+                Ok(db) => {
+                    let events = chronicle::recent_events_by_type(&db, "scavenge_advisory", 24);
+                    if events.is_empty() {
+                        "ok\n".to_string()
+                    } else {
+                        // Count by file
+                        let mut by_file = std::collections::HashMap::new();
+                        for e in &events {
+                            *by_file.entry(e.file.clone()).or_insert(0) += 1;
+                        }
+                        let mut lines: Vec<String> = by_file.into_iter()
+                            .map(|(f, c)| format!("{} ({} orphans)", f, c))
+                            .collect();
+                        lines.sort();
+                        format!("{}\n", lines.join(" | "))
+                    }
+                }
+                Err(_) => "ok\n".to_string()
+            }
+        }
         // ── Chronicle-query: recent events for a file ──
         "chronicle" => {
             if p1.is_empty() {

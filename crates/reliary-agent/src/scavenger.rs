@@ -3,6 +3,9 @@ use std::time::Duration;
 use crate::session_state::SessionState;
 use crate::chronicle;
 
+/// Advisory-only scavenger: scans for orphaned code every 120s, logs to chronicle,
+/// never writes to disk. gate.js queries the chronicle on session start and injects
+/// an advisory into the system prompt if orphans were found.
 pub fn scavenger_loop(state: Arc<SessionState>) {
     loop {
         std::thread::sleep(Duration::from_secs(120));
@@ -34,26 +37,19 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
             Err(_) => continue,
         };
 
-        for c in candidates.iter() {
-            if c.confidence != reliary_dead::Confidence::High { continue; }
-            let recent = chronicle::recent_events(&chronicle_db, &c.file, 24);
-            if recent.iter().any(|e| e.event == "scavenge" && e.detail.contains(&c.name)) { continue; }
-            if let Ok(content) = std::fs::read_to_string(&c.file) {
-                let fixes = vec![(c.name.clone(), String::new())];
-                let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
-                if count > 0 && modified != content {
-                    match crate::heal::heal_edit(&c.file, &modified, &workdir) {
-                        Ok(()) => {
-                            std::fs::write(&c.file, &modified).ok();
-                            chronicle::append(&chronicle_db, "scavenge", &c.file, &c.name, "removed");
-                            eprintln!("[reliary] scavenger: removed {} from {}", c.name, c.file);
-                        }
-                        Err(e) => {
-                            chronicle::append(&chronicle_db, "scavenge", &c.file, &c.name, &format!("reverted: {}", e));
-                        }
-                    }
-                }
-            }
+        let new_orphans: Vec<_> = candidates.iter()
+            .filter(|c| c.confidence == reliary_dead::Confidence::High)
+            .filter(|c| {
+                let recent = chronicle::recent_events(&chronicle_db, &c.file, 24);
+                !recent.iter().any(|e| e.event == "scavenge_advisory" && e.detail.contains(&c.name))
+            })
+            .collect();
+
+        if new_orphans.is_empty() { continue; }
+
+        for c in &new_orphans {
+            chronicle::append(&chronicle_db, "scavenge_advisory", &c.file, &c.name, "advisory");
         }
+        eprintln!("[reliary] scavenger: {} orphaned functions found", new_orphans.len());
     }
 }
