@@ -127,7 +127,6 @@ fn handle(mut stream: TcpStream) {
         }
         "apply-edit" => {
             // Usage: apply-edit <file> <tmp-path> <workdir>
-            // Reads new content from tmp-path, applies, tests, reverts on fail
             if p3.is_empty() {
                 "ERROR: usage: apply-edit <file> <tmp-path> <workdir>\n".to_string()
             } else {
@@ -139,6 +138,34 @@ fn handle(mut stream: TcpStream) {
                         }
                     }
                     Err(e) => format!("ERROR: cannot read tmp file: {}\n", e),
+                }
+            }
+        }
+        "sed-apply" => {
+            if p4.is_empty() {
+                "ERROR: usage: sed-apply <file> <old_tmp> <new_tmp> <workdir>\n".to_string()
+            } else {
+                let rv = std::fs::read_to_string(p2)
+                    .and_then(|old| std::fs::read_to_string(p3).map(|new| (old, new)));
+                match rv {
+                    Err(e) => format!("ERROR: read tmp files: {}\n", e),
+                    Ok((old, new)) => {
+                        match std::fs::read_to_string(p1) {
+                            Err(e) => format!("ERROR: cannot read {}: {}\n", p1, e),
+                            Ok(content) => {
+                                let fixes = vec![(old.trim().to_string(), new.trim().to_string())];
+                                let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
+                                if count > 0 {
+                                    match crate::heal::heal_edit(p1, &modified, p4) {
+                                        Ok(()) => format!("OK: {} replacements, tests pass\n", count),
+                                        Err(e) => format!("REVERTED: {}\n", e),
+                                    }
+                                } else {
+                                    "ERROR: no match\n".to_string()
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
