@@ -96,10 +96,24 @@ fn handle(mut stream: TcpStream) {
             if p1.is_empty() {
                 "ERROR: usage: risk <file>\n".to_string()
             } else {
+                let chronicle_failures = crate::chronicle::recent_failures_for_file(p1);
                 match std::fs::read_to_string(p1) {
                     Ok(content) => {
                         let risk = reliary_risk::compute_file_risk(p1, &content);
-                        format!("{:?}: {}\n", risk.risk, risk.reason)
+                        // Chronicle overrides: if this file has a history of failures, force risk to High
+                        let risk_level: &str = if chronicle_failures >= 2 { "High" } else {
+                            match risk.risk {
+                                reliary_risk::RiskLevel::High => "High",
+                                reliary_risk::RiskLevel::Medium => "Medium",
+                                reliary_risk::RiskLevel::Low => "Low",
+                            }
+                        };
+                        let reasons = if chronicle_failures >= 2 {
+                            format!("{} (+ {} failed edits in 24h)", risk.reason, chronicle_failures)
+                        } else {
+                            risk.reason
+                        };
+                        format!("{}: {}\n", risk_level, reasons)
                     }
                     Err(e) => format!("ERROR: {}\n", e),
                 }

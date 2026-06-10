@@ -77,3 +77,48 @@ pub fn build_prior(workdir: &str) -> String {
         format!("[prior] {}", results.join(" | "))
     }
 }
+
+/// Check if a specific file has recent edit failures.
+/// Returns the number of failures in the last 24 hours.
+pub fn recent_failures_for_file(file: &str) -> usize {
+    // Derive workdir from file path
+    let path = Path::new(file);
+    let workdir = path.ancestors()
+        .find(|p| p.join(".reliary").exists())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| {
+            path.parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| ".".to_string())
+        });
+
+    let db_path = chronicle_db_path(&workdir);
+    if !Path::new(&db_path).exists() {
+        return 0;
+    }
+
+    let db = match rusqlite::Connection::open(&db_path) {
+        Ok(d) => d,
+        Err(_) => return 0,
+    };
+
+    let table_exists: bool = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chronicle'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+
+    if !table_exists {
+        return 0;
+    }
+
+    // Count edit + veto failures for this file in the last 24h
+    if let Ok(mut s) = db.prepare(
+        "SELECT COUNT(*) FROM chronicle WHERE (event = 'edit' AND outcome = 'fail') AND file = ?1 AND timestamp > datetime('now', '-1 day')"
+    ) {
+        if let Ok(count) = s.query_row([file], |row| row.get::<_, i64>(0)) {
+            return count as usize;
+        }
+    }
+
+    0
+}
