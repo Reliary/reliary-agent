@@ -74,3 +74,70 @@ pub fn heal_fix(file: &str, old: &str, new: &str, workdir: &str) -> Result<Strin
         Err(e) => Err(format!("{} (reverted)", e)),
     }
 }
+
+/// Batch heal: apply multiple edits simultaneously, run tests once, revert ALL on failure.
+/// Enables coordinated multi-file changes that individual heal would reject.
+/// Returns aggregate result string.
+pub fn batch_heal(edits: &[(String, String, String)], workdir: &str) -> String {
+    // Phase 1: save originals and apply all edits
+    let mut originals: Vec<(String, String)> = Vec::new(); // (file, original_content)
+    let mut all_ok = true;
+
+    for (file, old, new) in edits {
+        let content = match fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(e) => { return format!("FAIL: cannot read {} — {}", file, e); }
+        };
+        let fixes = vec![(old.clone(), new.clone())];
+        let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
+        if count == 0 {
+            return format!("FAIL: no match for '{}' in {}", old, file);
+        }
+        // Save originals for potential revert
+        originals.push((file.clone(), content));
+        if let Err(e) = fs::write(file, &modified) {
+            return format!("FAIL: write error {} — {}", file, e);
+        }
+    }
+
+    // Phase 2: run tests once on the combined state
+    let output = Command::new("cargo")
+        .args(["test", "--quiet"])
+        .current_dir(workdir)
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            // All edits pass together
+            let summary = format!("OK: {} files edited, tests pass", edits.len());
+            // Log to chronicle if available
+            for (file, _, _) in edits {
+                if let Ok(db) = rusqlite::Connection::open(format!("{}/.reliary/chronicle.sqlite", workdir.trim_end_matches('/'))) {
+                    let _ = db.execute(
+                        "INSERT INTO chronicle (t, event, file, outcome) VALUES (datetime('now'), 'edit', ?1, 'pass')",
+                        rusqlite::params![file],
+                    );
+                }
+            }
+            summary
+        }
+        Ok(out) => {
+            // Revert ALL edits
+            for (file, original) in &originals {
+                fs::write(file, original).ok();
+            }
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let combined = format!("{}{}", stdout, stderr);
+            let failure = extract_first_failure(&combined);
+            format!("REVERTED ({} files): {}", edits.len(), failure)
+        }
+        Err(e) => {
+            // Revert ALL edits
+            for (file, original) in &originals {
+                fs::write(file, original).ok();
+            }
+            format!("REVERTED (all files): test runner error — {}", e)
+        }
+    }
+}
