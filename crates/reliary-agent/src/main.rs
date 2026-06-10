@@ -70,6 +70,8 @@ enum Commands {
     Prior { path: String },
     /// [Phase 4] Multi-candidate beam search: parallel Pi sessions, pick winner
     Beam { task: String, workdir: String },
+    /// Parallel heal: process multiple edits concurrently
+    ParallelHeal { edits_json: String, workdir: String },
 }
 
 fn format_config(fmt: &str) -> reliary_core::OutputFormat {
@@ -270,6 +272,14 @@ fn main() {
             // Phase 4: multi-candidate beam search
             eprintln!("Beam search not yet implemented (Phase 4). Task: {}, Workdir: {}", task, workdir);
             println!("beam: not yet implemented");
+        }
+        Commands::ParallelHeal { edits_json, workdir } => {
+            // Parse JSON array of [file, old, new] tuples
+            let edits: Vec<(String, String, String)> = match serde_json::from_str(&edits_json) {
+                Ok(e) => e,
+                Err(e) => { eprintln!("JSON parse error: {}", e); return; }
+            };
+            println!("{}", heal::parallel_heal(&edits, &workdir));
         }
     }
 }

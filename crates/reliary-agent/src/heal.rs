@@ -74,3 +74,39 @@ pub fn heal_fix(file: &str, old: &str, new: &str, workdir: &str) -> Result<Strin
         Err(e) => Err(format!("{} (reverted)", e)),
     }
 }
+
+/// Parallel heal: process multiple edits concurrently, return the slowest wall time.
+/// Uses a thread pool (one per edit) and waits for all to complete.
+/// Returns aggregate results string.
+pub fn parallel_heal(
+    edits: &[(String, String, String)],  // (file, old, new)
+    workdir: &str,
+) -> String {
+    let handles: Vec<_> = edits.iter().map(|(file, old, new)| {
+        let file = file.clone();
+        let old = old.clone();
+        let new = new.clone();
+        let wd = workdir.to_string();
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let result = heal_fix(&file, &old, &new, &wd);
+            let elapsed = start.elapsed().as_millis();
+            (file, result, elapsed)
+        })
+    }).collect();
+
+    let mut results: Vec<String> = Vec::new();
+    for h in handles {
+        match h.join() {
+            Ok((file, Ok(msg), elapsed)) => {
+                results.push(format!("{} OK ({}ms)", file.rsplit('/').next().unwrap_or(&file), elapsed));
+            }
+            Ok((file, Err(e), elapsed)) => {
+                results.push(format!("{} FAIL ({}ms): {}", file.rsplit('/').next().unwrap_or(&file), elapsed, e.chars().take(60).collect::<String>()));
+            }
+            Err(_) => results.push("ERROR: thread panic".to_string()),
+        }
+    }
+
+    results.join("\n")
+}

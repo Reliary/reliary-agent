@@ -71,6 +71,28 @@ pub fn build_prior(workdir: &str) -> String {
         }
     }
 
+    // Proactive veto: blocked identifiers as bayesian prior over token generation
+    if let Ok(mut s) = db.prepare(
+        "SELECT outcome FROM chronicle WHERE event = 'veto' AND timestamp > datetime('now', '-1 day') GROUP BY outcome HAVING COUNT(*) >= 2 ORDER BY COUNT(*) DESC LIMIT 3"
+    ) {
+        let blocked: Vec<String> = s.query_map([], |row| row.get::<_, String>(0))
+            .into_iter().flatten().filter_map(|r| r.ok()).collect();
+        if !blocked.is_empty() {
+            results.push(format!("blocked: {}", blocked.join(", ")));
+        }
+    }
+
+    // Scavenger activity: notify if code was removed since last session
+    if let Ok(mut s) = db.prepare(
+        "SELECT file FROM chronicle WHERE event = 'scavenge' AND outcome = 'pass' AND timestamp > datetime('now', '-7 day') ORDER BY timestamp DESC LIMIT 3"
+    ) {
+        let scavenged: Vec<String> = s.query_map([], |row| row.get::<_, String>(0))
+            .into_iter().flatten().filter_map(|r| r.ok()).collect();
+        if !scavenged.is_empty() {
+            results.push(format!("scavenged: {}", scavenged.join(", ")));
+        }
+    }
+
     if results.is_empty() {
         String::new()
     } else {
