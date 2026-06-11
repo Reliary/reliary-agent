@@ -15,6 +15,7 @@ mod config;
 mod init;
 mod ux;
 mod proxy;
+mod verify;
 
 use clap::{Parser, Subcommand};
 use std::io::Read;
@@ -110,6 +111,8 @@ enum Commands {
     },
     /// Tail daemon logs
     Logs,
+    /// Full-stack verification — exercises daemon, proxy, search, risk, compress, etc.
+    Verify,
 }
 
 fn format_config(fmt: &str) -> reliary_core::OutputFormat {
@@ -325,6 +328,9 @@ fn main() {
         }
         Commands::Logs => {
             ux::logs();
+        }
+        Commands::Verify => {
+            crate::verify::run();
         }
         Commands::Daemon => {
             crate::daemon::start(9799, ".").unwrap_or_else(|e| eprintln!("Daemon error: {}", e));
