@@ -157,16 +157,40 @@ fn handle_request(mut request: Request) {
         }
     }
 
-    // ── Synergy 4: Feed-forward compression ──
+    // ── Synergy 4: Feed-forward compression (assistant messages + tool results) ──
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let dict = crate::read_summary::load_dictionary();
         for (i, msg) in messages.iter_mut().enumerate() {
-            if i < 2 { continue; }
-            if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") { continue; }
-            if let Some(content) = msg.get_mut("content") {
-                if let Some(text) = content.as_str() {
-                    if let Some(compressed) = reliary_compress::compress_reasoning(text, dict.as_ref()) {
-                        *content = serde_json::Value::String(compressed);
+            // Compress older assistant messages (keep first 2 for context)
+            if i >= 2 && msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+                if let Some(content) = msg.get_mut("content") {
+                    if let Some(text) = content.as_str() {
+                        if let Some(compressed) = reliary_compress::compress_reasoning(text, dict.as_ref()) {
+                            *content = serde_json::Value::String(compressed);
+                        }
+                    }
+                }
+            }
+
+            // Compress tool results (zone truncation for non-Pi users)
+            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            if role == "tool" || role == "toolResult" {
+                if let Some(content) = msg.get_mut("content") {
+                    if let Some(text) = content.as_str() {
+                        if text.len() > 1000 {
+                            let lines: Vec<&str> = text.lines().collect();
+                            let compressed = if lines.len() > 60 {
+                                let head = &lines[..50];
+                                let tail = &lines[lines.len() - 10..];
+                                format!("{}\n[... {} lines omitted (zone truncation) ...]\n{}",
+                                    head.join("\n"),
+                                    lines.len() - 60,
+                                    tail.join("\n"))
+                            } else {
+                                text.chars().take(2000).collect::<String>() + "... [truncated]"
+                            };
+                            *content = serde_json::Value::String(compressed);
+                        }
                     }
                 }
             }
