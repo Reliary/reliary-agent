@@ -2,24 +2,18 @@
 /// Owned by the daemon, shared across all agents via Arc.
 
 use std::collections::HashMap;
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::sync::{atomic::AtomicBool, Mutex};
 use std::time::{Duration, Instant};
 use std::path::PathBuf;
 
 /// Per-agent state tracked in memory (persisted to chronicle SQLite on changes)
 pub struct SessionState {
-    /// Disables scavenger while LLM is working (set by gate.js muzzle)
     pub scavenger_muzzled: AtomicBool,
-    /// When the muzzle was last set (auto-expire after 30 min)
     pub muzzle_time: Mutex<Instant>,
-    /// Path to .reliary chronicle SQLite DB
-    pub chronicle_path: PathBuf,
     pub workdir: PathBuf,
-    /// Read cache for dedup: path → (hash, len)
-    pub read_cache: Mutex<HashMap<String, (u64, usize)>>,
-    /// FTS5 index DB path per workdir
+    pub chronicle_path: PathBuf,
     pub index_path: PathBuf,
-    /// Risk analysis cache: file → (risk_text, timestamp)
+    pub read_cache: Mutex<HashMap<String, (u64, usize)>>,
     pub risk_cache: Mutex<HashMap<String, (String, Instant)>>,
 }
 

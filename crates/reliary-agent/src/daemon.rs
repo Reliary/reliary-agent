@@ -1,12 +1,7 @@
-/// TCP daemon on :9799. Processes line-delimited commands.
-/// Simple protocol: one command per connection, response written back.
-
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::Arc;
 use crate::session_state::SessionState;
 use crate::chronicle;
 
