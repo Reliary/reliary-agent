@@ -3,12 +3,19 @@
 /// Synergy 2: Two-phase generation (cheap model plans, main model executes)
 /// Synergy 3: Context filter (strip old tool results, cap conversation at 5 turns)
 /// Synergy 4: Feed-forward compression (compress before API sees it)
+/// Synergy 5: Compression cache dedup — reuse identical compressed messages
+///            for stable prefixes → max KV cache hits
 
 use tiny_http::{Server, Response, Request, Header, StatusCode};
 use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+
+/// Session-level compression cache: maps original text hash → compressed text
+/// Ensures old messages get identical compression every turn → stable prefix for KV cache
+static COMPRESSION_CACHE: std::sync::LazyLock<Mutex<HashMap<u64, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 const DEFAULT_UPSTREAM: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 const RESPONSE_CACHE_LIMIT: usize = 100;
@@ -203,15 +210,32 @@ fn handle_request(mut request: Request) {
     // ── Paper Synergy 3: Adaptive compression policy ──
     // Chronicled per-file aggressiveness based on edit/veto/fix history
 
-    // ── Synergy 4: Feed-forward compression ──
+    // ── Synergy 4: Feed-forward compression (with cache dedup for stable prefixes) ──
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let dict = crate::read_summary::load_dictionary();
+        // Simple deterministic hash for cheap key lookup
+        use std::hash::{Hash, Hasher};
         for (i, msg) in messages.iter_mut().enumerate() {
             if i < 2 { continue; }
             if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") { continue; }
             if let Some(content) = msg.get_mut("content") {
                 if let Some(text) = content.as_str() {
-                    if let Some(compressed) = reliary_compress::compress_reasoning(text, dict.as_ref()) {
+                    // Lookup: has this text been compressed before this session?
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    text.hash(&mut hasher);
+                    let hash_key = hasher.finish();
+
+                    let re_use = {
+                        let cache = COMPRESSION_CACHE.lock().unwrap();
+                        cache.get(&hash_key).cloned()
+                    };
+                    if let Some(cached) = re_use {
+                        // Reuse identical compressed version → stable prefix for KV cache
+                        *content = serde_json::Value::String(cached);
+                    } else if let Some(compressed) = reliary_compress::compress_reasoning(text, dict.as_ref()) {
+                        // First time: compute compression, store for future reuse
+                        let mut cache = COMPRESSION_CACHE.lock().unwrap();
+                        cache.insert(hash_key, compressed.clone());
                         *content = serde_json::Value::String(compressed);
                     }
                 }
