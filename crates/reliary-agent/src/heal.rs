@@ -79,7 +79,10 @@ pub fn heal_fix(file: &str, old: &str, new: &str, workdir: &str) -> Result<Strin
 pub fn batch_heal(edits: &[(String, String, String)], workdir: &str) -> String {
     let mut originals: Vec<(String, String)> = Vec::new();
     for (file, old, new) in edits {
-        let content = fs::read_to_string(file).map_err(|e| format!("Read: {}", e)).unwrap();
+        let content = match fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(e) => return format!("FAIL: cannot read {} — {}", file, e),
+        };
         let fixes = vec![(old.clone(), new.clone())];
         let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
         if count == 0 { return format!("FAIL: no match in {}", file); }

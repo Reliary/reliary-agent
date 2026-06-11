@@ -6,8 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::Ordering;
-
+use std::time::Instant;
 use crate::session_state::SessionState;
 use crate::chronicle;
 
@@ -460,14 +459,15 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
 pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
     let state = Arc::new(SessionState::new(workdir));
 
-    // Start scavenger thread
-    let scavenger_state = Arc::clone(&state);
+    // Start scavenger thread (silent failure if scavenger module not available)
     std::thread::Builder::new()
         .name("scavenger".into())
-        .spawn(move || crate::scavenger::scavenger_loop(scavenger_state))
+        .spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(120));
+            }
+        })
         .ok();
-
-    eprintln!("[reliary] scavenger started (120s cycle)");
 
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr)?;

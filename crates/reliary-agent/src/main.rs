@@ -5,6 +5,8 @@ mod heal;
 mod session_state;
 mod chronicle;
 mod scavenger;
+mod reindex;
+mod read_summary;
 
 use clap::{Parser, Subcommand};
 use std::io::Read;
