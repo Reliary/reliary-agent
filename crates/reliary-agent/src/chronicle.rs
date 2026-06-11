@@ -85,10 +85,12 @@ pub fn function_memories(db: &Connection, file: &str, func_name: &str, hours: i6
         .unwrap_or_default()
         .as_secs() as i64 - hours * 3600;
     let pattern = format!("%{}%", func_name);
+    let file_end = std::path::Path::new(file).file_name().and_then(|n| n.to_str()).unwrap_or(file);
+    let file_pattern = format!("%{}", file_end);
     let mut stmt = db.prepare(
-        "SELECT t, event, file, detail, outcome FROM chronicle WHERE file = ?1 AND detail LIKE ?2 AND t >= ?3 ORDER BY t DESC LIMIT 20"
+        "SELECT t, event, file, detail, outcome FROM chronicle WHERE file LIKE ?1 AND detail LIKE ?2 AND t >= ?3 ORDER BY t DESC LIMIT 20"
     ).unwrap();
-    let rows = stmt.query_map(rusqlite::params![file, pattern, cutoff], |row| {
+    let rows = stmt.query_map(rusqlite::params![file_pattern, pattern, cutoff], |row| {
         Ok(ChronicleEvent {
             t: row.get(0)?,
             event: row.get(1)?,
@@ -110,10 +112,12 @@ pub fn compression_policy(db: &Connection, file: &str) -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64 - 86400; // 24h
+    let file_end = std::path::Path::new(file).file_name().and_then(|n| n.to_str()).unwrap_or(file);
+    let file_pattern = format!("%{}", file_end);
     if let Ok(mut stmt) = db.prepare(
-        "SELECT event, outcome FROM chronicle WHERE file = ?1 AND t >= ?2 AND event IN ('edit', 'veto')"
+        "SELECT event, outcome FROM chronicle WHERE file LIKE ?1 AND t >= ?2 AND event IN ('edit', 'veto')"
     ) {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![file, cutoff], |row| {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![file_pattern, cutoff], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         }) {
             let mut failures = 0_f64;
@@ -127,15 +131,13 @@ pub fn compression_policy(db: &Connection, file: &str) -> f64 {
                     _ => {}
                 }
             }
-            // Scale: more failures = protect (min compress), more success/veto = safe (max compress)
             let fail_penalty = (failures * 0.2).min(0.6);
             let success_bonus = (successes * 0.1).min(0.3);
             let veto_penalty = (vetoes * 0.05).min(0.1);
-            let base = 0.3_f64;
-            let policy = base + fail_penalty - success_bonus + veto_penalty;
+            let policy = 0.3 + fail_penalty - success_bonus + veto_penalty;
             policy.clamp(0.0, 1.0)
         } else {
-            0.3 // default moderate compression
+            0.3
         }
     } else {
         0.3

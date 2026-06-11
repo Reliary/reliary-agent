@@ -8,10 +8,19 @@ use crate::chronicle;
 /// Walk up from a file path to find the project root containing .reliary/
 pub fn find_reliary_root(path: &str) -> Option<(String, String, String)> {
     let path = Path::new(path);
-    let mut current = if path.is_dir() {
-        path.to_path_buf()
+    let resolved = if path.is_relative() {
+        std::env::current_dir().unwrap_or_default().join(path)
     } else {
-        path.parent()?.to_path_buf()
+        path.to_path_buf()
+    };
+    let mut current = if !resolved.exists() {
+        if let Some(parent) = resolved.parent() {
+            parent.to_path_buf()
+        } else { return None; }
+    } else if resolved.is_dir() {
+        resolved
+    } else {
+        resolved.parent()?.to_path_buf()
     };
     loop {
         let reliary_dir = current.join(".reliary");
@@ -21,7 +30,17 @@ pub fn find_reliary_root(path: &str) -> Option<(String, String, String)> {
             let chronicle = reliary_dir.join("chronicle.sqlite").to_string_lossy().to_string();
             return Some((root, index, chronicle));
         }
-        if !current.pop() {
+        if current.as_os_str().is_empty() || !current.pop() {
+            // Fallback: check CWD as last resort
+            if let Ok(cwd) = std::env::current_dir() {
+                let reliary_dir = cwd.join(".reliary");
+                if reliary_dir.is_dir() {
+                    let root = cwd.to_string_lossy().to_string();
+                    let index = reliary_dir.join("index.sqlite").to_string_lossy().to_string();
+                    let chronicle = reliary_dir.join("chronicle.sqlite").to_string_lossy().to_string();
+                    return Some((root, index, chronicle));
+                }
+            }
             return None;
         }
     }
@@ -99,6 +118,12 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
         let d = parts.get(3).copied().unwrap_or("");
         let e = parts.get(4).copied().unwrap_or("");
         (a, b, c, d, e)
+    };
+
+    // Resolve relative paths to absolute for find_reliary_root
+    let resolve_path = |p: &str| -> String {
+        if p.is_empty() || p.starts_with('/') { return p.to_string(); }
+        std::env::current_dir().unwrap_or_default().join(p).to_string_lossy().to_string()
     };
 
     // Helper to log to chronicle
@@ -492,6 +517,47 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 "ERROR: usage: prior <path>\n".to_string()
             } else {
                 crate::chronicle::build_prior(p1) + "\n"
+            }
+        }
+        "compression-policy" => {
+            if p1.is_empty() {
+                "ERROR: usage: compression-policy <file>\n".to_string()
+            } else {
+                let db_path_str = match find_reliary_root(p1) {
+                    Some((_, _, chron_path)) => chron_path,
+                    None => format!("{}/.reliary/chronicle.sqlite",
+                        p1.trim_end_matches('/').rsplit_once('/').map(|(h, _)| h).unwrap_or(".")),
+                };
+                match crate::chronicle::init(&db_path_str) {
+                    Ok(db) => format!("{:.2}\n", crate::chronicle::compression_policy(&db, p1)),
+                    Err(_) => "0.30\n".to_string()
+                }
+            }
+        }
+        "function-memories" => {
+            if p3.is_empty() {
+                "ERROR: usage: function-memories <file> <func> <hours>\n".to_string()
+            } else {
+                let db_path_str = match find_reliary_root(p1) {
+                    Some((_, _, chron_path)) => chron_path,
+                    None => format!("{}/.reliary/chronicle.sqlite",
+                        p1.trim_end_matches('/').rsplit_once('/').map(|(h, _)| h).unwrap_or(".")),
+                };
+                match crate::chronicle::init(&db_path_str) {
+                    Ok(db) => {
+                        let hours: i64 = p3.parse().unwrap_or(24);
+                        let events = crate::chronicle::function_memories(&db, p1, p2, hours);
+                        if events.is_empty() {
+                            "no events\n".to_string()
+                        } else {
+                            events.iter()
+                                .map(|e| format!("{} {} {}: {}", e.t, e.event, e.outcome, e.detail))
+                                .collect::<Vec<_>>()
+                                .join("\n") + "\n"
+                        }
+                    }
+                    Err(_) => "ERROR: chronicle unavailable\n".to_string()
+                }
             }
         }
         _ => format!("ERROR: unknown command '{}'\n", p0),
