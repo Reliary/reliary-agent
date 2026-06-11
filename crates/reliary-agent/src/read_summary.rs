@@ -31,7 +31,6 @@ pub fn build(file: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
 
-    // Grammar-free signature extraction
     let mut defs: Vec<(usize, &str)> = Vec::new();
     let sig_re = regex_lite::Regex::new(r"^\s*(pub\s+)?(fn|def|class|struct|enum|trait|function|func)\s+(\w+)").unwrap();
     for (i, line) in lines.iter().enumerate() {
@@ -86,4 +85,23 @@ pub fn build(file: &str) -> String {
     }
 
     result
+}
+
+/// Load compression dictionary from the nearest FTS5 index.
+/// Returns None if no index is found or query fails.
+pub fn load_dictionary() -> Option<reliary_compress::CompressionDict> {
+    for dir in &[".", ".."] {
+        let db_path = format!("{}/.reliary/index.sqlite", dir);
+        if let Ok(db) = rusqlite::Connection::open(&db_path) {
+            if reliary_search::schema::open_existing_db(&db).is_ok() {
+                let mut stmt = db.prepare("SELECT phrase FROM phrases_fts LIMIT 200").ok()?;
+                let phrases: Vec<String> = stmt.query_map([], |r| r.get(0)).ok()?
+                    .filter_map(|r| r.ok()).collect();
+                if !phrases.is_empty() {
+                    return Some(reliary_compress::CompressionDict::from_phrases(&phrases));
+                }
+            }
+        }
+    }
+    None
 }

@@ -1,8 +1,58 @@
-/// IR reasoning compression, conversation window, and edit merge.
-/// Ported from gate.js (context-engine).
+/// IR reasoning compression, conversation window, edit merge, and compression dictionary.
+/// Ported from gate.js (context-engine) with project-specific dictionary support.
 
 use ahash::AHashMap;
 use std::sync::OnceLock;
+
+/// Per-project compression dictionary: maps known identifiers to short references.
+/// Build from FTS5 index at daemon startup.
+#[derive(Debug, Clone, Default)]
+pub struct CompressionDict {
+    /// Known function/class names → replacement token
+    pub known_symbols: AHashMap<String, String>,
+    /// Common file paths → short reference
+    pub known_paths: AHashMap<String, String>,
+    /// Frequently co-occurring phrases → compressed form
+    pub phrase_map: AHashMap<String, String>,
+}
+
+impl CompressionDict {
+    /// Build from FTS5 phrase list
+    pub fn from_phrases(phrases: &[String]) -> Self {
+        let mut known_symbols = AHashMap::new();
+        let mut phrase_map = AHashMap::new();
+        for (i, phrase) in phrases.iter().enumerate() {
+            if phrase.len() >= 3 && phrase.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                if phrase.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
+                    || phrase.starts_with("fn_") || phrase.starts_with("def_")
+                {
+                    known_symbols.insert(phrase.clone(), format!("[sym:{}]", phrase.chars().take(3).collect::<String>()));
+                }
+            }
+            if phrase.len() > 4 && phrase.len() < 20 {
+                let key = phrase.chars().take(4).collect::<String>();
+                phrase_map.insert(phrase.clone(), format!("[ph:{}]", key));
+            }
+        }
+        Self { known_symbols, known_paths: AHashMap::new(), phrase_map }
+    }
+
+    /// Replace known symbols and phrases in text with compressed references
+    pub fn apply(&self, text: &str) -> String {
+        let mut t = text.to_string();
+        for (symbol, replacement) in &self.known_symbols {
+            if t.contains(symbol) {
+                t = t.replace(symbol, replacement);
+            }
+        }
+        for (phrase, replacement) in &self.phrase_map {
+            if t.contains(phrase) {
+                t = t.replace(phrase, replacement);
+            }
+        }
+        t
+    }
+}
 
 static FLUFF_PATTERNS: OnceLock<Vec<&'static str>> = OnceLock::new();
 fn fluff_patterns() -> &'static [&'static str] {
@@ -14,9 +64,53 @@ fn fluff_patterns() -> &'static [&'static str] {
     ])
 }
 
-/// Strip LLM reasoning fluff from text while preserving code context.
-/// Returns the fluff-stripped text (not [act]/[ref] format).
-/// Preserves code blocks, line references, error messages, and file paths.
+/// Strip LLM reasoning fluff while preserving code context.
+/// Ported from gate.js v2.2.0 inline compression. Grammar-free.
+/// Returns compressed text if at least 40% smaller, else None.
+/// If `dict` is provided, also compresses known symbols to short references.
+pub fn compress_reasoning(text: &str, dict: Option<&CompressionDict>) -> Option<String> {
+    let original_len = text.len();
+    if original_len < 600 { return None; }
+
+    if text.contains("```") || text.contains("//") || text.contains("/*")
+        || text.contains("src/") || text.contains(".rs:") || text.contains(".py:")
+        || text.starts_with('{') || text.starts_with('[')
+    { return None; }
+
+    let mut t = text.to_string();
+
+    if let Some(dict) = dict {
+        t = dict.apply(&t);
+    }
+
+    // Strip specific verbose patterns via regex (grammar-free)
+    let patterns = [
+        r"(?i)\blet me (?:analyze|look|check|review|see|think|consider)\b[^.]*\.",
+        r"(?i)\bi (?:would|will|cannot|can't)\s+(?:need to|say|see|check|try)\b[^.]*\.",
+        r"(?i)\bin order to\b[^.]*\.",
+        r"(?i)\bfirst,?\s+let me\b[^.]*\.",
+        r"(?i)\bbased on (?:the|this|my|our)\b[^.]*\.?\s*",
+        r"(?i)\bthis means that\b[^.]*\.",
+        r"(?i)\bthe (?:next|final|first) step\b[^.]*\.",
+        r"(?i)\bnow i (?:can|will|'ll|need to|should)\b[^.,;]*[,;.]?",
+        r"(?i)\b(?:alright|okay|so,?|well,?|now,?)\s*",
+        r"(?i)\b(?:essentially|basically|simply|actually|obviously|clearly|currently)\b",
+    ];
+
+    for pat in &patterns {
+        if let Ok(re) = regex::Regex::new(pat) {
+            t = re.replace_all(&t, "").to_string();
+        }
+    }
+
+    // Collapse whitespace
+    t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    if (t.len() as f64) < original_len as f64 * 0.6 { Some(t) } else { None }
+}
+
+/// Gentle compression: strip basic fluff, preserve code context.
+/// Returns None if savings < 5%.
 pub fn gentle_compress(text: &str) -> Option<String> {
     let original_len = text.len();
     if original_len < 200 { return None; }
