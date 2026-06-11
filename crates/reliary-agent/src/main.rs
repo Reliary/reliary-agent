@@ -14,6 +14,7 @@ mod read_summary;
 mod config;
 mod init;
 mod ux;
+mod proxy;
 
 use clap::{Parser, Subcommand};
 use std::io::Read;
@@ -71,6 +72,8 @@ enum Commands {
     Mcp,
     /// TCP daemon
     Daemon,
+    /// Bidirectional proxy (compresses conversation history)
+    Serve { #[arg(default_value = "9090")] port: u16 },
     /// Self-healing apply-edit: apply content from file, test, revert on fail
     ApplyEdit { file: String, tmp_path: String, workdir: String },
     /// Identifier veto: check newText identifiers exist in project FTS5 index
@@ -324,15 +327,10 @@ fn main() {
             ux::logs();
         }
         Commands::Daemon => {
-            // Use cwd as workdir, or RELIARY_WORKDIR env
-            let workdir = std::env::var("RELIARY_WORKDIR")
-                .unwrap_or_else(|_| std::env::current_dir()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| ".".to_string()));
-            match daemon::start(9799, &workdir) {
-                Ok(()) => {},
-                Err(e) => eprintln!("Daemon error: {}", e),
-            }
+            crate::daemon::start(9799, ".").unwrap_or_else(|e| eprintln!("Daemon error: {}", e));
+        }
+        Commands::Serve { port } => {
+            crate::proxy::start(*port).unwrap_or_else(|e| eprintln!("Proxy error: {}", e));
         }
         Commands::SessionState { file } => {
             match reliary_core::parse_session_file(file) {
