@@ -25,10 +25,6 @@ fn respond_error(id: u64, code: i32, message: &str) {
     out.flush().ok();
 }
 
-fn index_db_path(path: &str) -> String {
-    format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
-}
-
 pub fn serve_stdio() {
     let stdin = io::stdin();
     for line in stdin.lock().lines() {

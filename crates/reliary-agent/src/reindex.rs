@@ -2,7 +2,6 @@
 /// Grammar-free: works on any text file with a supported extension.
 
 use std::path::Path;
-use std::time::SystemTime;
 
 /// Re-index files that have been modified since the last index build.
 /// Returns the number of files re-indexed.

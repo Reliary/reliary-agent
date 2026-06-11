@@ -260,7 +260,7 @@ fn main() {
             println!("{}", cfg.format_output("dead code", &lines));
         }
         Commands::Memory { query } => {
-            let mut store = reliary_memory::MemoryStore::new(100);
+            let store = reliary_memory::MemoryStore::new(100);
             eprintln!("Note: in-memory store (no persistence in CLI mode)");
             let results = store.recall(query, 5);
             let lines: Vec<String> = results.iter()
@@ -348,7 +348,7 @@ fn main() {
             let new_text = buf.trim();
             // Find .reliary index from file path
             match daemon::find_reliary_root(file) {
-                Some((root, index_path, _)) => {
+                Some((_root, index_path, _)) => {
                     if let Ok(db) = rusqlite::Connection::open(&index_path) {
                         if reliary_search::schema::open_existing_db(&db).is_ok() {
                             let ids = reliary_search::scan_identifiers(new_text);
