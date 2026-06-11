@@ -1,7 +1,7 @@
 /// Shared daemon state for multi-threaded operation.
 /// Owned by the daemon, shared across all agents via Arc.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::{atomic::AtomicBool, Mutex};
 use std::time::{Duration, Instant};
 use std::path::PathBuf;
@@ -13,8 +13,8 @@ pub struct SessionState {
     pub workdir: PathBuf,
     pub chronicle_path: PathBuf,
     pub index_path: PathBuf,
-    pub read_cache: Mutex<HashMap<String, (u64, usize)>>,
-    pub risk_cache: Mutex<HashMap<String, (String, Instant)>>,
+    pub read_cache: Mutex<FxHashMap<String, (u64, usize)>>,
+    pub risk_cache: Mutex<FxHashMap<String, (String, Instant)>>,
 }
 
 impl SessionState {
@@ -28,9 +28,9 @@ impl SessionState {
             muzzle_time: Mutex::new(Instant::now()),
             chronicle_path,
             workdir: PathBuf::from(workdir),
-            read_cache: Mutex::new(HashMap::new()),
+            read_cache: Mutex::new(FxHashMap::default()),
             index_path,
-            risk_cache: Mutex::new(HashMap::new()),
+            risk_cache: Mutex::new(FxHashMap::default()),
         }
     }
 

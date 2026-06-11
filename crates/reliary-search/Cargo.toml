@@ -8,3 +8,4 @@ serde = { version = "1", features = ["derive"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 rayon = "1"
 walkdir = "2"
+rustc-hash = "2.1.2"

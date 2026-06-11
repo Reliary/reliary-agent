@@ -2,6 +2,7 @@
 /// Grammar-free: works on any text file with a supported extension.
 
 use std::path::Path;
+use rayon::prelude::*;
 
 /// Re-index files that have been modified since the last index build.
 /// Returns the number of files re-indexed.
@@ -18,26 +19,33 @@ pub fn incremental_reindex(workdir: &str) -> usize {
     let last_reindex = marker_path_to_epoch(&marker_path);
 
     // Walk project files
-    let mut count = 0;
     let supported_exts = ["rs", "py", "js", "ts", "go", "rb", "java", "md", "toml", "yaml", "json"];
 
-    if let Ok(entries) = walkdir(workdir) {
-        for file in entries {
+    let changed_files: Vec<_> = if let Ok(entries) = walkdir(workdir) {
+        entries.into_iter().filter(|file| {
             if let Some(ext) = file.extension().and_then(|e| e.to_str()) {
-                if !supported_exts.contains(&ext) { continue; }
-                let path_str = file.to_string_lossy().to_string();
-                let mtime = file_modified(&file);
-                if mtime > last_reindex {
-                    // Re-index this file: delete old rows, insert fresh
-                    if let Ok(content) = std::fs::read_to_string(&path_str) {
-                        if reindex_file(&db_path_str, &path_str, &content) {
-                            count += 1;
-                        }
-                    }
-                }
+                return supported_exts.contains(&ext) && file_modified(file) > last_reindex;
             }
-        }
+            false
+        }).collect()
+    } else {
+        return 0;
+    };
+
+    if changed_files.is_empty() {
+        return 0;
     }
+
+    // Parallel re-index changed files
+    let count = changed_files.par_iter().filter_map(|file| {
+        let path_str = file.to_string_lossy().to_string();
+        let content = std::fs::read_to_string(&path_str).ok()?;
+        if reindex_file(&db_path_str, &path_str, &content) {
+            Some(())
+        } else {
+            None
+        }
+    }).count();
 
     // Update marker
     let _ = std::fs::write(&marker_path, b"now");

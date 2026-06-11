@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use rayon::prelude::*;
 use crate::session_state::SessionState;
 use crate::chronicle;
 
@@ -12,32 +13,37 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
         let workdir = state.workdir.to_string_lossy().to_string();
         let db_path = state.chronicle_path.to_string_lossy().to_string();
 
-        // 1. Run incremental re-index for changed files
+        // 1. Parallel incremental re-index for changed files
         crate::reindex::incremental_reindex(&workdir);
 
-        // 2. Scan for dead code
+        // 2. Collect file paths then scan for dead code in parallel
         let entries = match std::fs::read_dir(&workdir) {
             Ok(e) => e,
             Err(_) => continue,
         };
 
-        let mut candidates = Vec::new();
+        let file_tasks: Vec<_> = entries.flatten()
+            .map(|e| e.path())
+            .filter(|fp| {
+                let ext = fp.extension().and_then(|e| e.to_str()).unwrap_or("");
+                matches!(ext, "py" | "rs" | "js")
+            })
+            .collect();
+
         let config = reliary_dead::DeadConfig::default();
 
-        for entry in entries.flatten() {
-            let fp = entry.path();
-            let ext = fp.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if !matches!(ext, "py" | "rs" | "js") { continue; }
-            let p = match fp.to_str() { Some(s) => s.to_string(), None => continue };
-            let content = match std::fs::read_to_string(&p) { Ok(c) => c, Err(_) => continue };
-            candidates.extend(reliary_dead::analyze_file(&p, &content, &config));
-        }
+        let candidates: Vec<_> = file_tasks.par_iter().filter_map(|fp| {
+            let p = fp.to_str()?;
+            let content = std::fs::read_to_string(p).ok()?;
+            Some(reliary_dead::analyze_file(p, &content, &config))
+        }).flatten().collect();
 
         let chronicle_db = match chronicle::init(&db_path) {
             Ok(db) => db,
             Err(_) => continue,
         };
 
+        // Process candidates sequentially (heal calls need serial DB)
         for c in candidates.iter() {
             if c.confidence != reliary_dead::Confidence::High { continue; }
             let recent = chronicle::recent_events(&chronicle_db, &c.file, 24);

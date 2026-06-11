@@ -1,4 +1,8 @@
 /// reliary-agent binary. Thin dispatch composing all crates.
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod mcp;
 mod daemon;
 mod heal;

@@ -426,7 +426,7 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                         "ok\n".to_string()
                     } else {
                         // Count by file
-                        let mut by_file = std::collections::HashMap::new();
+                        let mut by_file = rustc_hash::FxHashMap::default();
                         for e in &events {
                             *by_file.entry(e.file.clone()).or_insert(0) += 1;
                         }

@@ -1,7 +1,7 @@
 /// IR reasoning compression, conversation window, and edit merge.
 /// Ported from gate.js (context-engine).
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::sync::OnceLock;
 
 static FLUFF_PATTERNS: OnceLock<Vec<&'static str>> = OnceLock::new();
@@ -124,7 +124,7 @@ pub fn apply_conversation_window(turns: usize) -> (usize, usize) {
 
 /// Merge sequential edits to the same file into a single edit
 pub fn merge_same_file_edits(edits: &[EditCall]) -> Vec<EditCall> {
-    let mut by_file: HashMap<String, Vec<&EditCall>> = HashMap::new();
+    let mut by_file: AHashMap<String, Vec<&EditCall>> = AHashMap::new();
     for e in edits {
         by_file.entry(e.file.clone()).or_default().push(e);
     }
