@@ -17,10 +17,10 @@ pub struct SessionState {
     pub workdir: PathBuf,
     /// Read cache for dedup: path → (hash, len)
     pub read_cache: Mutex<HashMap<String, (u64, usize)>>,
-    /// Risk cache: file → (risk_text, cached_at)
-    pub risk_cache: Mutex<HashMap<String, (String, Instant)>>,
     /// FTS5 index DB path per workdir
     pub index_path: PathBuf,
+    /// Risk analysis cache: file → (risk_text, timestamp)
+    pub risk_cache: Mutex<HashMap<String, (String, Instant)>>,
 }
 
 impl SessionState {
@@ -35,8 +35,8 @@ impl SessionState {
             chronicle_path,
             workdir: PathBuf::from(workdir),
             read_cache: Mutex::new(HashMap::new()),
-            risk_cache: Mutex::new(HashMap::new()),
             index_path,
+            risk_cache: Mutex::new(HashMap::new()),
         }
     }
 
