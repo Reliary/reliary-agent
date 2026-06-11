@@ -163,7 +163,8 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 "ERROR: usage: compress <text>\n".to_string()
             } else {
                 let text = cmd.trim_start_matches("compress ").trim();
-                if let Some(c) = reliary_compress::aggressive_compress(text) {
+                let dict = crate::read_summary::load_dictionary();
+                if let Some(c) = reliary_compress::compress_reasoning(text, dict.as_ref()) {
                     c + "\n"
                 } else {
                     "no compression\n".to_string()
