@@ -1,7 +1,9 @@
 /// Append-only project chronicle stored in SQLite.
-/// Every daemon action is recorded. Queried by risk thresholds and scavenger backoff.
+/// Every daemon action is recorded. Queried by risk thresholds, scavenger backoff,
+/// and paper-inspired function-level memory navigation.
 
 use rusqlite::Connection;
+
 /// Initialize chronicle table (idempotent)
 pub fn init(db_path: &str) -> Result<Connection, String> {
     let db = Connection::open(db_path).map_err(|e| format!("chronicle open: {}", e))?;
@@ -16,7 +18,8 @@ pub fn init(db_path: &str) -> Result<Connection, String> {
         );
         CREATE INDEX IF NOT EXISTS idx_chronicle_file ON chronicle(file);
         CREATE INDEX IF NOT EXISTS idx_chronicle_event ON chronicle(event);
-        CREATE INDEX IF NOT EXISTS idx_chronicle_t ON chronicle(t);"
+        CREATE INDEX IF NOT EXISTS idx_chronicle_t ON chronicle(t);
+        CREATE INDEX IF NOT EXISTS idx_chronicle_detail ON chronicle(detail);"
     ).map_err(|e| format!("chronicle schema: {}", e))?;
     Ok(db)
 }
@@ -73,6 +76,70 @@ pub fn recent_events_by_type(db: &Connection, event_type: &str, hours: i64) -> V
         })
     }).unwrap();
     rows.filter_map(|r| r.ok()).collect()
+}
+
+/// Paper-inspired: Query events associated with a function name in the detail field
+pub fn function_memories(db: &Connection, file: &str, func_name: &str, hours: i64) -> Vec<ChronicleEvent> {
+    let cutoff = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64 - hours * 3600;
+    let pattern = format!("%{}%", func_name);
+    let mut stmt = db.prepare(
+        "SELECT t, event, file, detail, outcome FROM chronicle WHERE file = ?1 AND detail LIKE ?2 AND t >= ?3 ORDER BY t DESC LIMIT 20"
+    ).unwrap();
+    let rows = stmt.query_map(rusqlite::params![file, pattern, cutoff], |row| {
+        Ok(ChronicleEvent {
+            t: row.get(0)?,
+            event: row.get(1)?,
+            file: row.get(2)?,
+            detail: row.get(3)?,
+            outcome: row.get(4)?,
+        })
+    }).unwrap();
+    rows.filter_map(|r| r.ok()).collect()
+}
+
+/// Paper-inspired: Compute adaptive compression aggressiveness per file
+/// Returns a scale 0.0 (compress max) to 1.0 (compress min) based on:
+///   - Recent edit failures (more failures = min compression)
+///   - Recent veto blocks (fewer = max compression)
+///   - Recent successful edits (more = max compression)
+pub fn compression_policy(db: &Connection, file: &str) -> f64 {
+    let cutoff = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64 - 86400; // 24h
+    if let Ok(mut stmt) = db.prepare(
+        "SELECT event, outcome FROM chronicle WHERE file = ?1 AND t >= ?2 AND event IN ('edit', 'veto')"
+    ) {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![file, cutoff], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) {
+            let mut failures = 0_f64;
+            let mut vetoes = 0_f64;
+            let mut successes = 0_f64;
+            for r in rows.flatten() {
+                match r.0.as_str() {
+                    "edit" if r.1.starts_with("revert") => failures += 1.0,
+                    "edit" if r.1 == "pass" => successes += 1.0,
+                    "veto" => vetoes += 1.0,
+                    _ => {}
+                }
+            }
+            // Scale: more failures = protect (min compress), more success/veto = safe (max compress)
+            let fail_penalty = (failures * 0.2).min(0.6);
+            let success_bonus = (successes * 0.1).min(0.3);
+            let veto_penalty = (vetoes * 0.05).min(0.1);
+            let base = 0.3_f64;
+            let policy = base + fail_penalty - success_bonus + veto_penalty;
+            policy.clamp(0.0, 1.0)
+        } else {
+            0.3 // default moderate compression
+        }
+    } else {
+        0.3
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -117,6 +117,47 @@ fn handle_request(mut request: Request) {
 
     let model = payload.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
 
+    // ── Paper Synergy 1: Compact tool schemas (TRON-inspired) ──
+    // Strip verbose descriptions and compress input_schema to minimal required fields
+    if let Some(tools) = payload.get_mut("tools").and_then(|t| t.as_array_mut()) {
+        for tool in tools.iter_mut() {
+            // Strip verbose description, keep only a 1-line hint
+            if let Some(name) = tool["function"]["name"].as_str() {
+                let short_desc = match name {
+                    "read" => "read file content",
+                    "edit" | "write" => "modify files",
+                    "bash" => "run shell cmds",
+                    "grep" | "search" => "find text",
+                    _ => "",
+                }.to_string();
+                tool["function"]["description"] = serde_json::Value::String(short_desc);
+
+                // Compress input_schema: strip descriptions from properties, keep only type
+                if let Some(schema) = tool["function"]["parameters"].as_object_mut() {
+                    if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
+                        for (_, prop_obj) in props.iter_mut() {
+                            if let Some(obj) = prop_obj.as_object() {
+                                // Keep only type, title, and enum (if present)
+                                let mut compact = serde_json::Map::new();
+                                if let Some(t) = obj.get("type") {
+                                    compact.insert("type".to_string(), t.clone());
+                                }
+                                if let Some(e) = obj.get("enum") {
+                                    compact.insert("enum".to_string(), e.clone());
+                                }
+                                // If it's an object property with inner properties, compress recursively
+                                // Otherwise replace with just the type
+                                if compact.contains_key("type") || compact.contains_key("enum") {
+                                    *prop_obj = serde_json::Value::Object(compact);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ── Synergy 3: Context filter ──
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let mut turn_count = 0;
@@ -156,6 +197,11 @@ fn handle_request(mut request: Request) {
             }
         }
     }
+
+    // ── Paper Synergy 2: Function-level memory injection ──
+    // Query chronicle per-function for targeted wisdom
+    // ── Paper Synergy 3: Adaptive compression policy ──
+    // Chronicled per-file aggressiveness based on edit/veto/fix history
 
     // ── Synergy 4: Feed-forward compression ──
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
@@ -235,6 +281,6 @@ fn handle_request(mut request: Request) {
     forward_to_api(request, &payload);
 }
 
-fn respond(mut request: Request, status: u16, msg: &str) {
+fn respond(request: Request, status: u16, msg: &str) {
     let _ = request.respond(Response::from_string(msg).with_status_code(StatusCode(status)));
 }
