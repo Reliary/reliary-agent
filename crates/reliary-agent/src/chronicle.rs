@@ -83,3 +83,48 @@ pub struct ChronicleEvent {
     pub detail: String,
     pub outcome: String,
 }
+
+pub fn build_prior(workdir: &str) -> String {
+    let db_path_str = format!("{}/.reliary/chronicle.sqlite", workdir.trim_end_matches('/'));
+    if let Ok(db) = init(&db_path_str) {
+        let mut prior = String::new();
+        let events = recent_events_by_type(&db, "edit", 24);
+        let fails: Vec<_> = events.iter().filter(|e| e.outcome.starts_with("revert")).collect();
+        if !fails.is_empty() {
+            prior.push_str(&format!("Recent edit failures: {} in last 24h\n", fails.len()));
+            for f in fails.iter().take(3) {
+                prior.push_str(&format!("  {}: {}\n", f.file, f.outcome));
+            }
+        }
+        
+        let mut blocked_identifiers = Vec::new();
+        if let Ok(mut stmt) = db.prepare("SELECT detail, COUNT(*) as c FROM chronicle WHERE event = 'veto' GROUP BY detail HAVING c >= 2") {
+            if let Ok(mut rows) = stmt.query([]) {
+                while let Ok(Some(row)) = rows.next() {
+                    if let Ok(ident) = row.get::<_, String>(0) {
+                        blocked_identifiers.push(ident);
+                    }
+                }
+            }
+        }
+        if !blocked_identifiers.is_empty() {
+            prior.push_str(&format!("Blocked identifiers (hallucinated): {}\n", blocked_identifiers.join(", ")));
+        }
+
+        let scavenge = recent_events_by_type(&db, "scavenge", 24);
+        if !scavenge.is_empty() {
+            prior.push_str("Recent scavenger actions:\n");
+            for s in scavenge.iter().take(3) {
+                prior.push_str(&format!("  {}: {}\n", s.file, s.detail));
+            }
+        }
+
+        if prior.is_empty() {
+            "No prior events".to_string()
+        } else {
+            prior
+        }
+    } else {
+        "ERROR: chronicle unavailable".to_string()
+    }
+}
