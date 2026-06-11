@@ -51,7 +51,7 @@ impl MaxwellGate {
     fn entropy(&self, text: &str) -> f64 {
         if text.is_empty() { return 0.0; }
         let len = text.len() as f64;
-        let mut freq = std::collections::HashMap::new();
+        let mut freq = ahash::AHashMap::new();
         for b in text.bytes() { *freq.entry(b).or_insert(0) += 1; }
         -freq.values().map(|&c| {
             let p = c as f64 / len;
@@ -76,7 +76,7 @@ impl MaxwellGate {
     fn lexical_diversity(&self, text: &str) -> f64 {
         let words: Vec<&str> = text.split_whitespace().collect();
         if words.is_empty() { return 0.0; }
-        let unique: std::collections::HashSet<&str> = words.iter().cloned().collect();
+        let unique: std::collections::HashSet<&str, ahash::RandomState> = words.iter().cloned().collect();
         unique.len() as f64 / words.len() as f64
     }
 
