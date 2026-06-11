@@ -7,6 +7,7 @@ mod chronicle;
 mod scavenger;
 mod reindex;
 mod read_summary;
+mod config;
 
 use clap::{Parser, Subcommand};
 use std::io::Read;
@@ -68,6 +69,19 @@ enum Commands {
     ApplyEdit { file: String, tmp_path: String, workdir: String },
     /// Identifier veto: check newText identifiers exist in project FTS5 index
     Veto { file: String },
+    /// Configuration management (mode: fast/reactive/strict)
+    Config {
+        /// Config key to set (e.g. "mode")
+        key: Option<String>,
+        /// Config value to set (e.g. "fast" or "strict")
+        value: Option<String>,
+        /// Apply to project-local config instead of global
+        #[arg(long)]
+        local: bool,
+        /// Project root for local config
+        #[arg(long)]
+        root: Option<String>,
+    },
 }
 
 fn format_config(fmt: &str) -> reliary_core::OutputFormat {
@@ -247,6 +261,24 @@ fn main() {
         Commands::Mcp => {
             eprintln!("Starting MCP server on stdio");
             mcp::serve_stdio();
+        }
+        Commands::Config { key, value, local, root } => {
+            match (key, value) {
+                (Some(k), Some(v)) => {
+                    let root_str = root.as_deref();
+                    println!("{}", config::set_config(k, v, *local, root_str));
+                }
+                (None, None) => {
+                    // Show current config
+                    let mode = config::resolve_mode(root.as_deref().or(Some(".")));
+                    println!("gate mode: {}", mode.as_str());
+                }
+                _ => {
+                    eprintln!("Usage: reliary-agent config [key] [value]");
+                    eprintln!("       reliary-agent config (show current)");
+                    eprintln!("       reliary-agent config --local mode strict (per-project)");
+                }
+            }
         }
         Commands::Daemon => {
             // Use cwd as workdir, or RELIARY_WORKDIR env
