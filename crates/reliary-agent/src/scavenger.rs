@@ -12,6 +12,10 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
         let workdir = state.workdir.to_string_lossy().to_string();
         let db_path = state.chronicle_path.to_string_lossy().to_string();
 
+        // 1. Run incremental re-index for changed files
+        crate::reindex::incremental_reindex(&workdir);
+
+        // 2. Scan for dead code
         let entries = match std::fs::read_dir(&workdir) {
             Ok(e) => e,
             Err(_) => continue,

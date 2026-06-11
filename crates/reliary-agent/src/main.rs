@@ -8,6 +8,8 @@ mod scavenger;
 mod reindex;
 mod read_summary;
 mod config;
+mod init;
+mod ux;
 
 use clap::{Parser, Subcommand};
 use std::io::Read;
@@ -82,6 +84,25 @@ enum Commands {
         #[arg(long)]
         root: Option<String>,
     },
+    /// Interactive setup for agents (Pi, Claude Code, OpenCode, Cline) and daemon
+    Init,
+    /// Uninstall integrations and background daemon
+    Uninstall,
+    /// Check system health and diagnosis
+    Doctor,
+    /// View project intelligence overview
+    Status,
+    /// Clean caches and state
+    Clean {
+        /// Clean system-wide state
+        #[arg(long)]
+        global: bool,
+        /// Clean both local and system-wide state
+        #[arg(long)]
+        all: bool,
+    },
+    /// Tail daemon logs
+    Logs,
 }
 
 fn format_config(fmt: &str) -> reliary_core::OutputFormat {
@@ -279,6 +300,24 @@ fn main() {
                     eprintln!("       reliary-agent config --local mode strict (per-project)");
                 }
             }
+        }
+        Commands::Init => {
+            init::run();
+        }
+        Commands::Uninstall => {
+            init::uninstall();
+        }
+        Commands::Doctor => {
+            ux::doctor();
+        }
+        Commands::Status => {
+            ux::status();
+        }
+        Commands::Clean { global, all } => {
+            ux::clean(*global, *all);
+        }
+        Commands::Logs => {
+            ux::logs();
         }
         Commands::Daemon => {
             // Use cwd as workdir, or RELIARY_WORKDIR env

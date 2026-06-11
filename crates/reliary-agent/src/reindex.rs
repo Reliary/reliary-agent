@@ -90,6 +90,8 @@ fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
     // Delete existing rows for this file
     let _ = db.execute("DELETE FROM phrases WHERE file = ?1", params![file]);
 
+    let _ = db.execute_batch("BEGIN;");
+
     // Extract phrases and insert
     let phrases = reliary_search::tokenize(content);
     for phrase in &phrases {
@@ -105,5 +107,7 @@ fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
             params![id, phrase],
         );
     }
+
+    let _ = db.execute_batch("COMMIT;");
     true
 }

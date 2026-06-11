@@ -106,6 +106,15 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
         (a, b, c, d, e)
     };
 
+    // Helper to log to chronicle
+    let append_chronicle = |file_path: &str, event: &str, detail: &str, outcome: &str| {
+        if let Some((_, _, chron_path)) = find_reliary_root(file_path) {
+            if let Ok(db) = chronicle::init(&chron_path) {
+                chronicle::append(&db, event, file_path, detail, outcome);
+            }
+        }
+    };
+
     let response = match p0 {
         "ping" => "pong\n".to_string(),
         "status" => "reliary-agent daemon 0.1.0\n".to_string(),
@@ -208,8 +217,14 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                     let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
                     if count > 0 {
                         match crate::heal::heal_edit(p1, &modified, p4) {
-                            Ok(()) => format!("OK: {} replacements, tests pass\n", count),
-                            Err(e) => format!("ERROR: {} (reverted)\n", e),
+                            Ok(()) => {
+                                append_chronicle(p1, "edit", p2, "pass");
+                                format!("OK: {} replacements, tests pass\n", count)
+                            }
+                            Err(e) => {
+                                append_chronicle(p1, "edit", p2, &format!("revert: {}", e));
+                                format!("ERROR: {} (reverted)\n", e)
+                            }
                         }
                     } else {
                         "ERROR: no match\n".to_string()
@@ -227,8 +242,14 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 match std::fs::read_to_string(p2) {
                     Ok(new_content) => {
                         match crate::heal::heal_edit(p1, &new_content, p3) {
-                            Ok(()) => "OK: tests pass\n".to_string(),
-                            Err(e) => format!("REVERTED: {}\n", e),
+                            Ok(()) => {
+                                append_chronicle(p1, "edit", "apply-edit", "pass");
+                                "OK: tests pass\n".to_string()
+                            }
+                            Err(e) => {
+                                append_chronicle(p1, "edit", "apply-edit", &format!("revert: {}", e));
+                                format!("REVERTED: {}\n", e)
+                            }
                         }
                     }
                     Err(e) => format!("ERROR: cannot read tmp file: {}\n", e),
@@ -381,7 +402,10 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 let rest = cmd.splitn(3, ' ').nth(2).unwrap_or("").trim().to_string();
                 match identifier_veto(&rest, p1) {
                     Ok(()) => "ok\n".to_string(),
-                    Err(e) => format!("ERROR: {}\n", e),
+                    Err(e) => {
+                        append_chronicle(p1, "veto", "identifier_veto", &e);
+                        format!("ERROR: {}\n", e)
+                    }
                 }
             }
         }
@@ -448,6 +472,32 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 }
             }
         }
+        "read-summary" => {
+            if p1.is_empty() {
+                "ERROR: usage: read-summary <file>\n".to_string()
+            } else {
+                crate::read_summary::build(p1) + "\n"
+            }
+        }
+        "batch-heal" => {
+            // Usage: batch-heal <workdir> <json-edits>
+            if p2.is_empty() {
+                "ERROR: usage: batch-heal <workdir> <json>\n".to_string()
+            } else {
+                let rest = cmd.splitn(3, ' ').nth(2).unwrap_or("").trim();
+                match serde_json::from_str::<Vec<(String, String, String)>>(rest) {
+                    Ok(edits) => crate::heal::batch_heal(&edits, p1) + "\n",
+                    Err(e) => format!("ERROR: invalid JSON: {}\n", e),
+                }
+            }
+        }
+        "prior" => {
+            if p1.is_empty() {
+                "ERROR: usage: prior <path>\n".to_string()
+            } else {
+                crate::chronicle::build_prior(p1) + "\n"
+            }
+        }
         _ => format!("ERROR: unknown command '{}'\n", p0),
     };
 
@@ -459,14 +509,11 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
 pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
     let state = Arc::new(SessionState::new(workdir));
 
-    // Start scavenger thread (silent failure if scavenger module not available)
+    // Start scavenger thread
+    let scavenger_state = Arc::clone(&state);
     std::thread::Builder::new()
         .name("scavenger".into())
-        .spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(120));
-            }
-        })
+        .spawn(move || crate::scavenger::scavenger_loop(scavenger_state))
         .ok();
 
     let addr = format!("127.0.0.1:{}", port);
