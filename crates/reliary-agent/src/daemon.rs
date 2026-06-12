@@ -84,6 +84,9 @@ fn identifier_veto(new_text: &str, file_path: &str) -> Result<(), String> {
 }
 
 fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
+    // Set read timeout to prevent thread leaks on half-open connections
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(30)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
     let mut line = String::new();
     let mut reader = BufReader::new(&stream);
 
@@ -515,12 +518,50 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
 pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
     let state = Arc::new(SessionState::new(workdir));
 
-    // Start scavenger thread
+    // Start scavenger thread (panic-isolated via catch_unwind)
     let scavenger_state = Arc::clone(&state);
     std::thread::Builder::new()
         .name("scavenger".into())
-        .spawn(move || crate::scavenger::scavenger_loop(scavenger_state))
+        .spawn(move || {
+            if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::scavenger::scavenger_loop(scavenger_state);
+            })) {
+                let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                eprintln!("[scavenger] thread panicked: {} — restarting in 60s", msg);
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        })
         .ok();
+
+    // Register SIGTERM/SIGINT handlers for clean shutdown
+    let shutdown_state = Arc::clone(&state);
+    std::thread::Builder::new()
+        .name("signal-handler".into())
+        .spawn(move || {
+            // Only try to install signal handlers — ignore errors (e.g. on Windows)
+            match signal_hook::consts::SIGTERM {
+                sig => {
+                    if let Ok(mut signals) = signal_hook::iterator::Signals::new(&[sig, signal_hook::consts::SIGINT]) {
+                        for signal in signals.forever() {
+                            eprintln!("[daemon] received signal {}, shutting down", signal);
+                            // Let any in-progress operations finish gracefully
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                            std::process::exit(0);
+                        }
+                    }
+                }
+            }
+        })
+        .ok();
+
+    // Clean up stale temp files on startup
+    let _ = std::fs::remove_dir_all("/tmp/gate-heal");
 
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr)?;

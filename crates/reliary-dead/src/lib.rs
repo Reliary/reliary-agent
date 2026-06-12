@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 /// Grammar-free dead code detection. Ported from carrion.
 /// Uses occurrence counting: an identifier is dead if total_occurrences == definition_occurrences.
 

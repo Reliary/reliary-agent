@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 /// IR reasoning compression, conversation window, edit merge, and compression dictionary.
 /// Ported from gate.js (context-engine) with project-specific dictionary support.
 

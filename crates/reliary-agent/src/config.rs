@@ -52,6 +52,9 @@ fn write_config_file(path: &PathBuf, config: &HashMap<String, String>) -> Result
     }
     let content = serde_json::to_string_pretty(config).map_err(|e| format!("Cannot serialize config: {}", e))?;
     fs::write(path, content).map_err(|e| format!("Cannot write config: {}", e))?;
+    // Restrict permissions to owner-only (0600) on Unix
+    #[cfg(unix)]
+    { use std::os::unix::fs::PermissionsExt; fs::set_permissions(path, fs::Permissions::from_mode(0o600)).ok(); }
     Ok(())
 }
 
