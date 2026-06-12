@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use crate::session_state::SessionState;
 use crate::chronicle;
 
@@ -46,17 +47,17 @@ fn identifier_veto(new_text: &str, file_path: &str) -> Result<(), String> {
     };
 
     // Common library/standard identifiers that don't need project definitions
-    let known_libs = [
-        // Rust std
-        "std", "core", "alloc", "vec", "string", "option", "result", "box", "rc", "arc",
-        "clone", "copy", "debug", "display", "fmt", "iter", "into", "from",
-        // Python std
-        "os", "sys", "json", "re", "math", "time", "datetime", "pathlib", "typing",
-        "list", "dict", "tuple", "set", "str", "int", "float", "bool", "none",
-        // Common test
-        "test", "assert", "assert_eq", "assert_ne", "assert_true", "assert_false",
-        "setup", "teardown", "before_each", "after_each",
-    ];
+    static KNOWN_LIBS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    let libs = KNOWN_LIBS.get_or_init(|| {
+        [
+            "std", "core", "alloc", "vec", "string", "option", "result", "box", "rc", "arc",
+            "clone", "copy", "debug", "display", "fmt", "iter", "into", "from",
+            "os", "sys", "json", "re", "math", "time", "datetime", "pathlib", "typing",
+            "list", "dict", "tuple", "set", "str", "int", "float", "bool", "none",
+            "test", "assert", "assert_eq", "assert_ne",
+            "setup", "teardown", "before_each", "after_each",
+        ].into()
+    });
 
     // Build a set of identifiers that exist in the project index
     let mut project_ids = std::collections::HashSet::new();
@@ -75,7 +76,7 @@ fn identifier_veto(new_text: &str, file_path: &str) -> Result<(), String> {
     for id in &identifiers {
         if project_ids.contains(id) { continue; }
         if id.len() <= 2 { continue; }
-        if known_libs.contains(&id.as_str()) { continue; }
+        if libs.contains(id.as_str()) { continue; }
         // Check if it looks like a well-known lib (all-caps const, single char, etc.)
         if id.chars().all(|c| c.is_uppercase() || c == '_') { continue; }
         return Err(format!("veto: '{}' not found in project or known libraries", id));
@@ -163,15 +164,18 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
 
                 if let Some(db) = results_db {
                     let results = reliary_search::search::search_fts5(&db, p1, 10);
-                    let resp = if results.is_empty() {
+                    if results.is_empty() {
                         "no results".to_string()
                     } else {
                         results.iter()
-                            .map(|r| format!("{:.4} {}", r.score, r.file))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    };
-                    resp + "\n"
+                            .fold(String::new(), |acc, r| {
+                                if acc.is_empty() {
+                                    format!("{:.4} {}", r.score, r.file)
+                                } else {
+                                    format!("{}\n{:.4} {}", acc, r.score, r.file)
+                                }
+                            }) + "\n"
+                    }
                 } else {
                     "ERROR: no index at path\n".to_string()
                 }
@@ -195,30 +199,31 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 "ERROR: usage: risk <file>\n".to_string()
             } else {
                 // Check cache first
-                let cached = {
-                    let cache = state.risk_cache.lock().unwrap_or_else(|e| e.into_inner());
-                    cache.get(p1).and_then(|(text, ts)| {
-                        if ts.elapsed() < std::time::Duration::from_secs(300) {
-                            Some(text.clone())
-                        } else {
-                            None
-                        }
-                    })
-                };
-                match cached {
-                    Some(text) => text + "\n",
-                    None => {
+                let cached = state.risk_cache_get(p1);
+                if let Some((text, ts)) = cached {
+                    if ts.elapsed() < std::time::Duration::from_secs(300) {
+                        text + "\n"
+                    } else {
                         // Compute and cache
                         match std::fs::read_to_string(p1) {
                             Ok(content) => {
                                 let risk = reliary_risk::compute_file_risk(p1, &content);
                                 let text = format!("{:?}: {}", risk.risk, risk.reason);
-                                let mut cache = state.risk_cache.lock().unwrap_or_else(|e| e.into_inner());
-                                cache.insert(p1.to_string(), (text.clone(), std::time::Instant::now()));
+                                state.risk_cache_set(p1.to_string(), text.clone());
                                 text + "\n"
                             }
                             Err(e) => format!("ERROR: {}\n", e),
                         }
+                    }
+                } else {
+                    match std::fs::read_to_string(p1) {
+                        Ok(content) => {
+                            let risk = reliary_risk::compute_file_risk(p1, &content);
+                            let text = format!("{:?}: {}", risk.risk, risk.reason);
+                            state.risk_cache_set(p1.to_string(), text.clone());
+                            text + "\n"
+                        }
+                        Err(e) => format!("ERROR: {}\n", e),
                     }
                 }
             }
@@ -337,8 +342,7 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 let mtime = std::fs::metadata(&path)
                     .and_then(|m| m.modified())
                     .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                let mut cache = state.read_cache.lock().unwrap_or_else(|e| e.into_inner());
-                cache.insert(path, crate::session_state::ReadCacheEntry { hash: hash_val, len, mtime });
+                state.read_cache_set(path, crate::session_state::ReadCacheEntry { hash: hash_val, len, mtime });
                 format!("cached {}\n", len)
             }
         }
@@ -351,11 +355,9 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 let current_mtime = std::fs::metadata(&path)
                     .and_then(|m| m.modified())
                     .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                let cache = state.read_cache.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(entry) = cache.get(&path) {
-                    // Mtime check first: if file has been modified since cached, it's stale
+                if let Some(entry) = state.read_cache_get(&path) {
                     if entry.mtime != current_mtime {
-                        format!("stale\n")
+                        "stale\n".to_string()
                     } else if entry.hash == hash_val {
                         format!("unchanged {}\n", entry.len)
                     } else {
