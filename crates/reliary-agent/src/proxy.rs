@@ -49,6 +49,7 @@ fn record_response(model: &str, messages_json: &str, response: &str) {
     let line = serde_json::json!({"key": key, "model": model, "messages": messages_json, "response": response});
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(REPLAY_FILE) {
         writeln!(file, "{}", serde_json::to_string(&line).unwrap_or_default()).ok();
+        let _ = file.flush();
     }
 }
 
@@ -132,18 +133,18 @@ pub fn start(port: u16) -> Result<(), String> {
                 .stderr(Stdio::null())
                 .spawn();
 
-            match child {
-                Ok(mut c) => {
-                    let mut resp_body = String::new();
-                    if let Some(ref mut stdout) = c.stdout {
-                        let _ = stdout.read_to_string(&mut resp_body);
-                    }
-                    let _ = c.wait();
-                    if !resp_body.is_empty() {
-                        // Record for replay
-                        if is_record || replay_mode {
-                            record_response(&model, &msg_str, &resp_body);
-                        }
+    match child {
+        Ok(mut c) => {
+            let mut resp_body = String::new();
+            if let Some(ref mut stdout) = c.stdout {
+                let _ = stdout.read_to_string(&mut resp_body);
+            }
+            let _ = c.wait();
+            if !resp_body.is_empty() {
+                // Record for replay file (line per request-response pair)
+                if is_record || replay_mode {
+                    record_response(&model, &msg_str, &resp_body);
+                }
                         // Record for replay cache
                         if replay_mode {
                             let key = replay_key(&model, &msg_str);
