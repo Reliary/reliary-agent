@@ -1,8 +1,52 @@
 const { execFileSync, spawnSync } = require("child_process");
 const { existsSync, readFileSync, readdirSync, statSync, unlinkSync } = require("fs");
 const { createHash } = require("crypto");
+const path = require("path");
 
-const GATE_VERSION = "2.6.0";
+const GATE_VERSION = "0.3.0";
+
+// ── Feature config: daemon-backed with local cascade fallback ──
+const FEATURE_DEFAULTS = {
+  compress: true,
+  convWindow: true,
+  taskTargets: false,
+  readEnrichment: true,
+  editMerge: false,
+  priorInjection: false,
+};
+let FEATURES = { ...FEATURE_DEFAULTS };
+
+function featureEnabled(name) {
+  return FEATURES[name] !== false;
+}
+
+function loadFeatures() {
+  // Start with defaults
+  const result = { ...FEATURE_DEFAULTS };
+  // If daemon available, query its config (authoritative for daemon-backed features)
+  if (RELIARY_BIN) {
+    const r = daemonCmd("config-features");
+    if (r) {
+      try { const df = JSON.parse(r); Object.assign(result, df); return result; } catch {}
+    }
+  }
+  // Fallback: local file cascade (same as v0.3.0)
+  const home = process.env.HOME || process.env.USERPROFILE || ".";
+  for (const p of [
+    path.join(home, ".config", "reliary", "config.json"),
+    path.join(home, ".reliary", "config.json"),
+  ]) { try { const d = JSON.parse(readFileSync(p, "utf-8")); if (d.features) Object.assign(result, d.features); } catch {} }
+  try { const d = JSON.parse(readFileSync(".relconf.json", "utf-8")); if (d.features) Object.assign(result, d.features); } catch {}
+  try { const d = JSON.parse(readFileSync(".reliary/config.json", "utf-8")); if (d.features) Object.assign(result, d.features); } catch {}
+  const env = process.env.RELIARY_FEATURES;
+  if (env) { env.split(",").forEach(f => {
+    const t = f.trim();
+    if (t.startsWith("-")) result[t.slice(1)] = false;
+    else if (t.startsWith("+")) result[t.slice(1)] = true;
+    else result[t] = true;
+  }); }
+  FEATURES = result;
+}
 let lastLogTime = Date.now();
 
 function gateLog(level, msg) {
@@ -13,41 +57,36 @@ function gateLog(level, msg) {
   console.error(`[gate] ${sym} ${msg} (${dt}s)`);
 }
 
-// ── Binary discovery ──
+// ── Early exit for fast mode: skip ALL daemon discovery, restore inline compression ──
 let RELIARY_BIN = null;
-for (const c of [
-  "$HOME/src/reliary-agent/target/release/reliary-agent",
-  "$HOME/.local/bin/reliary-agent",
-  "/usr/local/bin/reliary-agent",
-  "/usr/bin/reliary-agent",
-]) { if (existsSync(c)) { RELIARY_BIN = c; break; } }
+let GATE_MODE = "reactive";
+let DAEMON_HEALTHY = true;
 
+if (process.env.RELIARY_MODE === "fast") {
+  GATE_MODE = "fast";
+  console.error(`[gate] ✓ v${GATE_VERSION} — fast mode: inline compression only, zero daemon calls`);
+} else {
+  // Normal daemon discovery for non-fast modes
+  for (const c of [
+    "$HOME/src/reliary-agent/target/release/reliary-agent",
+    "$HOME/.local/bin/reliary-agent",
+    "/usr/local/bin/reliary-agent",
+    "/usr/bin/reliary-agent",
+  ]) { if (existsSync(c)) { RELIARY_BIN = c; break; } }
   console.error(`[gate] ✓ v${GATE_VERSION} — reliary: ${!!RELIARY_BIN}${RELIARY_BIN ? ` (${RELIARY_BIN.split("/").pop()})` : " none"}`);
 
-const CODE_EXTS = new Set([
-  ".py", ".rs", ".js", ".ts", ".tsx", ".jsx",
-  ".cpp", ".c", ".h", ".hpp", ".go", ".java",
-  ".rb", ".swift", ".kt", ".scala",
-]);
-
-let blockedCount = 0;
-let sessionTurns = 0;
-let repoRoot = null;
-
-// ── Config mode: query daemon or env var ──
-let GATE_MODE = "reactive"; // default
-try {
-  if (RELIARY_BIN) {
-    const modeCmd = execFileSync(RELIARY_BIN, ["config"], { encoding: "utf-8", timeout: 3000, maxBuffer: 512 });
-    const m = (modeCmd || "").match(/gate mode: (\w+)/);
-    if (m) GATE_MODE = m[1];
-  }
-} catch { /* daemon query failed — use default */ }
-try {
-  if (process.env.RELIARY_MODE) {
-    GATE_MODE = process.env.RELIARY_MODE;
-  }
-} catch { /* env var check failed */ }
+  // Config mode: query daemon or env var
+  try {
+    if (RELIARY_BIN) {
+      const modeCmd = execFileSync(RELIARY_BIN, ["config"], { encoding: "utf-8", timeout: 3000, maxBuffer: 512 });
+      const m = (modeCmd || "").match(/gate mode: (\w+)/);
+      if (m) GATE_MODE = m[1];
+    }
+  } catch { /* daemon query failed — use default */ }
+  try {
+    if (process.env.RELIARY_MODE) GATE_MODE = process.env.RELIARY_MODE;
+  } catch {}
+}
 
 // ── Reactive safety level ──
 // 0 = fast (pure IR compression), 1 = safe (heal-apply + veto), 2 = strict (bash/write blocked)
@@ -64,20 +103,31 @@ function maybeEscalate(reason, level, turns) {
 
 // ── Read dedup cache (daemon-backed, persists across Pi restarts) ──
 const readCache = {};
+// ── Task target files: extracted from user prompt on turn 1 (only if taskTargets enabled) ──
+let taskTargetFiles = [];
 
 function daemonCmd(cmd) {
+  // Fast mode: no daemon communication
+  if (!RELIARY_BIN) return null;
+  // Prefer TCP to daemon port (~1ms) over CLI spawn (~15ms)
+  try {
+    const nc = require("child_process").execFileSync("nc", ["-w", "2", "127.0.0.1", "9799"],
+      { encoding: "utf-8", input: cmd + "\n", timeout: 5000, maxBuffer: 16384 }
+    );
+    if (nc && nc.length > 0) return nc.trim();
+  } catch {}
+  // Fallback to CLI spawn (slower, works without daemon)
   try {
     const args = cmd.split(" ");
-    // Use spawnSync with proper array args to avoid path-with-spaces issues
     const r = execFileSync(RELIARY_BIN, args, {
       encoding: "utf-8", timeout: 10000, maxBuffer: 4096,
     });
     return r.trim();
-  } catch { return null; }
+  } catch {}
+  return null;
 }
 
-// ── Daemon health check: verify binary exists (TCP check would require daemon running) ──
-let DAEMON_HEALTHY = true; // assume healthy — CLI fallback handles gracefully
+// ── Daemon health check: verify binary exists ──
 
 function cacheRead(path, hash, len) {
   return daemonCmd(`cache-read ${path} ${hash} ${len}`);
@@ -206,12 +256,18 @@ function handleToolResult(event) {
     } catch {}
   }
 
-  // Read content: build structured summary (grammar-free)
-  if (name === "read" && text.length > 1000) {
-    const enriched = buildStructuredSummary(text, pathHint || name);
-    if (enriched && enriched.length < text.length * 0.8) {
-      gateLog("save", `read: ${(pathHint || name).split("/").pop()} ${text.length}→${enriched.length}c (${Math.round((1 - enriched.length/text.length)*100)}%)`);
-      return { content: [{ type: "text", text: enriched }] };
+  // Read content: build structured summary ONLY if readEnrichment enabled and file not targeted
+  if (featureEnabled("readEnrichment") && name === "read" && text.length > 1000) {
+    const fp = pathHint || "";
+    const isTarget = featureEnabled("taskTargets") && taskTargetFiles.some(t => fp.includes(t));
+    if (!isTarget) {
+      const enriched = buildStructuredSummary(text, pathHint || name);
+      if (enriched && enriched.length < text.length * 0.8) {
+        gateLog("save", `read: ${(pathHint || name).split("/").pop()} ${text.length}→${enriched.length}c (${Math.round((1 - enriched.length/text.length)*100)}%)`);
+        return { content: [{ type: "text", text: enriched }] };
+      }
+    } else {
+      gateLog("save", `read: ${(pathHint || name).split("/").pop()} — target file, returning full content`);
     }
   }
 
@@ -283,20 +339,9 @@ function handleToolCall(event) {
     }
   }
 
-  // Bash: block at safetyLevel >= 2, otherwise escalate on destructive patterns
-  if (name === "bash") {
-    const cmd = input.command || "";
-    if (safetyLevel >= 2) {
-      gateLog("block", `bash blocked (strict ${safetyLevel}): "${cmd.slice(0, 60)}"`);
-      return { block: true, response: `[gate] bash is not available in strict mode. Use read/edit/test/search/explain/create instead.` };
-    }
-    // Fast mode: monitor for destructive patterns, escalate if found
-    const dd = /sed\s+-i|rm\s+(?:-rf?\s+)?\S+\.(?:py|rs|js|ts|tsx)|\s>\s*\S+\.(?:py|rs|js|ts|tsx)/i;
-    if (dd.test(cmd)) {
-      maybeEscalate(`destructive bash: ${cmd.slice(0, 40)}`, 1, 3);
-    }
-    return; // pass through
-  }
+  // Bash: pass through — don't block. The LLM uses python3 to bypass any regex.
+  // The real fix is taskTargetFiles (don't compress bug-relevant files).
+  if (name === "bash") return;
 
   // Write: block at safetyLevel >= 2, pass through otherwise
   if (name === "write") {
@@ -358,26 +403,37 @@ function handleToolCall(event) {
   }
 }
 
-// ── Compression: reasoning-level IR compression (grammar-free) ──
+// ── Compression: daemon-backed, inline fallback (grammar-free) ──
 function compressReasoning(text) {
   if (!text || text.length < 600) return null;
   if (sessionTurns < 3 && text.length < 1500) return null;
   if (text.includes("```") || text.includes("//") || text.includes("/*")
       || text.includes("src/") || text.includes(".rs:") || text.includes(".py:")
-      || text.includes("s/") || text.includes(".md")) return null; // contains code — skip
+      || text.includes("s/") || text.includes(".md")) return null;
 
-  // Direct reliary-agent compress call
+  // Daemon path: call daemon compress endpoint
   if (RELIARY_BIN) {
     try {
-      const r = spawnSync(RELIARY_BIN, ["-f", "compact", "compress", "--gentle", "---stdin---"], {
-        encoding: "utf-8", input: text, timeout: 5000, maxBuffer: 8192,
-      });
-      if (r.status === 0 && r.stdout) {
-        const out = r.stdout.trim();
-        if (out && out.length < text.length * 0.85) return out;
-      }
+      const r = daemonCmd(`compress ${text}`);
+      if (r && r !== "no compression") return r;
     } catch {}
   }
+
+  // Inline fallback: v0.3.0 JS compression (fast mode)
+  let result = text
+    .replace(/\b(Let me (analyze|look|check|review|see|think|consider)\b[^.]*\.)/gi, '')
+    .replace(/\b(I (?:can|would|will) need to)[^.]*\./gi, '')
+    .replace(/\b(In order to)[^.]*\./gi, '')
+    .replace(/\b(First(?:,|ly)? let me)[^.]*\./gi, '')
+    .replace(/\b(Based on (?:the|this|my|our))[^.]*\.?/gi, '')
+    .replace(/\b(This means that)[^.]*\./gi, '')
+    .replace(/\b(The (?:next|final|first) step)[^.]*\./gi, '')
+    .replace(/\b(Now I(?: can| will|'ll| need to| should))[^.,;]*[,;.]?/gi, '')
+    .replace(/\b(Alright|Okay|So,?|Well,?|Now,?)\s*/gi, '')
+    .replace(/\bessentially|basically|simply|actually|obviously|clearly|currently\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (result.length < text.length * 0.6) return result;
   return null;
 }
 
@@ -420,35 +476,43 @@ function compressEditCalls(msgs) {
   return msgs;
 }
 
-// ── Conversation window: collapse old turns at 10+ messages ──
+// ── Conversation window: daemon-backed, inline fallback ──
 function applyConversationWindow(msgs) {
   const n = msgs.length;
   if (n < 10) return msgs;
-  const keepFirst = 2;
-  const keepLast = 6;
-  const middle = msgs.slice(keepFirst, n - keepLast);
-  if (middle.length < 2) return msgs;
-  const summary = middle
-    .filter(m => m.role === "assistant")
-    .map(m => {
-      let text = "";
-      if (Array.isArray(m.content)) {
-        for (const b of m.content) {
-          if (b.type === "text") text += b.text;
-          else if (b.type === "thinking") text += b.thinking;
-          else if (b.type === "toolCall") text += `[${b.name || "tool"}]`;
+
+  // Daemon path: call conv-window endpoint with full conversation
+  if (RELIARY_BIN) {
+    try {
+      const json = JSON.stringify(msgs);
+      if (json.length > 100 && json.length < 500000) {
+        const r = daemonCmd(`conv-window ${json}`);
+        if (r) {
+          try {
+            const parsed = JSON.parse(r);
+            if (Array.isArray(parsed)) {
+              const dropped = n - parsed.length;
+              if (dropped > 0) gateLog("save", `conv-window: dropped ${dropped} verbose tool results (daemon)`);
+              return parsed;
+            }
+          } catch {}
         }
       }
-      const compressed = compressReasoning(text);
-      return compressed || text.slice(0, 100);
-    })
-    .filter(Boolean)
-    .join(" | ");
-  if (!summary) return msgs;
-  gateLog("save", `conv-window: collapsed ${middle.length} msgs → ${summary.length}c`);
-  return [...msgs.slice(0, keepFirst),
-    { role: "system", content: `[collapsed ${middle.length} prior msgs: ${summary.slice(0, 300)}]` },
-    ...msgs.slice(n - keepLast)];
+    } catch {}
+  }
+
+  // Inline fallback: drop tool/toolResult msgs from middle
+  const keepFirst = 2; const keepLast = 6;
+  const middle = msgs.slice(keepFirst, n - keepLast);
+  if (middle.length < 2) return msgs;
+  const clean = []; let dropped = 0;
+  for (const m of middle) {
+    if (m.role === "tool" || m.role === "toolResult") { dropped++; }
+    else { clean.push(m); }
+  }
+  if (dropped === 0) return msgs;
+  gateLog("save", `conv-window: dropped ${dropped} verbose tool results (inline)`);
+  return [...msgs.slice(0, keepFirst), ...clean, ...msgs.slice(n - keepLast)];
 }
 
 // ── Hook C: before_provider_request — IR reasoning compression + conv window + prior injection ──
@@ -470,35 +534,50 @@ function handleBeforeProviderRequest(event) {
     gateLog("i", "safety expired — back to fast mode");
   }
 
-  // Turn 1: inject chronicled prior (Phase 2)
-  if (turnCount === 1 && RELIARY_BIN) {
-    const workdir = extractWorkdir(msgs);
-    if (workdir) {
-      try {
-        const r = execFileSync(RELIARY_BIN, ["prior", workdir], {
-          encoding: "utf-8", timeout: 5000, maxBuffer: 4096,
-        });
-        const priorBlock = r.trim();
-        if (priorBlock) {
-          msgs.splice(1, 0, { role: "system", content: priorBlock });
-          gateLog("save", `prior: ${priorBlock.substring(0, 80)}`);
-        }
-      } catch {}
+  // Turn 1: extract task target files (if taskTargets enabled) + inject chronicled prior (if priorInjection enabled)
+  if (turnCount === 1) {
+    if (featureEnabled("taskTargets")) {
+      const firstUser = msgs.find(m => m.role === "user");
+      const text = extractMessageText(firstUser);
+      if (text) {
+        const fileMatches = text.match(/\b[a-zA-Z_][\w.-]*\.(?:rs|py|js|ts|go|java|rb|cpp|c|h)\b/g);
+        if (fileMatches) taskTargetFiles = [...new Set(fileMatches)];
+      }
+    }
+    if (featureEnabled("priorInjection") && RELIARY_BIN) {
+      const workdir = extractWorkdir(msgs);
+      if (workdir) {
+        try {
+          const r = execFileSync(RELIARY_BIN, ["prior", workdir], {
+            encoding: "utf-8", timeout: 5000, maxBuffer: 4096,
+          });
+          const priorBlock = r.trim();
+          if (priorBlock) {
+            msgs.splice(1, 0, { role: "system", content: priorBlock });
+            gateLog("save", `prior: ${priorBlock.substring(0, 80)}`);
+          }
+        } catch {}
+      }
     }
   }
 
   // Compress reasoning in all prior assistant messages
-  const compCount = applyReasoningCompression(msgs);
-  if (compCount > 0) gateLog("save", `compressed ${compCount} blocks`);
+  if (featureEnabled("compress")) {
+    const compCount = applyReasoningCompression(msgs);
+    if (compCount > 0) gateLog("save", `compressed ${compCount} blocks`);
+  }
 
-  msgs = applyConversationWindow(msgs);
-  msgs = compressEditCalls(msgs);
+  if (featureEnabled("convWindow")) msgs = applyConversationWindow(msgs);
+  if (featureEnabled("editMerge")) msgs = compressEditCalls(msgs);
   return { ...payload, messages: msgs };
 }
 
 // ── Export: register hooks ──
 // ── Export: register hooks (CommonJS for Pi extension loader) ──
 module.exports = function (pi) {
+  // Load features from daemon or fallback cascade
+  loadFeatures();
+  console.error(`[gate] ✓ v${GATE_VERSION} — reliary: ${!!RELIARY_BIN}${RELIARY_BIN ? ` (${RELIARY_BIN.split("/").pop()})` : " none"}`);
   pi.on("tool_result", handleToolResult);
   pi.on("tool_call", handleToolCall);
   pi.on("before_provider_request", handleBeforeProviderRequest);
