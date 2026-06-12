@@ -1,8 +1,6 @@
 /// Grammar-free pattern extraction, content-aware matching, fixing files.
 /// Ported from cortex-rs fix.rs and relay edit.rs.
 
-use std::collections::HashMap;
-
 /// A resolved fix: old text → new text, applied to a specific file
 #[derive(Debug, Clone)]
 pub struct Fix {

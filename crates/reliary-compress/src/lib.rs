@@ -107,16 +107,6 @@ pub fn aggressive_compress(text: &str) -> Option<String> {
     if original_len < 200 { return None; }
     if text.contains("```") || text.starts_with('{') || text.starts_with('[') { return None; }
 
-    let mut t = text.to_string();
-    for pattern_str in &["I can see", "Looking at", "Based on this", "as you can see",
-        "As mentioned", "First of all", "Now I", "So I", "Let me", "I will",
-        "I need to", "I should", "I'm going to", "essentially", "basically",
-        "simply", "actually", "obviously", "clearly", "currently",
-        "Alright", "Okay", "Well,", "Now,"] {
-        t = t.replace(pattern_str, "");
-    }
-    t = t.split_whitespace().collect::<Vec<_>>().join(" ");
-
     let entities = extract_entities(text);
     let actions = extract_actions(text);
     if entities.is_empty() && actions.is_empty() { return None; }

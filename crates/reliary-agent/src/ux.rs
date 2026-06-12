@@ -16,11 +16,16 @@ pub fn doctor() {
 
     // 1. Daemon Status
     print!("Daemon Status: ");
-    if TcpStream::connect_timeout(&"127.0.0.1:9799".parse().ok().unwrap_or("127.0.0.1:9799".parse().unwrap()), Duration::from_millis(500)).is_ok() {
-        println!("✅ Active on port 9799");
+    if let Ok(addr) = "127.0.0.1:9799".parse::<std::net::SocketAddr>() {
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok() {
+            println!("✅ Active on port 9799");
+        } else {
+            println!("❌ Inactive or unreachable");
+            println!("   💡 Run 'reliary-agent init' to install the service, or 'reliary-agent daemon &' to start it manually.");
+            all_good = false;
+        }
     } else {
-        println!("❌ Inactive or unreachable");
-        println!("   💡 Run 'reliary-agent init' to install the service, or 'reliary-agent daemon &' to start it manually.");
+        println!("❌ Invalid address");
         all_good = false;
     }
 

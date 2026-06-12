@@ -2,6 +2,7 @@
 /// Every daemon action is recorded. Queried by risk thresholds and scavenger backoff.
 
 use rusqlite::Connection;
+
 /// Initialize chronicle table (idempotent)
 pub fn init(db_path: &str) -> Result<Connection, String> {
     let db = Connection::open(db_path).map_err(|e| format!("chronicle open: {}", e))?;
@@ -39,10 +40,10 @@ pub fn recent_events(db: &Connection, file: &str, hours: i64) -> Vec<ChronicleEv
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64 - hours * 3600;
-    let mut stmt = db.prepare(
+    let Ok(mut stmt) = db.prepare(
         "SELECT t, event, file, detail, outcome FROM chronicle WHERE file = ?1 AND t >= ?2 ORDER BY t DESC LIMIT 50"
-    ).unwrap();
-    let rows = stmt.query_map(rusqlite::params![file, cutoff], |row| {
+    ) else { return vec![] };
+    let Ok(rows) = stmt.query_map(rusqlite::params![file, cutoff], |row| {
         Ok(ChronicleEvent {
             t: row.get(0)?,
             event: row.get(1)?,
@@ -50,7 +51,7 @@ pub fn recent_events(db: &Connection, file: &str, hours: i64) -> Vec<ChronicleEv
             detail: row.get(3)?,
             outcome: row.get(4)?,
         })
-    }).unwrap();
+    }) else { return vec![] };
     rows.filter_map(|r| r.ok()).collect()
 }
 
@@ -60,10 +61,10 @@ pub fn recent_events_by_type(db: &Connection, event_type: &str, hours: i64) -> V
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64 - hours * 3600;
-    let mut stmt = db.prepare(
+    let Ok(mut stmt) = db.prepare(
         "SELECT t, event, file, detail, outcome FROM chronicle WHERE event = ?1 AND t >= ?2 ORDER BY t DESC LIMIT 100"
-    ).unwrap();
-    let rows = stmt.query_map(rusqlite::params![event_type, cutoff], |row| {
+    ) else { return vec![] };
+    let Ok(rows) = stmt.query_map(rusqlite::params![event_type, cutoff], |row| {
         Ok(ChronicleEvent {
             t: row.get(0)?,
             event: row.get(1)?,
@@ -71,7 +72,7 @@ pub fn recent_events_by_type(db: &Connection, event_type: &str, hours: i64) -> V
             detail: row.get(3)?,
             outcome: row.get(4)?,
         })
-    }).unwrap();
+    }) else { return vec![] };
     rows.filter_map(|r| r.ok()).collect()
 }
 
@@ -82,6 +83,22 @@ pub struct ChronicleEvent {
     pub file: String,
     pub detail: String,
     pub outcome: String,
+}
+
+/// Resolve `.reliary` root from a file path. Canonicalizes the path to prevent traversal.
+pub fn find_reliary_root(file: &str) -> Option<String> {
+    let canonical = std::fs::canonicalize(file)
+        .or_else(|_| std::fs::canonicalize("."))
+        .ok()?;
+    let mut path = canonical;
+    loop {
+        if path.join(".reliary").exists() {
+            return Some(path.to_string_lossy().to_string());
+        }
+        if !path.pop() { break; }
+    }
+    // Fall back to parent of the file
+    std::path::Path::new(file).parent().map(|p| p.to_string_lossy().to_string())
 }
 
 pub fn build_prior(workdir: &str) -> String {

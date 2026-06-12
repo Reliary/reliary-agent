@@ -18,7 +18,6 @@ pub struct SessionState {
     pub muzzle_time: Mutex<Instant>,
     pub workdir: PathBuf,
     pub chronicle_path: PathBuf,
-    pub index_path: PathBuf,
     pub read_cache: Mutex<FxHashMap<String, ReadCacheEntry>>,
     pub risk_cache: Mutex<FxHashMap<String, (String, Instant)>>,
 }
@@ -27,7 +26,7 @@ impl SessionState {
     pub fn new(workdir: &str) -> Self {
         let base = PathBuf::from(workdir).join(".reliary");
         let chronicle_path = base.join("chronicle.sqlite");
-        let index_path = base.join("index.sqlite");
+        let _ = base.join("index.sqlite");
         std::fs::create_dir_all(&base).ok();
         Self {
             scavenger_muzzled: AtomicBool::new(false),
@@ -35,7 +34,6 @@ impl SessionState {
             chronicle_path,
             workdir: PathBuf::from(workdir),
             read_cache: Mutex::new(FxHashMap::default()),
-            index_path,
             risk_cache: Mutex::new(FxHashMap::default()),
         }
     }

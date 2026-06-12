@@ -104,8 +104,12 @@ pub fn set_config(key: &str, value: &str, project: bool, root: Option<&str>) -> 
     match write_config_file(&path, &cfg) {
         Ok(()) => {
             let location = if project { "project" } else { "global" };
-            let root_msg = if project && root.is_some() {
-                format!(" for {}", root.unwrap())
+            let root_msg = if project {
+                if let Some(ref r) = root {
+                    format!(" for {}", r)
+                } else {
+                    String::new()
+                }
             } else {
                 String::new()
             };

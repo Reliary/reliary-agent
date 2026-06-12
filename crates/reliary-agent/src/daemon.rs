@@ -6,12 +6,13 @@ use crate::session_state::SessionState;
 use crate::chronicle;
 
 /// Walk up from a file path to find the project root containing .reliary/
+/// Canonicalizes the path to prevent symlink traversal attacks.
 pub fn find_reliary_root(path: &str) -> Option<(String, String, String)> {
-    let path = Path::new(path);
-    let mut current = if path.is_dir() {
-        path.to_path_buf()
+    let canonical = std::fs::canonicalize(path).ok()?;
+    let mut current = if canonical.is_dir() {
+        canonical
     } else {
-        path.parent()?.to_path_buf()
+        canonical.parent()?.to_path_buf()
     };
     loop {
         let reliary_dir = current.join(".reliary");
