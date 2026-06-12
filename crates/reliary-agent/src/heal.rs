@@ -6,28 +6,43 @@ use std::fs;
 use std::process::Command;
 
 /// Apply a fix in a shadow worktree, run tests, revert on failure.
-/// Returns Ok(()) if fix passes tests, Err(error_summary) with first test failure.
+/// Uses atomic renames to prevent file corruption on crash.
 pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), String> {
     if !Path::new(file).exists() {
         return Err(format!("File not found: {}", file));
     }
 
-    let original = fs::read_to_string(file).map_err(|e| format!("Read: {}", e))?;
-    fs::write(file, new_content).map_err(|e| format!("Write: {}", e))?;
+    // Step 1: Create atomic backup
+    let backup = format!("{}.reliary-bak", file);
+    fs::copy(file, &backup).map_err(|e| format!("Backup: {}", e))?;
 
-    // Run tests and capture output
+    // Step 2: Write new content
+    if let Err(e) = fs::write(file, new_content) {
+        // Restore backup on write failure
+        let _ = fs::rename(&backup, file);
+        return Err(format!("Write: {}", e));
+    }
+
+    // Step 3: Run tests
     let output = Command::new("cargo")
         .args(["test", "--quiet"])
         .current_dir(workdir)
         .output()
-        .map_err(|e| format!("Test exec: {}", e))?;
+        .map_err(|e| {
+            // Restore backup on test configuration failure
+            let _ = fs::rename(&backup, file);
+            format!("Test exec: {}", e)
+        })?;
 
     if output.status.success() {
+        // Clean up backup on success
+        let _ = fs::remove_file(&backup);
         Ok(())
     } else {
-        // Revert
-        fs::write(file, &original).ok();
-        // Extract first test failure
+        // Atomic revert on test failure
+        if let Err(e) = fs::rename(&backup, file) {
+            return Err(format!("REVERT FAILED (file may be corrupt): {}", e));
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let combined = format!("{}{}", stdout, stderr);

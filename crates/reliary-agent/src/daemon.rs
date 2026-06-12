@@ -177,7 +177,7 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
             } else {
                 // Check cache first
                 let cached = {
-                    let cache = state.risk_cache.lock().unwrap();
+                    let cache = state.risk_cache.lock().unwrap_or_else(|e| e.into_inner());
                     cache.get(p1).and_then(|(text, ts)| {
                         if ts.elapsed() < std::time::Duration::from_secs(300) {
                             Some(text.clone())
@@ -194,7 +194,7 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                             Ok(content) => {
                                 let risk = reliary_risk::compute_file_risk(p1, &content);
                                 let text = format!("{:?}: {}", risk.risk, risk.reason);
-                                let mut cache = state.risk_cache.lock().unwrap();
+                                let mut cache = state.risk_cache.lock().unwrap_or_else(|e| e.into_inner());
                                 cache.insert(p1.to_string(), (text.clone(), std::time::Instant::now()));
                                 text + "\n"
                             }
@@ -315,8 +315,11 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 let path = p1.to_string();
                 let len: usize = p3.parse().unwrap_or(0);
                 let hash_val: u64 = u64::from_str_radix(&p2[..16.min(p2.len())], 16).unwrap_or(0);
-                let mut cache = state.read_cache.lock().unwrap();
-                cache.insert(path, (hash_val, len));
+                let mtime = std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                let mut cache = state.read_cache.lock().unwrap_or_else(|e| e.into_inner());
+                cache.insert(path, crate::session_state::ReadCacheEntry { hash: hash_val, len, mtime });
                 format!("cached {}\n", len)
             }
         }
@@ -326,10 +329,16 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
             } else {
                 let path = p1.to_string();
                 let hash_val: u64 = u64::from_str_radix(&p2[..16.min(p2.len())], 16).unwrap_or(0);
-                let cache = state.read_cache.lock().unwrap();
-                if let Some((cached_hash, len)) = cache.get(&path) {
-                    if *cached_hash == hash_val {
-                        format!("unchanged {}\n", len)
+                let current_mtime = std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                let cache = state.read_cache.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(entry) = cache.get(&path) {
+                    // Mtime check first: if file has been modified since cached, it's stale
+                    if entry.mtime != current_mtime {
+                        format!("stale\n")
+                    } else if entry.hash == hash_val {
+                        format!("unchanged {}\n", entry.len)
                     } else {
                         "stale\n".to_string()
                     }

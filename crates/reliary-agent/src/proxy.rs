@@ -7,6 +7,7 @@
 
 use tiny_http::{Server, Response, Header};
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::Mutex;
 
 const DEFAULT_UPSTREAM: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
@@ -22,6 +23,11 @@ fn replay_key(model: &str, messages_json: &str) -> u64 {
     model.hash(&mut h);
     messages_json.hash(&mut h);
     h.finish()
+}
+
+fn ok_header() -> Header {
+    Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+        .unwrap_or_else(|_| Header::from_bytes(&b"Content-Type"[..], &b"text/plain"[..]).unwrap())
 }
 
 fn load_replay_cache() {
@@ -41,15 +47,21 @@ fn load_replay_cache() {
     eprintln!("[replay] loaded {} cached responses from {}", cache.len(), REPLAY_FILE);
 }
 
-fn record_response(model: &str, messages_json: &str, response: &str) {
-    let key = replay_key(model, messages_json);
-    let line = serde_json::json!({"key": key, "model": model, "messages": messages_json, "response": response});
-    let content = serde_json::to_string(&line).unwrap_or_default();
-    let mut existing = String::new();
-    if let Ok(prev) = std::fs::read_to_string(REPLAY_FILE) { existing = prev; }
-    existing.push_str(&content);
-    existing.push('\n');
-    let _ = std::fs::write(REPLAY_FILE, existing);
+/// Safe record: O(1) append, no API key in stored messages, no full file rewrite.
+fn record_response(model: &str, messages_json: &str, response: &str, api_key: &str) {
+    let mut sanitized = messages_json.to_string();
+    if !api_key.is_empty() && sanitized.contains(api_key) {
+        sanitized = sanitized.replace(api_key, "[REDACTED]");
+    }
+    let key = replay_key(model, &sanitized);
+    let line = serde_json::json!({"key": key, "model": model, "response": response});
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(REPLAY_FILE)
+    {
+        let _ = writeln!(file, "{}", serde_json::to_string(&line).unwrap_or_default());
+    }
 }
 
 pub fn start(port: u16) -> Result<(), String> {
@@ -99,11 +111,10 @@ pub fn start(port: u16) -> Result<(), String> {
                 cache.get(&key).cloned()
             };
             if let Some(cached) = cached_result {
-                let ct = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
                 let _ = request.respond(
                     Response::from_string(cached)
                         .with_status_code(200)
-                        .with_header(ct)
+                        .with_header(ok_header())
                 );
                 continue;
             }
@@ -123,7 +134,6 @@ pub fn start(port: u16) -> Result<(), String> {
         let upstream_url = std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_UPSTREAM.to_string());
         let body_str = serde_json::to_string(&payload).unwrap_or_default();
 
-        // ureq inline HTTP — avoids 3-15ms curl subprocess overhead
         let resp_body = match ureq::post(&upstream_url)
             .header("Authorization", &api_key)
             .header("Content-Type", "application/json")
@@ -135,7 +145,7 @@ pub fn start(port: u16) -> Result<(), String> {
 
         if !resp_body.is_empty() {
             if is_record || replay_mode {
-                record_response(&model, &msg_str, &resp_body);
+                record_response(&model, &msg_str, &resp_body, &api_key);
             }
             if replay_mode {
                 let key = replay_key(&model, &msg_str);
@@ -143,11 +153,10 @@ pub fn start(port: u16) -> Result<(), String> {
                     cache.insert(key, resp_body.clone());
                 }
             }
-            let ct = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
             let _ = request.respond(
                 Response::from_string(resp_body)
                     .with_status_code(200)
-                    .with_header(ct)
+                    .with_header(ok_header())
             );
         } else {
             let _ = request.respond(Response::from_string(

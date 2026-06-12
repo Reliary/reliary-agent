@@ -3,17 +3,23 @@
 
 use rustc_hash::FxHashMap;
 use std::sync::{atomic::AtomicBool, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use std::path::PathBuf;
 
-/// Per-agent state tracked in memory (persisted to chronicle SQLite on changes)
+#[derive(Clone)]
+pub struct ReadCacheEntry {
+    pub hash: u64,
+    pub len: usize,
+    pub mtime: SystemTime,
+}
+
 pub struct SessionState {
     pub scavenger_muzzled: AtomicBool,
     pub muzzle_time: Mutex<Instant>,
     pub workdir: PathBuf,
     pub chronicle_path: PathBuf,
     pub index_path: PathBuf,
-    pub read_cache: Mutex<FxHashMap<String, (u64, usize)>>,
+    pub read_cache: Mutex<FxHashMap<String, ReadCacheEntry>>,
     pub risk_cache: Mutex<FxHashMap<String, (String, Instant)>>,
 }
 
@@ -39,19 +45,17 @@ impl SessionState {
         if !self.scavenger_muzzled.load(std::sync::atomic::Ordering::Relaxed) {
             return true;
         }
-        // Auto-expire muzzle after 30 minutes (prevents deadlock if gate.js crashes)
-        let muzzle_start = self.muzzle_time.lock().unwrap();
+        let muzzle_start = self.muzzle_time.lock().unwrap_or_else(|e| e.into_inner());
         if muzzle_start.elapsed() > Duration::from_secs(1800) {
             return true;
         }
         false
     }
 
-    /// Set muzzle with timeout
     pub fn set_muzzle(&self, on: bool) {
         self.scavenger_muzzled.store(on, std::sync::atomic::Ordering::Relaxed);
         if on {
-            *self.muzzle_time.lock().unwrap() = Instant::now();
+            *self.muzzle_time.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         }
     }
 }
