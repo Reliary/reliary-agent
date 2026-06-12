@@ -16,6 +16,14 @@ const RESPONSE_CACHE_LIMIT: usize = 100;
 static RESPONSE_CACHE: std::sync::LazyLock<Mutex<HashMap<u64, String>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Synergy 2: Output length feedback — per-session output history
+static OUTPUT_LENGTH_HISTORY: std::sync::LazyLock<Mutex<HashMap<String, usize>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Synergy 3: In-memory compression ratio chronicle (records per-file ratios)
+static COMPRESS_RATIO_CHRONICLE: std::sync::LazyLock<Mutex<Vec<(String, f64)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
 fn cache_key(model: &str, messages_json: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -64,6 +72,8 @@ fn forward_to_api(mut request: Request, payload: &serde_json::Value) {
         .map(|h| format!("{}", h.value))
         .unwrap_or_default();
 
+    let model = payload.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+    let model_for_fb = model.clone();
     let upstream_url = std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_UPSTREAM.to_string());
     let body_str = serde_json::to_string(payload).unwrap_or_default();
 
@@ -84,6 +94,17 @@ fn forward_to_api(mut request: Request, payload: &serde_json::Value) {
             }
             let _ = c.wait();
             if !resp_body.is_empty() {
+                // Record output length per model for feedback loop
+                if let Ok(resp_val) = serde_json::from_str::<serde_json::Value>(&resp_body) {
+                    if let Some(choices) = resp_val["choices"].as_array() {
+                        for choice in choices {
+                            if let Some(msg) = choice["message"]["content"].as_str() {
+                                let mut history = OUTPUT_LENGTH_HISTORY.lock().unwrap_or_else(|e| e.into_inner());
+                                history.insert(model_for_fb.clone(), msg.len());
+                            }
+                        }
+                    }
+                }
                 let ct = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
                 let _ = request.respond(
                     Response::from_string(resp_body)
@@ -165,11 +186,49 @@ fn handle_request(mut request: Request) {
             if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") { continue; }
             if let Some(content) = msg.get_mut("content") {
                 if let Some(text) = content.as_str() {
-                    if let Some(compressed) = reliary_compress::compress_reasoning(text, dict.as_ref()) {
+                    let pre_len = text.len();
+                    let compressed_result = reliary_compress::compress_reasoning(text, dict.as_ref());
+                    if let Some(compressed) = compressed_result {
+                        let ratio = compressed.len() as f64 / pre_len as f64;
                         *content = serde_json::Value::String(compressed);
+                        // Synergy 3: record compression ratio
+                        if let Ok(mut cr) = COMPRESS_RATIO_CHRONICLE.lock() {
+                            cr.push(("assistant_block".to_string(), ratio));
+                            if cr.len() > 1000 { cr.clear(); }
+                        }
                     }
                 }
             }
+        }
+    }
+
+    // ── Synergy 1: Inverse compression — pad messages to fixed-size blocks for cache alignment ──
+    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        for (i, msg) in messages.iter_mut().enumerate() {
+            if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") { continue; }
+            if let Some(content) = msg.get_mut("content") {
+                if let Some(text) = content.as_str() {
+                    let target_chars = 256usize * 4; // ~256 tokens
+                    if text.len() < target_chars {
+                        let padding = " ".repeat(target_chars - text.len());
+                        *content = serde_json::Value::String(format!("{}{}", text, padding));
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Synergy 2: Output length feedback loop ──
+    {
+        let history = OUTPUT_LENGTH_HISTORY.lock().unwrap_or_else(|e| e.into_inner());
+        let model = payload.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let last_len = history.get(&model).copied().unwrap_or(0);
+        drop(history);
+        if last_len > 0 {
+            let budget = if last_len > 1500 { 800usize }
+                        else if last_len > 800 { 1200usize }
+                        else { 2000usize };
+            payload["max_completion_tokens"] = serde_json::json!(budget);
         }
     }
 
