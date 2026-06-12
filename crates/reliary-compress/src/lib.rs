@@ -74,7 +74,7 @@ pub fn compress_reasoning(text: &str, dict: Option<&CompressionDict>) -> Option<
 
     if text.contains("```") || text.contains("//") || text.contains("/*")
         || text.contains("src/") || text.contains(".rs:") || text.contains(".py:")
-        || text.starts_with('{') || text.starts_with('[')
+        || text.contains("s/") || text.contains(".md")
     { return None; }
 
     let mut t = text.to_string();
@@ -83,17 +83,17 @@ pub fn compress_reasoning(text: &str, dict: Option<&CompressionDict>) -> Option<
         t = dict.apply(&t);
     }
 
-    // Strip specific verbose patterns via regex (grammar-free)
+    // Strip specific verbose patterns via regex (grammar-free) — gate.js v0.3.0 exact port
     let patterns = [
-        r"(?i)\blet me (?:analyze|look|check|review|see|think|consider)\b[^.]*\.",
-        r"(?i)\bi (?:would|will|cannot|can't)\s+(?:need to|say|see|check|try)\b[^.]*\.",
-        r"(?i)\bin order to\b[^.]*\.",
-        r"(?i)\bfirst,?\s+let me\b[^.]*\.",
-        r"(?i)\bbased on (?:the|this|my|our)\b[^.]*\.?\s*",
-        r"(?i)\bthis means that\b[^.]*\.",
-        r"(?i)\bthe (?:next|final|first) step\b[^.]*\.",
-        r"(?i)\bnow i (?:can|will|'ll|need to|should)\b[^.,;]*[,;.]?",
-        r"(?i)\b(?:alright|okay|so,?|well,?|now,?)\s*",
+        r"(?i)\bLet me (analyze|look|check|review|see|think|consider)\b[^.]*\.",
+        r"(?i)\bI (?:can|would|will) need to\b[^.]*\.",
+        r"(?i)\bIn order to\b[^.]*\.",
+        r"(?i)\bFirst,?\s*let me\b[^.]*\.",
+        r"(?i)\bBased on (?:the|this|my|our)\b[^.]*\.?\s*",
+        r"(?i)\bThis means that\b[^.]*\.",
+        r"(?i)\bThe (?:next|final|first) step\b[^.]*\.",
+        r"(?i)\bNow I (?:can|will|'ll|need to|should)\b[^.,;]*[,;.]?",
+        r"(?i)\b(?:Alright|Okay|So,?|Well,?|Now,?)\s*",
         r"(?i)\b(?:essentially|basically|simply|actually|obviously|clearly|currently)\b",
     ];
 

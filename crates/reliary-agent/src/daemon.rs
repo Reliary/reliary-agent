@@ -163,13 +163,68 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 "ERROR: usage: compress <text>\n".to_string()
             } else {
                 let text = cmd.trim_start_matches("compress ").trim();
-                let dict = crate::read_summary::load_dictionary();
+                let dict = None;
                 if let Some(c) = reliary_compress::compress_reasoning(text, dict.as_ref()) {
                     c + "\n"
                 } else {
                     "no compression\n".to_string()
                 }
             }
+        }
+        "conv-window" => {
+            // Usage: conv-window <json_array_of_messages>
+            // Returns collapsed conversation JSON string
+            if p1.is_empty() {
+                "ERROR: usage: conv-window <json>\n".to_string()
+            } else {
+                let rest = cmd.trim_start_matches("conv-window ").trim();
+                match serde_json::from_str::<Vec<serde_json::Value>>(rest) {
+                    Ok(msgs) => {
+                        let n = msgs.len();
+                        if n < 10 {
+                            // Not enough messages to collapse — return as-is
+                            rest.to_string() + "\n"
+                        } else {
+                            let keep_first = 2usize;
+                            let keep_last = 6usize;
+                            let start = keep_first.min(n);
+                            let end = n.saturating_sub(keep_last);
+                            if end <= start {
+                                rest.to_string() + "\n"
+                            } else {
+                                let middle: Vec<_> = msgs[start..end].iter()
+                                    .filter(|m| {
+                                        m.get("role")
+                                            .and_then(|r| r.as_str())
+                                            .map(|r| r != "tool" && r != "toolResult")
+                                            .unwrap_or(true)
+                                    })
+                                    .cloned()
+                                    .collect();
+                                let collapsed = [
+                                    msgs[..start].to_vec(),
+                                    middle,
+                                    msgs[end..].to_vec(),
+                                ].concat();
+                                serde_json::to_string(&collapsed).unwrap_or_default() + "\n"
+                            }
+                        }
+                    }
+                    Err(e) => format!("ERROR: invalid JSON: {}\n", e),
+                }
+            }
+        }
+        "config-features" => {
+            // Return JSON map of current feature config
+            let features = serde_json::json!({
+                "compress": true,
+                "convWindow": true,
+                "taskTargets": false,
+                "readEnrichment": true,
+                "editMerge": false,
+                "priorInjection": false,
+            });
+            serde_json::to_string(&features).unwrap_or_default() + "\n"
         }
         "risk" => {
             if p1.is_empty() {
