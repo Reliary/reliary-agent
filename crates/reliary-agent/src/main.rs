@@ -9,11 +9,10 @@ mod heal;
 mod session_state;
 mod chronicle;
 mod scavenger;
-mod reindex;
-mod read_summary;
 mod config;
-mod init;
 mod ux;
+mod read_summary;
+mod init;
 mod proxy;
 
 use clap::{Parser, Subcommand};

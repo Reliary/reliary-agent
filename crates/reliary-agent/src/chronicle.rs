@@ -6,6 +6,14 @@ use rusqlite::Connection;
 /// Initialize chronicle table (idempotent)
 pub fn init(db_path: &str) -> Result<Connection, String> {
     let db = Connection::open(db_path).map_err(|e| format!("chronicle open: {}", e))?;
+    // Set WAL mode FIRST — before any schema changes — then it persists
+    db.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA cache_size = -80000;
+         PRAGMA temp_store = MEMORY;
+         PRAGMA busy_timeout = 3000;"
+    ).map_err(|e| format!("chronicle pragmas: {}", e))?;
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS chronicle (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

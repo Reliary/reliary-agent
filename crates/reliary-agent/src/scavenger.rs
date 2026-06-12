@@ -13,8 +13,26 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
         let workdir = state.workdir.to_string_lossy().to_string();
         let db_path = state.chronicle_path.to_string_lossy().to_string();
 
-        // 1. Parallel incremental re-index for changed files
-        crate::reindex::incremental_reindex(&workdir);
+        // 1. Full index rebuild if any file changed (fast: ~400ms with rayon+mimalloc)
+        let index_path = format!("{}/.reliary/index.sqlite", workdir);
+        let idx_path = std::path::Path::new(&index_path);
+        let needs_rebuild = if idx_path.exists() {
+            let idx_mtime = std::fs::metadata(idx_path)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            !recently_modified(&workdir, idx_mtime).is_empty()
+        } else {
+            true
+        };
+        if needs_rebuild {
+            eprintln!("[reliary] scavenger: files changed — rebuilding index...");
+            // index_directory requires a DB connection; open one for it
+            let crate_db_path = format!("{}/.reliary/index.sqlite", workdir);
+            if let Ok(db) = rusqlite::Connection::open(&crate_db_path) {
+                let _ = reliary_search::ingest::index_directory(&db, &workdir);
+                eprintln!("[reliary] scavenger: index rebuild complete");
+            }
+        }
 
         // 2. Collect file paths then scan for dead code in parallel
         let entries = match std::fs::read_dir(&workdir) {
@@ -66,4 +84,35 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
             }
         }
     }
+}
+
+/// Check which files under workdir have been modified since a given timestamp.
+fn recently_modified(workdir: &str, since: std::time::SystemTime) -> Vec<std::path::PathBuf> {
+    let mut changed = Vec::new();
+    let skip_dirs = [".git", ".reliary", "node_modules", "target", "__pycache__", ".venv"];
+    let supported = ["rs", "py", "js", "ts", "go", "rb", "java", "md", "toml", "yaml", "json"];
+    let mut stack = vec![std::path::PathBuf::from(workdir)];
+    while let Some(path) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&path) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if !skip_dirs.contains(&name) { stack.push(p); }
+                } else {
+                    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if supported.contains(&ext) {
+                        if let Ok(meta) = p.metadata() {
+                            if let Ok(mtime) = meta.modified() {
+                                if mtime > since {
+                                    changed.push(p);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    changed
 }

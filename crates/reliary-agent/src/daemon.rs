@@ -143,22 +143,37 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                     Some((_, idx, _)) => idx,
                     None => index_db_path(p2),
                 };
-                if let Ok(db) = rusqlite::Connection::open(&db_path) {
+                let results_db: Option<rusqlite::Connection> = if let Ok(db) = rusqlite::Connection::open(&db_path) {
                     if reliary_search::schema::open_existing_db(&db).is_ok() {
-                        let results = reliary_search::search::search_fts5(&db, p1, 10);
-                        if results.is_empty() {
-                            "no results\n".to_string()
-                        } else {
-                            results.iter()
-                                .map(|r| format!("{:.4} {}", r.score, r.file))
-                                .collect::<Vec<_>>()
-                                .join("\n") + "\n"
-                        }
+                        Some(db)
                     } else {
-                        "ERROR: no index at path\n".to_string()
+                        drop(db);
+                        eprintln!("[daemon] search index corrupted — rebuilding...");
+                        let _ = std::fs::remove_file(&db_path);
+                        let index_dir = std::path::Path::new(&db_path).parent().unwrap_or(std::path::Path::new("."));
+                        let _ = std::fs::create_dir_all(index_dir);
+                        if let Ok(new_db) = rusqlite::Connection::open(&db_path) {
+                            if reliary_search::schema::create_new_db(&new_db).is_ok() {
+                                let _ = reliary_search::ingest::index_directory(&new_db, p2);
+                                Some(new_db)
+                            } else { None }
+                        } else { None }
                     }
+                } else { None };
+
+                if let Some(db) = results_db {
+                    let results = reliary_search::search::search_fts5(&db, p1, 10);
+                    let resp = if results.is_empty() {
+                        "no results".to_string()
+                    } else {
+                        results.iter()
+                            .map(|r| format!("{:.4} {}", r.score, r.file))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
+                    resp + "\n"
                 } else {
-                    "ERROR: cannot open DB\n".to_string()
+                    "ERROR: no index at path\n".to_string()
                 }
             }
         }
