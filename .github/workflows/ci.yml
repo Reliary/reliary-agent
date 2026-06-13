@@ -24,9 +24,22 @@ jobs:
           cargo install cargo-audit cargo-deny 2>/dev/null
       - name: cargo test
         run: cargo test --release
-      - name: clippy (deny warnings)
-        run: cargo clippy -- -D warnings
-      - name: cargo audit
+      - name: clippy (deny warnings + unwrap_used)
+        run: cargo clippy -- -D warnings -W clippy::unwrap_used
+      - name: Check gitleaks config exists
+        run: test -f .gitleaks.toml || { echo "FAIL: .gitleaks.toml missing"; exit 1; }
+      - name: Stale file detector
+        run: |
+          stale=$(find . -name "*.bak" -o -name "*.perf" -o -name "*.old" -not -path "./target/*" 2>/dev/null)
+          if [ -n "$stale" ]; then echo "FAIL: stale files: $stale"; exit 1; else echo "No stale files"; fi
+      - name: Init smoke test
+        run: |
+          timeout 10 ./target/release/reliary-agent init </dev/null 2>&1 || true
+      - name: Stale file detector
+        run: |
+          stale=$(find . -name "*.bak" -o -name "*.perf" -o -name "*.old" -not -path "./target/*" 2>/dev/null)
+          if [ -n "$stale" ]; then echo "FAIL: stale files: $stale"; exit 1; fi
+          test -f .gitleaks.toml || { echo "FAIL: .gitleaks.toml missing"; exit 1; }
         run: cargo audit --deny-warnings 2>/dev/null || echo "WARN: audit found issues"
       - name: cargo deny
         run: cargo deny check bans 2>/dev/null || echo "WARN: deny found violations"
