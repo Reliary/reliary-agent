@@ -283,9 +283,20 @@ function handleToolCall(event) {
     }
   }
 
-  // Bash: block at safetyLevel >= 2, otherwise escalate on destructive patterns
+  // Bash: intercept sed commands through heal-apply, block destructive patterns
   if (name === "bash") {
     const cmd = input.command || "";
+    // Route sed -i commands through heal-apply
+    const sedMatch = cmd.match(/sed\s+-i\s+['"]?s\/([^/]+)\/([^/]*)\/['"]?\s*(.+)/);
+    if (sedMatch) {
+      const oldText = sedMatch[1];
+      const newText = sedMatch[2];
+      const filePath = sedMatch[3].trim();
+      gateLog("save", `heal-sed: ${filePath} "${oldText}" → "${newText}"`);
+      const result = daemonCmd(`sed-apply ${filePath} ${oldText} ${newText} ${getRepoRoot() || "."}`);
+      return { block: true, response: `Edit applied via healing: ${result || "no match"}` };
+    }
+    // Strict: block all bash
     if (safetyLevel >= 2) {
       gateLog("block", `bash blocked (strict ${safetyLevel}): "${cmd.slice(0, 60)}"`);
       return { block: true, response: `[gate] bash is not available in strict mode. Use read/edit/test/search/explain/create instead.` };
