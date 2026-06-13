@@ -2,8 +2,28 @@
 /// LLM never sees the failure spiral — gets tighter error on next attempt.
 
 use std::path::Path;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::process::Command;
+
+/// Atomic file write: write to tmp, sync, rename. Prevents partial write corruption.
+pub fn atomic_write(path: &str, content: &str) -> Result<(), String> {
+    let tmp = format!("{}.tmp.{}", path, std::process::id());
+    let mut file = File::create(&tmp).map_err(|e| format!("create tmp {}: {}", tmp, e))?;
+    file.write_all(content.as_bytes()).map_err(|e| format!("write: {}", e))?;
+    file.sync_all().map_err(|e| format!("sync: {}", e))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("rename: {}", e))?;
+    Ok(())
+}
+
+/// Numbered backup path with rotation (keep last 3)
+fn backup_path(path: &str) -> String {
+    for i in 1..=3 {
+        let bp = format!("{}.bak.{}", path, i);
+        if !Path::new(&bp).exists() { return bp; }
+    }
+    format!("{}.bak.3", path)
+}
 
 /// Apply a fix in a shadow worktree, run tests, revert on failure.
 /// Returns Ok(()) if fix passes tests, Err(error_summary) with first test failure.
@@ -13,7 +33,8 @@ pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), Str
     }
 
     let original = fs::read_to_string(file).map_err(|e| format!("Read: {}", e))?;
-    fs::write(file, new_content).map_err(|e| format!("Write: {}", e))?;
+    // Atomic write with fsync + rename
+    atomic_write(file, new_content)?;
 
     // Run tests and capture output
     let output = Command::new("cargo")
@@ -25,8 +46,8 @@ pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), Str
     if output.status.success() {
         Ok(())
     } else {
-        // Revert
-        fs::write(file, &original).ok();
+        // Revert — also atomic
+        atomic_write(file, &original).ok();
         // Extract first test failure
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -120,7 +141,9 @@ pub fn batch_heal(edits: &[(String, String, String)], workdir: &str) -> String {
         let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
         if count == 0 { return format!("FAIL: no match in {}", file); }
         originals.push((file.clone(), content));
-        fs::write(file, &modified).ok();
+        if let Err(e) = atomic_write(file, &modified) {
+            return format!("FAIL: atomic write error {} — {}", file, e);
+        }
     }
     let output = Command::new("cargo").args(["test", "--quiet"]).current_dir(workdir).output();
     match output {
@@ -128,12 +151,12 @@ pub fn batch_heal(edits: &[(String, String, String)], workdir: &str) -> String {
             format!("OK: {} files edited, tests pass", edits.len())
         }
         Ok(out) => {
-            for (file, original) in &originals { fs::write(file, original).ok(); }
+            for (file, original) in &originals { let _ = atomic_write(file, original); }
             let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
             format!("REVERTED ({} files): {}", edits.len(), extract_first_failure(&combined))
         }
         Err(e) => {
-            for (file, original) in &originals { fs::write(file, original).ok(); }
+            for (file, original) in &originals { let _ = atomic_write(file, original); }
             format!("REVERTED (all files): {}", e)
         }
     }
