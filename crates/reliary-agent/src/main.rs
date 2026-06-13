@@ -324,10 +324,17 @@ fn main() {
             ux::logs();
         }
         Commands::Daemon => {
-            crate::daemon::start(9799, ".").unwrap_or_else(|e| eprintln!("Daemon error: {}", e));
+            eprintln!("[reliary] 'daemon' subcommand is deprecated. Use 'serve' instead.");
+            let state = std::sync::Arc::new(crate::session_state::SessionState::new(
+                &std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
+            ));
+            crate::proxy::start(9799, state).unwrap_or_else(|e| eprintln!("Server error: {}", e));
         }
         Commands::Serve { port } => {
-            crate::proxy::start(*port).unwrap_or_else(|e| eprintln!("Proxy error: {}", e));
+            let state = std::sync::Arc::new(crate::session_state::SessionState::new(
+                &std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
+            ));
+            crate::proxy::start(*port, state).unwrap_or_else(|e| eprintln!("Server error: {}", e));
         }
         Commands::SessionState { file } => {
             match reliary_core::parse_session_file(file) {
