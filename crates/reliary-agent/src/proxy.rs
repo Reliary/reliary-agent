@@ -307,7 +307,8 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
         .route("/prior", get(prior_handler))
         .route("/read-summary", get(read_summary_handler))
         .route("/status", get(status_handler))
-        .route("/v1/chat/completions", post(proxy_post));
+        .route("/v1/chat/completions", post(proxy_post))
+        .route("/v1/messages", post(proxy_post));  // Anthropic/Claude Code compatibility
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await

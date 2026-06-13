@@ -45,18 +45,28 @@ pub fn serve_stdio() {
         match method {
             "initialize" => {
                 respond(id, serde_json::json!({
-                    "protocolVersion": "0.1.0",
+                    "protocolVersion": "2024-11-05",
                     "capabilities": {
-                        "tools": {
-                            "search": { "description": "BM25 grammar-free code search" },
-                            "compress": { "description": "IR reasoning compression" },
-                            "risk": { "description": "Pre-edit risk analysis" },
-                            "fix": { "description": "Pattern-based file fix" },
-                            "dead": { "description": "Grammar-free dead code detection" },
-                            "heal": { "description": "Apply edit with self-healing: tests pass → keep, fail → revert" },
-                            "prior": { "description": "Chronicled project state: recent edit failures, veto blocks, edits" },
-                        }
+                        "tools": {}
+                    },
+                    "serverInfo": {
+                        "name": "reliary",
+                        "version": env!("CARGO_PKG_VERSION")
                     }
+                }));
+            }
+            "notifications/initialized" => {}  // noop
+            "tools/list" => {
+                respond(id, serde_json::json!({
+                    "tools": [
+                        { "name": "reliary_search", "description": "BM25 grammar-free code search", "inputSchema": { "type": "object", "properties": { "query": {"type": "string"}, "path": {"type": "string"} } } },
+                        { "name": "reliary_compress", "description": "IR reasoning compression", "inputSchema": { "type": "object", "properties": { "text": {"type": "string"} } } },
+                        { "name": "reliary_risk", "description": "Pre-edit risk analysis", "inputSchema": { "type": "object", "properties": { "file": {"type": "string"} } } },
+                        { "name": "reliary_fix", "description": "Pattern-based file fix", "inputSchema": { "type": "object", "properties": { "file": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"} } } },
+                        { "name": "reliary_dead", "description": "Grammar-free dead code detection", "inputSchema": { "type": "object", "properties": { "path": {"type": "string"} } } },
+                        { "name": "reliary_heal", "description": "Apply edit with self-healing", "inputSchema": { "type": "object", "properties": { "file": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}, "workdir": {"type": "string"} } } },
+                        { "name": "reliary_prior", "description": "Chronicled project state", "inputSchema": { "type": "object", "properties": { "path": {"type": "string"} } } },
+                    ]
                 }));
             }
             "tools/search" => {
