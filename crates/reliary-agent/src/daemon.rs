@@ -102,6 +102,17 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
     let _ = writer.flush();
 }
 
+/// Parse a command string and dispatch to daemon_handle_cmd.
+pub fn daemon_handle_cmd_str(cmd: &str, state: &SessionState) -> String {
+    let parts: Vec<&str> = cmd.splitn(6, ' ').collect();
+    let p0 = parts.first().copied().unwrap_or("");
+    let p1 = parts.get(1).copied().unwrap_or("");
+    let p2 = parts.get(2).copied().unwrap_or("");
+    let p3 = parts.get(3).copied().unwrap_or("");
+    let p4 = parts.get(4).copied().unwrap_or("");
+    daemon_handle_cmd(p0, p1, p2, p3, p4, cmd, state)
+}
+
 fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str, state: &SessionState) -> String {
     // Generic file size guard for all file-reading endpoints
     let _size_guard = if !p1.is_empty() && (p0 == "risk" || p0 == "read-summary" || p0 == "veto" || p0 == "fix") && Path::new(p1).exists() {
