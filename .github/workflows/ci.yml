@@ -70,7 +70,7 @@ jobs:
         run: |
           count=$(cargo test --release --no-run 2>&1 | grep -c "running" || true)
           echo "Test count: $count"
-          [ "$count" -ge 62 ] || echo "WARN: test count below 62 ($count)"
+          [ "$count" -ge 75 ] || echo "WARN: test count below 75 ($count)"
       - name: Binary size check
         run: |
           ls -lh target/release/reliary-agent 2>/dev/null || echo "Binary not built"
