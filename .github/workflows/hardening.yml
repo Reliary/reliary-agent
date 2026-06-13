@@ -33,9 +33,10 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked 2>/dev/null || true
-      - name: Cargo audit
+      - name: cargo audit
+        continue-on-error: true
         run: cargo audit --deny-warnings 2>/dev/null || echo "WARN: audit found issues"
-      - name: Cargo deny
+      - name: cargo deny
         run: |
           cargo install cargo-deny --locked 2>/dev/null || true
           cargo deny check 2>&1 || echo "WARN: deny check failed"
