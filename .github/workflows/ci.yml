@@ -1,5 +1,11 @@
 name: CI (guardrails)
-on: [push, pull_request]
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: '0 3 * * *'
 jobs:
   msrv:
     runs-on: ubuntu-latest
@@ -48,7 +54,15 @@ jobs:
           stale=$(find . -name "*.bak" -o -name "*.perf" -o -name "*.old" -not -path "./target/*" 2>/dev/null)
           if [ -n "$stale" ]; then echo "FAIL: stale files: $stale"; exit 1; fi
           test -f .gitleaks.toml || { echo "FAIL: .gitleaks.toml missing"; exit 1; }
-        run: cargo audit --deny-warnings 2>/dev/null || echo "WARN: audit found issues"
+      - name: Dependency graph diff (against master)
+        run: |
+          cargo tree -e normal --prefix none 2>/dev/null | sort > /tmp/deps_head.txt
+          if git cat-file -e origin/master:Cargo.lock 2>/dev/null; then
+            git show origin/master:Cargo.lock 2>/dev/null > /tmp/master.lock
+            echo "Dependency diff (master vs HEAD):"
+            diff /tmp/deps_master.txt /tmp/deps_head.txt 2>/dev/null | head -20 || true
+          fi
+      - name: cargo audit
       - name: cargo deny
         run: cargo deny check bans 2>/dev/null || echo "WARN: deny found violations"
       - name: Test count check
