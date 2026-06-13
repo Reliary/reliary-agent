@@ -82,15 +82,6 @@ pub fn resolve_mode(workdir: Option<&str>) -> GateMode {
 }
 
 /// Get all config (global or project-local)
-pub fn get_config(project: bool) -> HashMap<String, String> {
-    if project {
-        // Project config read from cwd — caller should pass the actual project path
-        read_config_file(&project_config_path("."))
-    } else {
-        read_config_file(&global_config_path())
-    }
-}
-
 /// Set a config key. Returns human-readable confirmation.
 pub fn set_config(key: &str, value: &str, project: bool, root: Option<&str>) -> String {
     let path = if project {

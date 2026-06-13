@@ -176,30 +176,30 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 "ERROR: usage: risk <file>\n".to_string()
             } else {
                 // Check cache first
-                let cached = {
-                    let cache = state.risk_cache.lock().unwrap();
-                    cache.get(p1).and_then(|(text, ts)| {
-                        if ts.elapsed() < std::time::Duration::from_secs(300) {
-                            Some(text.clone())
-                        } else {
-                            None
-                        }
-                    })
-                };
-                match cached {
-                    Some(text) => text + "\n",
-                    None => {
-                        // Compute and cache
+                let cached = state.risk_cache_get(p1);
+                if let Some((text, ts)) = cached {
+                    if ts.elapsed() < std::time::Duration::from_secs(300) {
+                        text + "\n"
+                    } else {
                         match std::fs::read_to_string(p1) {
                             Ok(content) => {
                                 let risk = reliary_risk::compute_file_risk(p1, &content);
                                 let text = format!("{:?}: {}", risk.risk, risk.reason);
-                                let mut cache = state.risk_cache.lock().unwrap();
-                                cache.insert(p1.to_string(), (text.clone(), std::time::Instant::now()));
+                                state.risk_cache_set(p1.to_string(), text.clone());
                                 text + "\n"
                             }
                             Err(e) => format!("ERROR: {}\n", e),
                         }
+                    }
+                } else {
+                    match std::fs::read_to_string(p1) {
+                        Ok(content) => {
+                            let risk = reliary_risk::compute_file_risk(p1, &content);
+                            let text = format!("{:?}: {}", risk.risk, risk.reason);
+                            state.risk_cache_set(p1.to_string(), text.clone());
+                            text + "\n"
+                        }
+                        Err(e) => format!("ERROR: {}\n", e),
                     }
                 }
             }
@@ -315,8 +315,14 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 let path = p1.to_string();
                 let len: usize = p3.parse().unwrap_or(0);
                 let hash_val: u64 = u64::from_str_radix(&p2[..16.min(p2.len())], 16).unwrap_or(0);
-                let mut cache = state.read_cache.lock().unwrap();
-                cache.insert(path, (hash_val, len));
+                let mtime = std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                state.read_cache_set(path, crate::session_state::ReadCacheEntry {
+                    hash: hash_val,
+                    len,
+                    mtime,
+                });
                 format!("cached {}\n", len)
             }
         }
@@ -326,10 +332,9 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
             } else {
                 let path = p1.to_string();
                 let hash_val: u64 = u64::from_str_radix(&p2[..16.min(p2.len())], 16).unwrap_or(0);
-                let cache = state.read_cache.lock().unwrap();
-                if let Some((cached_hash, len)) = cache.get(&path) {
-                    if *cached_hash == hash_val {
-                        format!("unchanged {}\n", len)
+                if let Some(entry) = state.read_cache_get(&path) {
+                    if entry.hash == hash_val {
+                        format!("unchanged {}\n", entry.len)
                     } else {
                         "stale\n".to_string()
                     }
