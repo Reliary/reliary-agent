@@ -37,8 +37,10 @@ pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), Str
     if output.status.success() {
         Ok(())
     } else {
-        // Revert — also atomic
-        atomic_write(file, &original).ok();
+        // Revert — also atomic; log if revert fails
+        if let Err(e) = atomic_write(file, &original) {
+            eprintln!("[reliary] REVERT FAILED for {}: {} — FILE MAY BE CORRUPTED", file, e);
+        }
         // Extract first test failure
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);

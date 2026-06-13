@@ -34,7 +34,7 @@ jobs:
         run: cargo clippy -- -D warnings -W clippy::unwrap_used
       - name: Integrity guard — no silent .ok() on writes
         run: |
-          bad=$(grep -rn "fs::write.*\.ok()" crates/ --include="*.rs" 2>/dev/null || true)
+          bad=$(grep -rn "fs::write.*\.ok()\|atomic_write.*\.ok()" crates/ --include="*.rs" 2>/dev/null || true)
           if [ -n "$bad" ]; then echo "FAIL: silent write .ok() calls:"; echo "$bad"; exit 1; fi
       - name: Integrity guard — atomic write pattern
         run: |

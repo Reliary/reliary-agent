@@ -206,8 +206,6 @@ async fn proxy_post(
         ((input_tokens.saturating_sub(compressed_tokens)) as f64 / input_tokens as f64 * 100.0) as usize
     } else { 0 };
 
-    eprintln!("[reliary] tokens: {} → {} ({}% saved, {} win)", input_tokens, compressed_tokens, token_savings, upstream_url);
-
     let body_bytes = serde_json::to_vec(&payload).unwrap_or_default();
 
     let client = reqwest::Client::new();
@@ -219,29 +217,38 @@ async fn proxy_post(
         req_builder = req_builder.header("authorization", auth_val);
     }
 
+    let token_hdr_input = input_tokens.to_string();
+    let token_hdr_compressed = compressed_tokens.to_string();
+    let token_hdr_savings = token_savings.to_string();
+
     match req_builder.send().await {
         Ok(upstream_resp) => {
-            let _status = upstream_resp.status();
-
-    if is_streaming {
-        let byte_stream = upstream_resp.bytes_stream();
-        let event_stream = byte_stream.map(|chunk| {
-            let data = match chunk {
-                Ok(b) => String::from_utf8_lossy(&b).to_string(),
-                Err(_) => "[error]".to_string(),
-            };
-            Ok::<Event, std::convert::Infallible>(Event::default().data(data))
-        });
-        let mut resp = Sse::new(event_stream).into_response();
-        resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
-        resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
-        resp
+            if is_streaming {
+                let byte_stream = upstream_resp.bytes_stream();
+                let event_stream = byte_stream.map(|chunk| {
+                    let data = match chunk {
+                        Ok(b) => String::from_utf8_lossy(&b).to_string(),
+                        Err(_) => "[error]".to_string(),
+                    };
+                    Ok::<Event, std::convert::Infallible>(Event::default().data(data))
+                });
+                let mut resp = Sse::new(event_stream).into_response();
+                resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
+                resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
+                resp.headers_mut().insert("x-reliaty-input-tokens", header::HeaderValue::from_str(&token_hdr_input).unwrap());
+                resp.headers_mut().insert("x-reliaty-compressed-tokens", header::HeaderValue::from_str(&token_hdr_compressed).unwrap());
+                resp.headers_mut().insert("x-reliaty-savings-pct", header::HeaderValue::from_str(&token_hdr_savings).unwrap());
+                resp.into_response()
             } else {
                 match upstream_resp.bytes().await {
                     Ok(bytes) => {
                         let body_str = String::from_utf8_lossy(&bytes).to_string();
                         store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str);
-                        (StatusCode::OK, [("content-type", "application/json")], body_str).into_response()
+                        let mut resp = (StatusCode::OK, [("content-type", "application/json")], body_str).into_response();
+                        resp.headers_mut().insert("x-reliaty-input-tokens", header::HeaderValue::from_str(&token_hdr_input).unwrap());
+                        resp.headers_mut().insert("x-reliaty-compressed-tokens", header::HeaderValue::from_str(&token_hdr_compressed).unwrap());
+                        resp.headers_mut().insert("x-reliaty-savings-pct", header::HeaderValue::from_str(&token_hdr_savings).unwrap());
+                        resp
                     }
                     Err(_) => (StatusCode::BAD_GATEWAY, "empty upstream response").into_response(),
                 }
