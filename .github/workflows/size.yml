@@ -1,0 +1,18 @@
+name: Binary Size
+on:
+  release:
+    types: [published]
+jobs:
+  size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build
+        run: cargo build --release
+      - name: Record binary size
+        run: |
+          size=$(stat --format=%s target/release/reliary-agent)
+          echo "Binary size: $(numfmt --to=iec $size) ($size bytes)"
+          # Comment on the release
+          gh release edit "${{ github.ref_name }}" --notes "Binary size: $(numfmt --to=iec $size)" 2>/dev/null || true

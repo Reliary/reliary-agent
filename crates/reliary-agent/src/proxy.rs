@@ -52,14 +52,30 @@ pub fn start(port: u16, daemon_state: Option<Arc<SessionState>>) -> Result<(), S
             *guard = Some(s);
         }
     }
-    // Start scavenger thread from daemon state
-    let scavenger_state = get_state();
-    if !scavenger_state.workdir.as_os_str().is_empty() {
-        let sc = Arc::clone(&scavenger_state);
-        std::thread::Builder::new()
-            .name("scavenger".into())
-            .spawn(move || crate::scavenger::scavenger_loop(scavenger_state))
-            .ok();
+    // Start scavenger thread with panic recovery
+    let state = get_state();
+    std::thread::Builder::new()
+        .name("scavenger".into())
+        .spawn(move || {
+            loop {
+                let sc = Arc::clone(&state);
+                if let Err(e) = std::panic::catch_unwind(|| {
+                    crate::scavenger::scavenger_loop(sc);
+                }) {
+                    eprintln!("[reliary] scavenger crashed: {:?}", e);
+                }
+                std::thread::sleep(std::time::Duration::from_secs(120));
+            }
+        })
+        .ok();
+
+    // File descriptor check
+    #[cfg(unix)] {
+        if let Ok(limit) = rlimit::getrlimit(rlimit::Resource::NOFILE) {
+            if limit.0 < 1024 {
+                eprintln!("[reliary] WARNING: file descriptor limit is {} (recommended >= 1024)", limit.0);
+            }
+        }
     }
 
     let addr = format!("127.0.0.1:{}", port);
