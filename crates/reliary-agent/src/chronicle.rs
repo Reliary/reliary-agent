@@ -2,9 +2,11 @@
 /// Every daemon action is recorded. Queried by risk thresholds and scavenger backoff.
 
 use rusqlite::Connection;
-/// Initialize chronicle table (idempotent)
+/// Initialize chronicle table (idempotent) with schema versioning
 pub fn init(db_path: &str) -> Result<Connection, String> {
     let db = Connection::open(db_path).map_err(|e| format!("chronicle open: {}", e))?;
+    // Set WAL mode for crash recovery + concurrent reads
+    db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;").ok();
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS chronicle (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -16,7 +18,8 @@ pub fn init(db_path: &str) -> Result<Connection, String> {
         );
         CREATE INDEX IF NOT EXISTS idx_chronicle_file ON chronicle(file);
         CREATE INDEX IF NOT EXISTS idx_chronicle_event ON chronicle(event);
-        CREATE INDEX IF NOT EXISTS idx_chronicle_t ON chronicle(t);"
+        CREATE INDEX IF NOT EXISTS idx_chronicle_t ON chronicle(t);
+        PRAGMA user_version = 1;"
     ).map_err(|e| format!("chronicle schema: {}", e))?;
     Ok(db)
 }

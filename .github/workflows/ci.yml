@@ -26,6 +26,14 @@ jobs:
         run: cargo test --release
       - name: clippy (deny warnings + unwrap_used)
         run: cargo clippy -- -D warnings -W clippy::unwrap_used
+      - name: Integrity guard — no silent .ok() on writes
+        run: |
+          bad=$(grep -rn "fs::write.*\.ok()" crates/ --include="*.rs" 2>/dev/null || true)
+          if [ -n "$bad" ]; then echo "FAIL: silent write .ok() calls:"; echo "$bad"; exit 1; fi
+      - name: Integrity guard — atomic write pattern
+        run: |
+          ok=$(grep -rn "fs::write" crates/ --include="*.rs" 2>/dev/null | grep -v ".tmp\|atomic_write\|\.ok()\|_ok\|test\|#\[" || true)
+          if [ -n "$ok" ]; then echo "WARN: non-atomic fs::write calls:"; echo "$ok"; fi
       - name: Check gitleaks config exists
         run: test -f .gitleaks.toml || { echo "FAIL: .gitleaks.toml missing"; exit 1; }
       - name: Stale file detector

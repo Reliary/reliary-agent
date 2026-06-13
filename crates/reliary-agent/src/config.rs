@@ -46,13 +46,12 @@ fn read_config_file(path: &PathBuf) -> HashMap<String, String> {
     }
 }
 
-fn write_config_file(path: &PathBuf, config: &HashMap<String, String>) -> Result<(), String> {
+pub fn write_config_file(path: &PathBuf, config: &HashMap<String, String>) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Cannot create config dir: {}", e))?;
     }
     let content = serde_json::to_string_pretty(config).map_err(|e| format!("Cannot serialize config: {}", e))?;
-    fs::write(path, content).map_err(|e| format!("Cannot write config: {}", e))?;
-    Ok(())
+    crate::heal::atomic_write(path.to_str().unwrap_or("config.json"), &content)
 }
 
 pub fn resolve_mode(workdir: Option<&str>) -> GateMode {

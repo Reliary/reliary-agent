@@ -86,6 +86,16 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
     }
     let cmd = line.trim();
 
+    // Input validation: max length + reject non-printable / null bytes
+    if cmd.len() > 4096 {
+        let _ = writeln!(stream, "ERROR: command too long\n");
+        return;
+    }
+    if cmd.bytes().any(|b| b == 0 || (b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')) {
+        let _ = writeln!(stream, "ERROR: invalid input characters\n");
+        return;
+    }
+
     let (p0, p1, p2, p3, p4) = {
         let parts: Vec<&str> = cmd.splitn(6, ' ').collect();
         let a = parts.first().copied().unwrap_or("");
