@@ -10,11 +10,12 @@ mod session_state;
 mod chronicle;
 mod scavenger;
 mod reindex;
-mod read_summary;
 mod config;
-mod init;
 mod ux;
+mod init;
+mod read_summary;
 mod proxy;
+mod routes;
 
 use clap::{Parser, Subcommand};
 use std::io::Read;

@@ -1,54 +1,72 @@
-/// Bidirectional proxy: 4 real synergies that gate.js cannot achieve.
-/// Synergy 1: Response cache (repeated edits cost zero after first generation)
-/// Synergy 2: Two-phase generation (cheap model plans, main model executes)
-/// Synergy 3: Context filter (strip old tool results, cap conversation at 5 turns)
-/// Synergy 4: Feed-forward compression (compress before API sees it)
+/// Provider-agnostic proxy. Routes by Authorization header.
+/// No model lists, no provider detection. Reads ~/.reliary/proxy-routes.json.
 
 use tiny_http::{Server, Response, Request, Header, StatusCode};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, LazyLock};
 
-const DEFAULT_UPSTREAM: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
+static ROUTES: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| {
+    let path = std::env::var("HOME").unwrap_or_default()
+        + "/.reliary/proxy-routes.json";
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(routes) = serde_json::from_str::<HashMap<String, String>>(&content) {
+            return Mutex::new(routes);
+        }
+    }
+    Mutex::new(HashMap::new())
+});
 
-static RESPONSE_CACHE: std::sync::LazyLock<Mutex<HashMap<u64, String>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static RESPONSE_CACHE: LazyLock<Mutex<HashMap<u64, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn cache_key(model: &str, messages_json: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    model.hash(&mut hasher);
-    messages_json.hash(&mut hasher);
-    hasher.finish()
+fn cache_key(auth: &str, body: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    auth.hash(&mut h);
+    body.hash(&mut h);
+    h.finish()
 }
 
-fn cached_response<'a>(model: &str, messages_json: &str) -> Option<String> {
-    let key = cache_key(model, messages_json);
+fn cached_response(auth: &str, body: &str) -> Option<String> {
+    let key = cache_key(auth, body);
     RESPONSE_CACHE.lock().ok().and_then(|c| c.get(&key).cloned())
 }
 
-fn store_response(model: &str, messages_json: &str, response: &str) {
-    let key = cache_key(model, messages_json);
+fn store_response(auth: &str, body: &str, response: &str) {
+    let key = cache_key(auth, body);
     if let Ok(mut cache) = RESPONSE_CACHE.lock() {
         cache.insert(key, response.to_string());
         if cache.len() > 120 {
             let keys: Vec<u64> = cache.keys().copied().collect();
-            for k in keys.iter().take(20) {
-                cache.remove(k);
-            }
+            for k in keys.iter().take(20) { cache.remove(k); }
         }
     }
+}
+
+fn get_upstream(auth_key: &str) -> Option<String> {
+    let routes = ROUTES.lock().ok()?;
+    if let Some(url) = routes.get(auth_key) {
+        return Some(url.clone());
+    }
+    // Auto-discovery: scan agent configs
+    drop(routes);
+    let discovered = crate::routes::discover_upstream(auth_key);
+    if let Some(ref url) = discovered {
+        if let Ok(mut routes) = ROUTES.lock() {
+            routes.insert(auth_key.to_string(), url.clone());
+        }
+    }
+    discovered
 }
 
 pub fn start(port: u16) -> Result<(), String> {
     let addr = format!("127.0.0.1:{}", port);
     let server = Server::http(&addr).map_err(|e| format!("proxy bind: {}", e))?;
     eprintln!("[reliary] proxy listening on {}", addr);
-
     for request in server.incoming_requests() {
-        let method = request.method();
-        if method == &tiny_http::Method::Post {
+        if request.method() == &tiny_http::Method::Post {
             handle_request(request);
         } else {
             let _ = request.respond(Response::from_string("not found").with_status_code(404));
@@ -57,17 +75,16 @@ pub fn start(port: u16) -> Result<(), String> {
     Ok(())
 }
 
-fn forward_to_api(mut request: Request, payload: &serde_json::Value) {
+fn forward_to_api(mut request: Request, payload: &serde_json::Value, upstream_url: &str) {
     let api_key = request.headers().iter()
         .find(|h| h.field.to_string().to_lowercase() == "authorization")
         .map(|h| format!("{}", h.value))
         .unwrap_or_default();
 
-    let upstream_url = std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_UPSTREAM.to_string());
     let body_str = serde_json::to_string(payload).unwrap_or_default();
 
     let child = Command::new("curl")
-        .args(["-s", "-X", "POST", &upstream_url,
+        .args(["-s", "-X", "POST", upstream_url,
                "-H", &format!("Authorization: {}", api_key),
                "-H", "Content-Type: application/json",
                "-d", &body_str])
@@ -83,9 +100,9 @@ fn forward_to_api(mut request: Request, payload: &serde_json::Value) {
             }
             let _ = c.wait();
             if !resp_body.is_empty() {
-                let ct = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+                let ct = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
                 let _ = request.respond(
-                    Response::from_string(resp_body)
+                    tiny_http::Response::from_string(resp_body)
                         .with_status_code(200)
                         .with_header(ct)
                 );
@@ -93,9 +110,7 @@ fn forward_to_api(mut request: Request, payload: &serde_json::Value) {
                 respond(request, 502, "{\"error\":\"empty upstream response\"}");
             }
         }
-        Err(e) => {
-            respond(request, 502, &format!("{{\"error\":\"curl: {}\"}}", e));
-        }
+        Err(e) => respond(request, 502, &format!("{{\"error\":\"curl: {}\"}}", e)),
     }
 }
 
@@ -108,48 +123,44 @@ fn handle_request(mut request: Request) {
 
     let mut payload = match serde_json::from_str::<serde_json::Value>(&body) {
         Ok(v) => v,
-        Err(e) => {
-            respond(request, 400, &format!("{{\"error\":\"json parse: {}\"}}", e));
+        Err(e) => { respond(request, 400, &format!("{{\"error\":\"json parse: {}\"}}", e)); return; }
+    };
+
+    // Extract auth key for routing
+    let auth_key = request.headers().iter()
+        .find(|h| h.field.to_string().to_lowercase() == "authorization")
+        .map(|h| format!("{}", h.value))
+        .unwrap_or_default();
+
+    // Determine upstream URL from auth key
+    let upstream_url = match get_upstream(&auth_key) {
+        Some(url) => url,
+        None => {
+            respond(request, 403, &format!("{{\"error\":\"unknown api key. run 'rel init' to configure\"}}"));
             return;
         }
     };
-
-    let model = payload.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
 
     // ── Synergy 3: Context filter ──
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let mut turn_count = 0;
         let mut to_keep: Vec<bool> = vec![true; messages.len()];
-
         for (i, msg) in messages.iter().enumerate() {
-            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-            match role {
-                "user" => {
-                    turn_count += 1;
-                }
-                "tool" | "toolResult" => {
-                    // Drop tool results from turns older than 8
-                    if turn_count > 8 {
-                        to_keep[i] = false;
-                    }
-                }
+            match msg.get("role").and_then(|r| r.as_str()).unwrap_or("") {
+                "user" => turn_count += 1,
+                "tool" | "toolResult" if turn_count > 8 => to_keep[i] = false,
                 _ => {}
             }
         }
-
-        // Remove filtered messages (in reverse order to preserve indices)
         for i in (0..messages.len()).rev() {
-            if !to_keep[i] {
-                messages.remove(i);
-            }
+            if !to_keep[i] { messages.remove(i); }
         }
     }
 
-    // ── Synergy 1: Response cache check (before mutations that add cost) ──
-    // We check cache using pre-compression messages for broader hit rate
+    // ── Synergy 1: Response cache ──
     if let Some(messages) = payload.get("messages") {
         if let Ok(msg_str) = serde_json::to_string(messages) {
-            if let Some(cached) = cached_response(&model, &msg_str) {
+            if let Some(cached) = cached_response(&auth_key, &msg_str) {
                 respond(request, 200, &cached);
                 return;
             }
@@ -172,66 +183,8 @@ fn handle_request(mut request: Request) {
         }
     }
 
-    // ── Synergy 2: Two-phase generation ──
-    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
-        let user_idx = messages.iter().rposition(|m| {
-            m.get("role").and_then(|r| r.as_str()) == Some("user")
-        });
-        if let Some(idx) = user_idx {
-            let user_text = messages[idx]["content"].as_str().unwrap_or("").to_string();
-            let is_fix_task = user_text.contains("fix") || user_text.contains("edit")
-                || user_text.contains("update") || user_text.contains("change");
-            let has_files = user_text.contains("src/") || user_text.contains(".rs")
-                || user_text.contains(".py");
-
-            if is_fix_task && has_files && user_text.len() > 20 {
-                let plan_req = serde_json::json!({
-                    "model": "deepseek/deepseek-v4-flash",
-                    "messages": [
-                        {"role": "system", "content": "Respond with a 1-line plan for the fix. No code. Format: [file.rs] change line X from Y to Z"},
-                        {"role": "user", "content": &user_text}
-                    ],
-                    "max_tokens": 100,
-                    "temperature": 0.1
-                });
-
-                let plan_body = serde_json::to_string(&plan_req).unwrap_or_default();
-                let api_key = request.headers().iter()
-                    .find(|h| h.field.to_string().to_lowercase() == "authorization")
-                    .map(|h| format!("{}", h.value))
-                    .unwrap_or_default();
-                let upstream_url = std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_UPSTREAM.to_string());
-
-                if let Ok(mut plan_child) = Command::new("curl")
-                    .args(["-s", "-X", "POST", &upstream_url,
-                           "-H", &format!("Authorization: {}", api_key),
-                           "-H", "Content-Type: application/json",
-                           "-d", &plan_body])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
-                    .spawn()
-                {
-                    let mut plan_response = String::new();
-                    let _ = plan_child.stdout.take().map(|mut o| o.read_to_string(&mut plan_response));
-                    let _ = plan_child.wait();
-
-                    if let Ok(plan_value) = serde_json::from_str::<serde_json::Value>(&plan_response) {
-                        if let Some(plan_text) = plan_value["choices"][0]["message"]["content"].as_str() {
-                            let plan_short: String = plan_text.chars().take(100).collect();
-                            let plan_msg = serde_json::json!({
-                                "role": "system",
-                                "content": format!("[plan: {}]", plan_short)
-                            });
-                            messages.insert(1, plan_msg);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Forward to API
-    forward_to_api(request, &payload);
+    // Forward to the upstream determined by auth key
+    forward_to_api(request, &payload, &upstream_url);
 }
 
 fn respond(mut request: Request, status: u16, msg: &str) {
