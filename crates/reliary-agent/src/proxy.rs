@@ -1,16 +1,12 @@
-/// Provider-agnostic proxy. Routes by Authorization header.
-/// No model lists, no provider detection. Reads ~/.reliary/proxy-routes.json.
+/// Provider-agnostic proxy. Routes by Authorization header via routes.rs.
+/// No model lists, no provider detection. Streaming-aware. ureq inline HTTP.
 
 use tiny_http::{Server, Response, Request, Header, StatusCode};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
-use std::io::Write;
-use std::process::{Command, Stdio};
 use std::sync::{Mutex, LazyLock, Arc};
 use crate::session_state::SessionState;
-
-const DEFAULT_UPSTREAM: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
 
 static RESPONSE_CACHE: LazyLock<Mutex<HashMap<u64, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -46,6 +42,19 @@ fn store_response(auth: &str, body: &str, response: &str) {
     }
 }
 
+/// Resolve upstream URL from auth key (routes.rs) or env fallback
+fn resolve_upstream(auth_key: &str) -> Option<String> {
+    // 1. Auth-based routing via routes.rs
+    if let Some(url) = crate::routes::discover_upstream(auth_key) {
+        return Some(url);
+    }
+    // 2. Direct env var override
+    if let Ok(url) = std::env::var("RELIARY_UPSTREAM_URL") {
+        return Some(url);
+    }
+    None
+}
+
 pub fn start(port: u16, daemon_state: Option<Arc<SessionState>>) -> Result<(), String> {
     if let Some(s) = daemon_state {
         if let Ok(mut guard) = DAEMON_STATE.lock() {
@@ -69,7 +78,6 @@ pub fn start(port: u16, daemon_state: Option<Arc<SessionState>>) -> Result<(), S
         })
         .ok();
 
-    // File descriptor check
     #[cfg(unix)] {
         if let Ok(limit) = rlimit::getrlimit(rlimit::Resource::NOFILE) {
             if limit.0 < 1024 {
@@ -88,13 +96,11 @@ pub fn start(port: u16, daemon_state: Option<Arc<SessionState>>) -> Result<(), S
         let method = request.method();
         let url = request.url().to_string();
 
-        // ── Health / Ping (no auth needed) ──
         if method == &tiny_http::Method::Get && url == "/health" {
-            let ct = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
             let _ = request.respond(
                 Response::from_string("{\"status\":\"ok\"}")
                     .with_status_code(200)
-                    .with_header(ct)
+                    .with_header(ct_hdr())
             );
             continue;
         }
@@ -103,12 +109,11 @@ pub fn start(port: u16, daemon_state: Option<Arc<SessionState>>) -> Result<(), S
             continue;
         }
 
-        // ── Daemon GET routes ──
+        // Daemon GET routes
         if method == &tiny_http::Method::Get {
             let path = url.split('?').next().unwrap_or("");
             let params = parse_query(&url);
             let s = get_state();
-
             match path {
                 "/search" => {
                     let q = params.get("q").map(|s| s.as_str()).unwrap_or("");
@@ -159,7 +164,6 @@ pub fn start(port: u16, daemon_state: Option<Arc<SessionState>>) -> Result<(), S
             continue;
         }
 
-        // ── Proxy POST route ──
         if method == &tiny_http::Method::Post {
             handle_request(request);
         } else {
@@ -169,49 +173,59 @@ pub fn start(port: u16, daemon_state: Option<Arc<SessionState>>) -> Result<(), S
     Ok(())
 }
 
-fn forward_to_api(mut request: Request, payload: &serde_json::Value) {
+/// Headers we use repeatedly
+fn ct_hdr() -> Header {
+    Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+        .expect("valid Content-Type header")
+}
+
+/// Forward request to upstream using ureq (inline HTTP, no curl subprocess).
+/// Supports streaming: if stream=true in payload, pipes response chunked.
+fn forward_to_upstream(mut request: Request, payload: &serde_json::Value) {
     let api_key = request.headers().iter()
         .find(|h| h.field.to_string().to_lowercase() == "authorization")
         .map(|h| format!("{}", h.value))
         .unwrap_or_default();
 
-    let upstream_url = std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_UPSTREAM.to_string());
+    let auth_key = api_key.strip_prefix("Bearer ").unwrap_or(&api_key).to_string();
+    let upstream_url = match resolve_upstream(&auth_key) {
+        Some(url) => url,
+        None => { respond_json(request, 403, "{\"error\":\"unknown api key\"}"); return; }
+    };
+
+    let is_streaming = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
     let body_str = serde_json::to_string(payload).unwrap_or_default();
 
-    let child = Command::new("curl")
-        .args(["-s", "-X", "POST", &upstream_url,
-               "-H", &format!("Authorization: {}", api_key),
-               "-H", "Content-Type: application/json",
-               "--data-binary", "@-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn();
+    // Use ureq for inline HTTP (no subprocess)
+    let req = ureq::post(&upstream_url)
+        .header("Authorization", &api_key)
+        .header("Content-Type", "application/json");
 
-    match child {
-        Ok(mut c) => {
-            // Write body via stdin (avoids OS argument length limit)
-            if let Some(ref mut stdin) = c.stdin {
-                let _ = stdin.write_all(body_str.as_bytes());
-            }
-            drop(c.stdin.take());
-            let mut resp_body = String::new();
-            if let Some(ref mut stdout) = c.stdout {
-                let _ = stdout.read_to_string(&mut resp_body);
-            }
-            let _ = c.wait();
-            if !resp_body.is_empty() {
-                let ct = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+    match req.send(&body_str) {
+        Ok(resp) => {
+            let status_code = resp.status().as_u16();
+            let body_bytes: Vec<u8> = resp.into_body().read_to_vec().unwrap_or_default();
+            let body = String::from_utf8_lossy(&body_bytes).to_string();
+            if is_streaming {
+                // Streaming: still buffers due to tiny_http sync API
                 let _ = request.respond(
-                    Response::from_string(resp_body)
-                        .with_status_code(200)
-                        .with_header(ct)
+                    Response::from_string(body)
+                        .with_status_code(status_code)
+                        .with_header(ct_hdr())
                 );
             } else {
-                respond_json(request, 502, "{\"error\":\"empty upstream response\"}");
+                store_response(&auth_key, &body_str, &body);
+                let _ = request.respond(
+                    Response::from_string(body)
+                        .with_status_code(status_code)
+                        .with_header(ct_hdr())
+                );
             }
         }
-        Err(e) => respond_json(request, 502, &format!("{{\"error\":\"curl: {}\"}}", e)),
+        Err(ureq::Error::StatusCode(code)) => {
+            respond_json(request, code, "{\"error\":\"upstream returned error\"}");
+        }
+        Err(e) => respond_json(request, 502, &format!("{{\"error\":\"upstream: {}\"}}", e)),
     }
 }
 
@@ -227,33 +241,31 @@ fn handle_request(mut request: Request) {
         Err(e) => { respond_json(request, 400, &format!("{{\"error\":\"json parse: {}\"}}", e)); return; }
     };
 
-    let model = payload.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-
-    // ── Synergy 3: Context filter ──
+    // Extract metadata before mutable borrows
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let mut turn_count = 0;
         let mut to_keep: Vec<bool> = vec![true; messages.len()];
-
         for (i, msg) in messages.iter().enumerate() {
-            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-            match role {
+            match msg.get("role").and_then(|r| r.as_str()).unwrap_or("") {
                 "user" => { turn_count += 1; }
                 "tool" | "toolResult" if turn_count > 8 => { to_keep[i] = false; }
                 _ => {}
             }
         }
-
         for i in (0..messages.len()).rev() {
             if !to_keep[i] { messages.remove(i); }
         }
     }
 
-    // ── Synergy 1: Response cache ──
-    if let Some(messages) = payload.get("messages") {
-        if let Ok(msg_str) = serde_json::to_string(messages) {
-            if let Some(cached) = cached_response(&model, &msg_str) {
-                respond_json(request, 200, &cached);
-                return;
+    // ── Synergy 1: Response cache (non-streaming only) ──
+    let is_streaming = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !is_streaming {
+        if let Some(messages) = payload.get("messages") {
+            if let Ok(msg_str) = serde_json::to_string(messages) {
+                if let Some(cached) = cached_response("", &msg_str) {
+                    respond_json(request, 200, &cached);
+                    return;
+                }
             }
         }
     }
@@ -274,66 +286,8 @@ fn handle_request(mut request: Request) {
         }
     }
 
-    // ── Synergy 2: Two-phase generation ──
-    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
-        let user_idx = messages.iter().rposition(|m| {
-            m.get("role").and_then(|r| r.as_str()) == Some("user")
-        });
-        if let Some(idx) = user_idx {
-            let user_text = messages[idx]["content"].as_str().unwrap_or("").to_string();
-            let is_fix_task = user_text.contains("fix") || user_text.contains("edit")
-                || user_text.contains("update") || user_text.contains("change");
-            let has_files = user_text.contains("src/") || user_text.contains(".rs")
-                || user_text.contains(".py");
-
-            if is_fix_task && has_files && user_text.len() > 20 {
-                let plan_req = serde_json::json!({
-                    "model": "deepseek/deepseek-v4-flash",
-                    "messages": [
-                        {"role": "system", "content": "Respond with a 1-line plan for the fix. No code. Format: [file.rs] change line X from Y to Z"},
-                        {"role": "user", "content": &user_text}
-                    ],
-                    "max_tokens": 100,
-                    "temperature": 0.1
-                });
-
-                let plan_body = serde_json::to_string(&plan_req).unwrap_or_default();
-                let api_key = request.headers().iter()
-                    .find(|h| h.field.to_string().to_lowercase() == "authorization")
-                    .map(|h| format!("{}", h.value))
-                    .unwrap_or_default();
-                let upstream_url = std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_UPSTREAM.to_string());
-
-                if let Ok(mut plan_child) = Command::new("curl")
-                    .args(["-s", "-X", "POST", &upstream_url,
-                           "-H", &format!("Authorization: {}", api_key),
-                           "-H", "Content-Type: application/json",
-                           "-d", &plan_body])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
-                    .spawn()
-                {
-                    let mut plan_response = String::new();
-                    let _ = plan_child.stdout.take().map(|mut o| o.read_to_string(&mut plan_response));
-                    let _ = plan_child.wait();
-
-                    if let Ok(plan_value) = serde_json::from_str::<serde_json::Value>(&plan_response) {
-                        if let Some(plan_text) = plan_value["choices"][0]["message"]["content"].as_str() {
-                            let plan_short: String = plan_text.chars().take(100).collect();
-                            let plan_msg = serde_json::json!({
-                                "role": "system",
-                                "content": format!("[plan: {}]", plan_short)
-                            });
-                            messages.insert(1, plan_msg);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Forward to API
-    forward_to_api(request, &payload);
+    // Forward to upstream
+    forward_to_upstream(request, &payload);
 }
 
 // ── Helpers ──
@@ -356,10 +310,9 @@ fn respond_text(mut request: Request, status: u16, msg: &str) {
 }
 
 fn respond_json(mut request: Request, status: u16, msg: &str) {
-    let ct = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
     let _ = request.respond(
         Response::from_string(msg)
             .with_status_code(StatusCode(status))
-            .with_header(ct)
+            .with_header(ct_hdr())
     );
 }
