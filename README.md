@@ -19,7 +19,9 @@ reliary-agent serve &               # daemon + proxy on :9090
 reliary-agent watch ./project       # continuously re-index
 ```
 
-After `init`, your agents are configured with the daemon's MCP tools (search, risk, heal) and the proxy's conversation compression.
+After `init`, your agents have access to the daemon's MCP tools (search, risk, heal).
+For proxy-based conversation compression, set `BASE_URL` in your agent's config or
+environment (see [API Proxy](#api-proxy-for-any-agent-framework)).
 
 ## Features
 
@@ -82,11 +84,11 @@ cd reliary-* && ./install.sh
 ### Usage by Agent
 
 | Agent | What `rel init` does | Savings |
-|---|---|---|
-| **Pi** | Installs gate.js (tool-level compression) + sets proxy | 30-50% |
-| **Claude Code** | Injects MCP config + sets `ANTHROPIC_BASE_URL=http://localhost:9090/v1/messages` | 15-25% |
-| **Cline** | Injects MCP config + sets `OPENAI_BASE_URL=http://localhost:9090/v1` | 15-25% |
-| **OpenCode** | Injectes MCP config + sets `OPENAI_BASE_URL=http://localhost:9090/v1` | 15-25% |
+|---|---|---|---|
+| **Pi** | Installs gate.js (tool-level compression + safety) | 30-50% |
+| **Claude Code** | Injects MCP server config (`reliary-agent mcp`) | 15-25% |
+| **Cline** | Injects MCP server config (`reliary-agent mcp`) | 15-25% |
+| **OpenCode** | Injects MCP server config (`reliary-agent mcp`) | 15-25% |
 
 ### CLI
 
@@ -124,10 +126,23 @@ Point any agent at it to get conversation compression without installing gate.js
 # Start proxy
 reliary-agent serve &
 
-# Point any agent to it
-export DEEPSEEK_BASE_URL=http://localhost:9090/v1
+# Point your agent to it (choose the right base URL for your provider)
+export DEEPSEEK_BASE_URL=http://localhost:9090/v1   # Pi, Cline, OpenCode
+export ANTHROPIC_BASE_URL=http://localhost:9090/      # Claude Code only
 pi --model deepseek/deepseek-v4-flash --print "fix bug"
 ```
+
+> **Note:** `reliary-agent init` only configures MCP tools. To get proxy compression,
+> set the `BASE_URL` environment variable per the table above — or configure it
+> directly in your agent's config file (Pi, Cline, and OpenCode all support
+> `baseUrl` in their provider settings).
+
+**Provider-agnostic routing:** The proxy automatically detects the API provider
+from the `Authorization` header. OpenAI, Anthropic, and DeepSeek keys all route
+to the correct upstream without manual configuration.
+
+**True SSE streaming:** The proxy streams chunks back to the client in real-time,
+preserving the typewriter effect in your agent's UI.
 
 **What the proxy compresses:**
 - **Conversation history:** old assistant reasoning messages are compressed before
@@ -166,7 +181,8 @@ See [CONFIG.md](./CONFIG.md) for the full documentation.
 | `RELIARY_MODE=strict` | Full sandbox (bash blocked, edits always healed) |
 | `RELIARY_FEATURES=+editMerge,-taskTargets` | Toggle individual features |
 | `RELIARY_UPSTREAM_URL=https://api.openai.com/v1` | Set API upstream (default: auth-based routing) |
-| `DEEPSEEK_BASE_URL=http://localhost:9090/v1` | Route through proxy |
+| `DEEPSEEK_BASE_URL=http://localhost:9090/v1` | Route Pi/Cline/OpenCode through proxy |
+| `ANTHROPIC_BASE_URL=http://localhost:9090/` | Route Claude Code through proxy |
 
 ## Built from
 
