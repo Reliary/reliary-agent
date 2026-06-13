@@ -59,6 +59,39 @@ fn extract_first_failure(output: &str) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_failed_line() {
+        let output = "running 1 test\ntest line_zone_code ... FAILED\n    assertion failed\n";
+        let r = extract_first_failure(output);
+        assert!(r.contains("FAILED"), "Got: {}", r);
+    }
+
+    #[test]
+    fn test_extract_panicked_at() {
+        let output = "thread 'main' panicked at src/main.rs:42:\nindex out of bounds\n";
+        let r = extract_first_failure(output);
+        assert!(r.contains("panicked"), "Got: {}", r);
+    }
+
+    #[test]
+    fn test_extract_assertion() {
+        let output = "expected `true`, got `false`\n";
+        let r = extract_first_failure(output);
+        assert!(r.contains("expected"), "Got: {}", r);
+    }
+
+    #[test]
+    fn test_extract_fallback() {
+        let output = "line1\nline2\nline3\nline4\n";
+        let r = extract_first_failure(output);
+        assert!(r.contains("line2"), "Got: {}", r);
+    }
+}
+
 /// Shadow-apply a reliary_fix and test
 pub fn heal_fix(file: &str, old: &str, new: &str, workdir: &str) -> Result<String, String> {
     let content = fs::read_to_string(file).map_err(|e| format!("Read: {}", e))?;
