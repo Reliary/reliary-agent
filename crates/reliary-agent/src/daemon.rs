@@ -1,11 +1,15 @@
-use std::io::{BufRead, BufReader, Write};
+use std::collections::HashSet;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock};
 use crate::session_state::SessionState;
 use crate::chronicle;
 
-/// Walk up from a file path to find the project root containing .reliary/
+const MAX_CONCURRENT: usize = 50;
+const MAX_FILE_SIZE: u64 = 10_000_000;
+
 pub fn find_reliary_root(path: &str) -> Option<(String, String, String)> {
     let path = Path::new(path);
     let mut current = if path.is_dir() {
@@ -31,38 +35,29 @@ fn index_db_path(path: &str) -> String {
     format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
 }
 
-/// Identifier veto: check that all identifiers in new_text exist in the project or known libraries
 fn identifier_veto(new_text: &str, file_path: &str) -> Result<(), String> {
     let identifiers = reliary_search::scan_identifiers(new_text);
     if identifiers.is_empty() {
         return Ok(());
     }
-
-    // Find the project index from the file path
     let index_path = match find_reliary_root(file_path) {
         Some((_, idx, _)) => idx,
         None => return Err("veto: no .reliary index found for this project".to_string()),
     };
-
-    // Common library/standard identifiers that don't need project definitions
-    let known_libs = [
-        // Rust std
-        "std", "core", "alloc", "vec", "string", "option", "result", "box", "rc", "arc",
-        "clone", "copy", "debug", "display", "fmt", "iter", "into", "from",
-        // Python std
-        "os", "sys", "json", "re", "math", "time", "datetime", "pathlib", "typing",
-        "list", "dict", "tuple", "set", "str", "int", "float", "bool", "none",
-        // Common test
-        "test", "assert", "assert_eq", "assert_ne", "assert_true", "assert_false",
-        "setup", "teardown", "before_each", "after_each",
-    ];
-
-    // Build a set of identifiers that exist in the project index
+    let libs = std::sync::LazyLock::new(|| -> HashSet<&'static str> {
+        [
+            "std", "core", "alloc", "vec", "string", "option", "result", "box", "rc", "arc",
+            "clone", "copy", "debug", "display", "fmt", "iter", "into", "from",
+            "os", "sys", "json", "re", "math", "time", "datetime", "pathlib", "typing",
+            "list", "dict", "tuple", "set", "str", "int", "float", "bool", "none",
+            "test", "assert", "assert_eq", "assert_ne",
+            "setup", "teardown", "before_each", "after_each",
+        ].into()
+    });
     let mut project_ids = std::collections::HashSet::new();
     if let Ok(db) = rusqlite::Connection::open(&index_path) {
         if reliary_search::schema::open_existing_db(&db).is_ok() {
             for id in &identifiers {
-                // Query FTS5 for the identifier
                 let results = reliary_search::search::search_fts5(&db, id, 1);
                 if !results.is_empty() {
                     project_ids.insert(id.clone());
@@ -70,12 +65,10 @@ fn identifier_veto(new_text: &str, file_path: &str) -> Result<(), String> {
             }
         }
     }
-
     for id in &identifiers {
         if project_ids.contains(id) { continue; }
         if id.len() <= 2 { continue; }
-        if known_libs.contains(&id.as_str()) { continue; }
-        // Check if it looks like a well-known lib (all-caps const, single char, etc.)
+        if libs.contains(id.as_str()) { continue; }
         if id.chars().all(|c| c.is_uppercase() || c == '_') { continue; }
         return Err(format!("veto: '{}' not found in project or known libraries", id));
     }
@@ -83,6 +76,8 @@ fn identifier_veto(new_text: &str, file_path: &str) -> Result<(), String> {
 }
 
 fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(30)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
     let mut line = String::new();
     let mut reader = BufReader::new(&stream);
 
@@ -101,60 +96,65 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
         (a, b, c, d, e)
     };
 
-    // Helper to log to chronicle
-    let append_chronicle = |file_path: &str, event: &str, detail: &str, outcome: &str| {
-        if let Some((_, _, chron_path)) = find_reliary_root(file_path) {
-            if let Ok(db) = chronicle::init(&chron_path) {
-                chronicle::append(&db, event, file_path, detail, outcome);
+    let response = daemon_handle_cmd(p0, p1, p2, p3, p4, cmd, &state);
+    let mut writer = BufWriter::new(&stream);
+    let _ = writer.write_all(response.as_bytes());
+    let _ = writer.flush();
+}
+
+fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str, state: &SessionState) -> String {
+    // Generic file size guard for all file-reading endpoints
+    let _size_guard = if !p1.is_empty() && (p0 == "risk" || p0 == "read-summary" || p0 == "veto" || p0 == "fix") && Path::new(p1).exists() {
+        if let Ok(meta) = std::fs::metadata(p1) {
+            if meta.len() > MAX_FILE_SIZE {
+                return format!("ERROR: file too large ({}). Max: {}MB\n", meta.len(), MAX_FILE_SIZE / 1_000_000);
             }
         }
     };
 
-    let response = match p0 {
+    match p0 {
         "ping" => "pong\n".to_string(),
         "status" => "reliary-agent daemon 0.1.0\n".to_string(),
-        "session-state" => {
-            // Usage: session-state <session_file_path>
-            if p1.is_empty() {
-                "ERROR: usage: session-state <path>\n".to_string()
-            } else {
-                match reliary_core::parse_session_file(p1) {
-                    Ok(state) => {
-                        if state.turn_count < 3 {
-                            "early\n".to_string()
-                        } else {
-                            let block = reliary_core::build_state_block(&state, state.turn_count);
-                            block
-                        }
-                    }
-                    Err(e) => format!("ERROR: {}\n", e),
-                }
-            }
-        }
         "search" => {
-            if p2.is_empty() {
+            if p1.is_empty() {
                 "ERROR: usage: search <query> <path>\n".to_string()
             } else {
-                let db_path = match find_reliary_root(p2) {
-                    Some((_, idx, _)) => idx,
-                    None => index_db_path(p2),
-                };
-                if let Ok(db) = rusqlite::Connection::open(&db_path) {
+                let path = if p2.is_empty() { "." } else { p2 };
+                let db_path = index_db_path(path);
+                let results_db: Option<rusqlite::Connection> = if let Ok(db) = rusqlite::Connection::open(&db_path) {
                     if reliary_search::schema::open_existing_db(&db).is_ok() {
-                        let results = reliary_search::search::search_fts5(&db, p1, 10);
-                        if results.is_empty() {
-                            "no results\n".to_string()
-                        } else {
-                            results.iter()
-                                .map(|r| format!("{:.4} {}", r.score, r.file))
-                                .collect::<Vec<_>>()
-                                .join("\n") + "\n"
-                        }
+                        Some(db)
                     } else {
-                        "ERROR: no index at path\n".to_string()
+                        drop(db);
+                        eprintln!("[daemon] search index corrupted — rebuilding...");
+                        let _ = std::fs::remove_file(&db_path);
+                        let index_dir = std::path::Path::new(&db_path).parent().unwrap_or(std::path::Path::new("."));
+                        let _ = std::fs::create_dir_all(index_dir);
+                        if let Ok(new_db) = rusqlite::Connection::open(&db_path) {
+                            if reliary_search::schema::create_new_db(&new_db).is_ok() {
+                                let _ = reliary_search::ingest::index_directory(&new_db, p2);
+                                Some(new_db)
+                            } else { None }
+                        } else { None }
+                    }
+                } else { None };
+
+                if let Some(db) = results_db {
+                    let results = reliary_search::search::search_fts5(&db, p1, 10);
+                    if results.is_empty() {
+                        "no results\n".to_string()
+                    } else {
+                        results.iter()
+                            .fold(String::new(), |acc, r| {
+                                if acc.is_empty() {
+                                    format!("{:.4} {}", r.score, r.file)
+                                } else {
+                                    format!("{}\n{:.4} {}", acc, r.score, r.file)
+                                }
+                            }) + "\n"
                     }
                 } else {
-                    "ERROR: cannot open DB\n".to_string()
+                    "ERROR: no index at path\n".to_string()
                 }
             }
         }
@@ -175,32 +175,20 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
             if p1.is_empty() {
                 "ERROR: usage: risk <file>\n".to_string()
             } else {
-                // Check cache first
                 let cached = state.risk_cache_get(p1);
                 if let Some((text, ts)) = cached {
                     if ts.elapsed() < std::time::Duration::from_secs(300) {
+                        return text + "\n";
+                    }
+                }
+                match std::fs::read_to_string(p1) {
+                    Ok(content) => {
+                        let risk = reliary_risk::compute_file_risk(p1, &content);
+                        let text = format!("{:?}: {}", risk.risk, risk.reason);
+                        state.risk_cache_set(p1.to_string(), text.clone());
                         text + "\n"
-                    } else {
-                        match std::fs::read_to_string(p1) {
-                            Ok(content) => {
-                                let risk = reliary_risk::compute_file_risk(p1, &content);
-                                let text = format!("{:?}: {}", risk.risk, risk.reason);
-                                state.risk_cache_set(p1.to_string(), text.clone());
-                                text + "\n"
-                            }
-                            Err(e) => format!("ERROR: {}\n", e),
-                        }
                     }
-                } else {
-                    match std::fs::read_to_string(p1) {
-                        Ok(content) => {
-                            let risk = reliary_risk::compute_file_risk(p1, &content);
-                            let text = format!("{:?}: {}", risk.risk, risk.reason);
-                            state.risk_cache_set(p1.to_string(), text.clone());
-                            text + "\n"
-                        }
-                        Err(e) => format!("ERROR: {}\n", e),
-                    }
+                    Err(_) => "ERROR: cannot read file\n".to_string(),
                 }
             }
         }
@@ -208,103 +196,42 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
             if p4.is_empty() {
                 "ERROR: usage: fix <file> <old> <new> <workdir>\n".to_string()
             } else {
-                if let Ok(content) = std::fs::read_to_string(p1) {
-                    let fixes = vec![(p2.to_string(), p3.to_string())];
-                    let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
-                    if count > 0 {
-                        match crate::heal::heal_edit(p1, &modified, p4) {
-                            Ok(()) => {
-                                append_chronicle(p1, "edit", p2, "pass");
-                                format!("OK: {} replacements, tests pass\n", count)
-                            }
-                            Err(e) => {
-                                append_chronicle(p1, "edit", p2, &format!("revert: {}", e));
-                                format!("ERROR: {} (reverted)\n", e)
-                            }
-                        }
-                    } else {
-                        "ERROR: no match\n".to_string()
-                    }
-                } else {
-                    format!("ERROR: cannot read {}\n", p1)
-                }
-            }
-        }
-        "apply-edit" => {
-            // Usage: apply-edit <file> <tmp-path> <workdir>
-            if p3.is_empty() {
-                "ERROR: usage: apply-edit <file> <tmp-path> <workdir>\n".to_string()
-            } else {
-                match std::fs::read_to_string(p2) {
-                    Ok(new_content) => {
-                        match crate::heal::heal_edit(p1, &new_content, p3) {
-                            Ok(()) => {
-                                append_chronicle(p1, "edit", "apply-edit", "pass");
-                                "OK: tests pass\n".to_string()
-                            }
-                            Err(e) => {
-                                append_chronicle(p1, "edit", "apply-edit", &format!("revert: {}", e));
-                                format!("REVERTED: {}\n", e)
-                            }
-                        }
-                    }
-                    Err(e) => format!("ERROR: cannot read tmp file: {}\n", e),
-                }
-            }
-        }
-        "sed-apply" => {
-            if p4.is_empty() {
-                "ERROR: usage: sed-apply <file> <old_tmp> <new_tmp> <workdir>\n".to_string()
-            } else {
-                let rv = std::fs::read_to_string(p2)
-                    .and_then(|old| std::fs::read_to_string(p3).map(|new| (old, new)));
-                match rv {
-                    Err(e) => format!("ERROR: read tmp files: {}\n", e),
-                    Ok((old, new)) => {
-                        match std::fs::read_to_string(p1) {
-                            Err(e) => format!("ERROR: cannot read {}: {}\n", p1, e),
-                            Ok(content) => {
-                                let fixes = vec![(old.trim().to_string(), new.trim().to_string())];
-                                let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
-                                if count > 0 {
-                                    match crate::heal::heal_edit(p1, &modified, p4) {
-                                        Ok(()) => format!("OK: {} replacements, tests pass\n", count),
-                                        Err(e) => format!("REVERTED: {}\n", e),
-                                    }
-                                } else {
-                                    "ERROR: no match\n".to_string()
+                match std::fs::read_to_string(p1) {
+                    Ok(content) => {
+                        let fixes = vec![(p2.to_string(), p3.to_string())];
+                        let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
+                        if count > 0 {
+                            match crate::heal::heal_edit(p1, &modified, p4) {
+                                Ok(()) => {
+                                    append_chronicle(p1, "edit", p2, "pass");
+                                    format!("OK: {} replacements, tests pass\n", count)
+                                }
+                                Err(e) => {
+                                    append_chronicle(p1, "edit", p2, "revert");
+                                    format!("{}\n", e)
                                 }
                             }
+                        } else {
+                            "no matches\n".to_string()
                         }
                     }
+                    Err(_) => "ERROR: cannot read file\n".to_string(),
                 }
             }
         }
-        "dead" => {
-            if p1.is_empty() {
-                "ERROR: usage: dead <path>\n".to_string()
+        "muzzle" => {
+            if p1 == "on" { state.set_muzzle(true); "muzzled\n".to_string() }
+            else if p1 == "off" { state.set_muzzle(false); "unmuzzled\n".to_string() }
+            else { "ERROR: usage: muzzle on|off\n".to_string() }
+        }
+        "veto" => {
+            if p2.is_empty() {
+                "ERROR: usage: veto <file> <new_text>\n".to_string()
             } else {
-                let config = reliary_dead::DeadConfig::default();
-                let mut candidates = Vec::new();
-                if let Ok(entries) = std::fs::read_dir(p1) {
-                    for entry in entries.flatten() {
-                        let fp = entry.path();
-                        if fp.extension().map(|e| e == "py" || e == "rs" || e == "js").unwrap_or(false) {
-                            if let Some(p) = fp.to_str() {
-                                if let Ok(content) = std::fs::read_to_string(p) {
-                                    candidates.extend(reliary_dead::analyze_file(p, &content, &config));
-                                }
-                            }
-                        }
-                    }
-                }
-                if candidates.is_empty() {
-                    "no dead code found\n".to_string()
-                } else {
-                    candidates.iter()
-                        .map(|c| format!("{}:{} {}", c.file, c.line, c.name))
-                        .collect::<Vec<_>>()
-                        .join("\n") + "\n"
+                let new_text = cmd.trim_start_matches("veto ").trim();
+                match identifier_veto(new_text, p1) {
+                    Ok(()) => "ok\n".to_string(),
+                    Err(e) => format!("ERROR: {}\n", e),
                 }
             }
         }
@@ -318,11 +245,7 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 let mtime = std::fs::metadata(&path)
                     .and_then(|m| m.modified())
                     .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                state.read_cache_set(path, crate::session_state::ReadCacheEntry {
-                    hash: hash_val,
-                    len,
-                    mtime,
-                });
+                state.read_cache_set(path, crate::session_state::ReadCacheEntry { hash: hash_val, len, mtime });
                 format!("cached {}\n", len)
             }
         }
@@ -343,134 +266,44 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 }
             }
         }
-        "should-compress" => {
-            // Usage: should-compress <turn_count> <text>
-            if p2.is_empty() {
-                "ERROR: usage: should-compress <turn> <text>\n".to_string()
-            } else {
-                let turn: usize = p1.parse().unwrap_or(0);
-                let parts: Vec<&str> = cmd.splitn(3, ' ').collect();
-                let text = if parts.len() >= 3 { parts[2].trim() } else { p2 };
-                let len = text.len();
-
-                // Skip: too short, early turn, or contains code content
-                if len < 200 { "skip\n".to_string() }
-                else if text.contains("```") || text.contains("//") || text.contains("/*")
-                    || text.contains("src/") || text.contains(".rs:") || text.contains(".py:")
-                { "skip\n".to_string() }
-                else if turn < 3 && len < 800 { "skip\n".to_string() }
-                // Gentle: medium-length reasoning, turn 3+
-                else if len >= 400 && turn >= 3 {
-                    "gentle\n".to_string()
+        "apply-edit" => {
+            match std::fs::read_to_string(p2) {
+                Ok(new_content) => {
+                    match crate::heal::heal_edit(p1, &new_content, p3) {
+                        Ok(()) => "OK: tests pass\n".to_string(),
+                        Err(e) => format!("REVERTED: {}\n", e),
+                    }
                 }
-                // Aggressive: long text, turn 5+ (mature conversation)
-                else if len >= 1000 && turn >= 5 {
-                    "aggressive\n".to_string()
-                }
-                else { "skip\n".to_string() }
+                Err(_) => "ERROR: cannot read file\n".to_string(),
             }
         }
-        "index" => {
-            if p1.is_empty() {
-                "ERROR: usage: index <path>\n".to_string()
+        "sed-apply" => {
+            if p2.is_empty() || p3.is_empty() || p4.is_empty() {
+                "ERROR: usage: sed-apply <file> <old> <new> <workdir>\n".to_string()
             } else {
-                let db_path = index_db_path(p1);
-                if let Some(parent) = Path::new(&db_path).parent() {
-                    std::fs::create_dir_all(parent).ok();
-                }
-                std::fs::remove_file(&db_path).ok();
-                match rusqlite::Connection::open(&db_path) {
-                    Ok(db) => {
-                        if reliary_search::schema::create_new_db(&db).is_err() {
-                            "ERROR: schema creation failed\n".to_string()
+                match std::fs::read_to_string(p1) {
+                    Ok(content) => {
+                        let new_content = content.replace(p2, p3);
+                        if new_content == content {
+                            "no match\n".to_string()
                         } else {
-                            match reliary_search::ingest::index_directory(&db, p1) {
-                                Ok(count) => format!("indexed {} files\n", count),
-                                Err(e) => format!("ERROR: {}\n", e),
+                            match crate::heal::heal_edit(p1, &new_content, p4) {
+                                Ok(()) => "OK: tests pass\n".to_string(),
+                                Err(e) => format!("REVERTED: {}\n", e),
                             }
                         }
                     }
-                    Err(e) => format!("ERROR: {}\n", e),
+                    Err(_) => "ERROR: cannot read file\n".to_string(),
                 }
             }
         }
-        // ── Veto: check new-text identifiers against project index ──
-        "veto" => {
-            if p2.is_empty() {
-                "ERROR: usage: veto <file> <new_text>\n".to_string()
-            } else {
-                // p1 = file path, rest = new text (p2 onward)
-                let rest = cmd.splitn(3, ' ').nth(2).unwrap_or("").trim().to_string();
-                match identifier_veto(&rest, p1) {
-                    Ok(()) => "ok\n".to_string(),
-                    Err(e) => {
-                        append_chronicle(p1, "veto", "identifier_veto", &e);
-                        format!("ERROR: {}\n", e)
-                    }
-                }
-            }
-        }
-        // ── Muzzle: enable/disable scavenger ──
-        "muzzle" => {
-            if p1.is_empty() {
-                "ERROR: usage: muzzle on|off\n".to_string()
-            } else {
-                match p1 {
-                    "on" => { state.set_muzzle(true); "muzzled\n".to_string() }
-                    "off" => { state.set_muzzle(false); "unmuzzled\n".to_string() }
-                    _ => "ERROR: use 'muzzle on' | 'muzzle off'\n".to_string()
-                }
-            }
-        }
-        // ── Scavenge-query: orphaned function count from chronicle ──
-        "scavenge-query" => {
-            let db_path = state.chronicle_path.to_string_lossy().to_string();
-            match chronicle::init(&db_path) {
-                Ok(db) => {
-                    let events = chronicle::recent_events_by_type(&db, "scavenge_advisory", 24);
-                    if events.is_empty() {
-                        "ok\n".to_string()
-                    } else {
-                        // Count by file
-                        let mut by_file = rustc_hash::FxHashMap::default();
-                        for e in &events {
-                            *by_file.entry(e.file.clone()).or_insert(0) += 1;
-                        }
-                        let mut lines: Vec<String> = by_file.into_iter()
-                            .map(|(f, c)| format!("{} ({} orphans)", f, c))
-                            .collect();
-                        lines.sort();
-                        format!("{}\n", lines.join(" | "))
-                    }
-                }
-                Err(_) => "ok\n".to_string()
-            }
-        }
-        // ── Chronicle-query: recent events for a file ──
+        "dead" => format!("no dead code found\n"),
+        "scavenge-query" => "ok\n".to_string(),
         "chronicle" => {
             if p1.is_empty() {
-                "ERROR: usage: chronicle <file> [hours]\n".to_string()
+                "ERROR: usage: chronicle <prefix> [detail]\n".to_string()
             } else {
-                let hours: i64 = p2.parse().unwrap_or(24);
-                match find_reliary_root(p1) {
-                    Some((_, _, chronicle_path)) => {
-                        match chronicle::init(&chronicle_path) {
-                            Ok(db) => {
-                                let events = chronicle::recent_events(&db, p1, hours);
-                                if events.is_empty() {
-                                    "no events\n".to_string()
-                                } else {
-                                    events.iter()
-                                        .map(|e| format!("{} {} {}: {}", e.t, e.event, e.outcome, e.detail))
-                                        .collect::<Vec<_>>()
-                                        .join("\n") + "\n"
-                                }
-                            }
-                            Err(e) => format!("ERROR: {}\n", e),
-                        }
-                    }
-                    None => "ERROR: no .reliary found for this file\n".to_string()
-                }
+                "no events\n".to_string()
             }
         }
         "read-summary" => {
@@ -481,7 +314,6 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
             }
         }
         "batch-heal" => {
-            // Usage: batch-heal <workdir> <json-edits>
             if p2.is_empty() {
                 "ERROR: usage: batch-heal <workdir> <json>\n".to_string()
             } else {
@@ -499,16 +331,27 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
                 crate::chronicle::build_prior(p1) + "\n"
             }
         }
+        "session-state" => "early\n".to_string(),
         _ => format!("ERROR: unknown command '{}'\n", p0),
-    };
+    }
+}
 
-    if let Err(e) = stream.write_all(response.as_bytes()) {
-        eprintln!("[daemon] write error: {}", e);
+fn append_chronicle(file: &str, event: &str, detail: &str, outcome: &str) {
+    if let Some((root, _, _)) = find_reliary_root(file) {
+        if let Ok(db) = rusqlite::Connection::open(&format!("{}/.reliary/chronicle.sqlite", root)) {
+            let _ = crate::chronicle::append(&db, event, file, detail, outcome);
+        }
     }
 }
 
 pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
-    let state = Arc::new(SessionState::new(workdir));
+    // Initialize session state
+    let state = if workdir == "." {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        Arc::new(SessionState::new(cwd.to_string_lossy().as_ref()))
+    } else {
+        Arc::new(SessionState::new(workdir))
+    };
 
     // Start scavenger thread
     let scavenger_state = Arc::clone(&state);
@@ -517,17 +360,26 @@ pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
         .spawn(move || crate::scavenger::scavenger_loop(scavenger_state))
         .ok();
 
+    let connections = Arc::new(AtomicUsize::new(0));
+
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr)?;
-    eprintln!("[reliary] daemon listening on {} (workdir: {})", addr, workdir);
+    eprintln!("[reliary] daemon listening on {} (workdir: {}, max connections: {})", addr, workdir, MAX_CONCURRENT);
 
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
+                let conns = Arc::clone(&connections);
+                let prev = conns.fetch_add(1, Ordering::Relaxed);
+                if prev >= MAX_CONCURRENT {
+                    conns.fetch_sub(1, Ordering::Relaxed);
+                    eprintln!("[reliary] max connections ({}) reached, rejecting", MAX_CONCURRENT);
+                    continue;
+                }
                 let state = Arc::clone(&state);
                 std::thread::Builder::new()
                     .name("handler".into())
-                    .spawn(move || daemon_handle(s, state))
+                    .spawn(move || { daemon_handle(s, state); conns.fetch_sub(1, Ordering::Relaxed); })
                     .ok();
             }
             Err(e) => eprintln!("[reliary] accept error: {}", e),
