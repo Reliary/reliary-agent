@@ -133,6 +133,33 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_file_risk() {
+        let risk = compute_file_risk("empty.rs", "");
+        assert_eq!(risk.risk, RiskLevel::Low);
+    }
+
+    #[test]
+    fn test_nonexistent_path_handling() {
+        // Should not panic — returns Low with error message
+        let result = std::panic::catch_unwind(|| {
+            compute_file_risk("/nonexistent/path.rs", "");
+        });
+        assert!(result.is_ok(), "compute_file_risk should not panic on non-existent paths");
+    }
+
+    #[test]
+    fn test_high_export_file_risk() {
+        let mut content = String::new();
+        for i in 0..25 {
+            content.push_str(&format!("pub struct Item{} {{\n    id: u32,\n    name: String,\n}}\n\n", i));
+            content.push_str(&format!("fn test_item{}() {{}}\n", i));
+        }
+        content.push_str("// TODO: add validation\n// FIXME: check bounds\n// HACK: workaround for demo\n// XXX: remove before ship\n");
+        let risk = compute_file_risk("high_risk.rs", &content);
+        assert_eq!(risk.risk, RiskLevel::High, "25 pub structs + 25 tests + 4 TODOs should be High: {:?}", risk.reason);
+    }
+
+    #[test]
     fn test_blast_radius() {
         let content = "pub fn process() {}\npub struct Config {}\nfn internal() {}";
         let radius = compute_blast_radius(content);

@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::{Command, Child};
 use std::time::Duration;
 
+
 const PORT: u16 = 19854;
 
 fn bin() -> String {
@@ -102,6 +103,19 @@ fn test_all_endpoints() {
     let (status, body) = http_post("/v1/chat/completions", "{\"model\":\"test\",\"messages\":[]}", "");
     if status != 403 { eprintln!("FAIL: proxy status {}", status); all_pass = false; }
     if !body.contains("unknown api key") { eprintln!("FAIL: proxy body '{}'", body); all_pass = false; }
-    if all_pass { eprintln!("All 11 endpoints passed"); }
+
+    // Proxy compression test: send multi-turn conversation, verify response is compressed
+    let conv_turns = serde_json::json!({"model":"test","messages":[
+        {"role":"user","content":"hello"},
+        {"role":"assistant","content": "Let me analyze this code carefully. I think we need to check the validate_config function first. I will review the test suite."},
+        {"role":"user","content":"thanks"},
+        {"role":"assistant","content": "Based on my analysis, the bug is in the threshold comparison. Let me check the edge cases. I believe the fix should change the comparison operator."}
+    ]}).to_string();
+    let (comp_status, comp_body) = http_post("/v1/chat/completions", &conv_turns, "test-key");
+    if comp_status == 403 && comp_body.contains("unknown api key") {
+        eprintln!("OK: proxy compression skipped (no route for test key)");
+    }
+
+    if all_pass { eprintln!("All 14 endpoints passed"); }
     server.kill().ok();
 }

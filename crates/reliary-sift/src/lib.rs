@@ -332,6 +332,22 @@ mod tests {
         assert!(looks_like_content(&lines));
     }
     #[test]
+    fn test_compress_content_ratio() {
+        let text = "use std::collections::HashMap;\nuse std::sync::Arc;\nuse std::time::Duration;\n\npub fn process_data(data: &str) -> Result<(), Error> {\n    let items = parse_items(data)?;\n    for item in items {\n        validate_item(&item);\n    }\n    Ok(())\n}\n\nfn validate_item(item: &Item) -> bool {\n    if item.is_valid() { item.process() }\n    true\n}";
+        let lines = classify_content(text);
+        let original_len: usize = lines.iter().map(|l| l.text.len() + 1).sum();
+        let result = compress_content(lines, true);
+        let compressed_len: usize = result.iter().map(|l| l.len() + 1).sum();
+        assert!(compressed_len < original_len / 2, "compress_content should reduce size by at least 50%: {} vs {}", compressed_len, original_len);
+    }
+    #[test]
+    fn test_compress_content_non_aggressive_preserves_comments() {
+        let text = "# this is a comment\n# another comment\nfn main() {}";
+        let lines = classify_content(text);
+        let r = compress_content(lines, false);
+        assert!(r.iter().any(|l| l.contains("this is a comment")), "non-aggressive mode should preserve first comment");
+    }
+    #[test]
     fn test_truncate_long() {
         let r = truncate_lines(vec!["a".repeat(200)], 50);
         assert!(r[0].ends_with("chars)"));
