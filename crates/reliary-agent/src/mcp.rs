@@ -113,8 +113,11 @@ pub fn serve_stdio() {
                         let fixes = vec![(old.to_string(), new.to_string())];
                         let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
                         if count > 0 {
-                            std::fs::write(file, &modified).ok();
-                            respond(id, serde_json::json!({ "success": true, "replacements": count, "file": file }));
+                            if let Err(e) = std::fs::write(file, &modified) {
+                                respond_error(id, -1, &format!("cannot write {}: {}", file, e));
+                            } else {
+                                respond(id, serde_json::json!({ "success": true, "replacements": count, "file": file }));
+                            }
                         } else {
                             respond_error(id, -1, "no matches found");
                         }
