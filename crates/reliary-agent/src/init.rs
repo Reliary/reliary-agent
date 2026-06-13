@@ -4,6 +4,10 @@ use std::fs;
 use std::process::Command;
 use serde_json::Value;
 
+fn ok(msg: &str) { println!("  {} {}", "\x1b[32m✓\x1b[0m", msg); }
+fn warn(msg: &str) { println!("  {} {} \x1b[33m(warning)\x1b[0m", "\x1b[33m⚠\x1b[0m", msg); }
+fn info(msg: &str) { println!("  {} {}", "\x1b[34m•\x1b[0m", msg); }
+
 // Embed gate.js at compile time
 const EMBEDDED_GATE_JS: &str = include_str!("../../../pi/gate.js");
 
@@ -61,7 +65,7 @@ pub fn run() {
                             .status();
                         
                         if status.is_ok() && status.unwrap_or_default().success() {
-                            println!("✓ Installed gate.js\n");
+                            ok("Installed gate.js");
                             configured_agents += 1;
                         } else {
                             println!("✗ Failed to run `pi install`\n");
@@ -86,7 +90,7 @@ pub fn run() {
         if claude_cfg.exists() {
             if ask_yes_no("Found Claude Code config. Add Reliary MCP server?", true) {
                 if inject_mcp_server(&claude_cfg, "reliary") {
-                    println!("✓ Updated ~/.claude.json\n");
+                    ok("Updated ~/.claude.json");
                     configured_agents += 1;
                 } else {
                     println!("✗ Failed to update ~/.claude.json\n");
@@ -111,7 +115,7 @@ pub fn run() {
             if cfg_path.exists() {
                 if ask_yes_no("Found OpenCode config. Add Reliary MCP server?", true) {
                     if inject_mcp_server(&cfg_path, "reliary") {
-                        println!("✓ Updated opencode.json\n");
+                        ok("Updated opencode.json");
                         configured_agents += 1;
                     } else {
                         println!("✗ Failed to update opencode.json\n");
@@ -137,7 +141,7 @@ pub fn run() {
             if cfg_path.exists() {
                 if ask_yes_no("Found Cline config. Add Reliary MCP server?", true) {
                     if inject_mcp_server(&cfg_path, "reliary") {
-                        println!("✓ Updated cline_mcp_settings.json\n");
+                        ok("Updated cline MCP settings");
                         configured_agents += 1;
                     } else {
                         println!("✗ Failed to update cline_mcp_settings.json\n");
@@ -156,7 +160,7 @@ pub fn run() {
     // 5. Daemon
     if ask_yes_no("Do you want to install the Reliary daemon to run on boot?\n(Enables cross-session memory, dead code removal, faster search)", true) {
         if install_daemon() {
-            println!("✓ Installed and started daemon\n");
+            ok("Daemon installed and started");
         } else {
             println!("✗ Failed to install daemon\n");
         }
@@ -315,7 +319,7 @@ pub fn uninstall() {
                     }
                 }
                 
-                println!("✓ Removed gate.js\n");
+                ok("Removed gate.js");
                 removed_agents += 1;
             } else {
                 println!("- gate.js not found\n");
@@ -328,7 +332,7 @@ pub fn uninstall() {
     if let Some(home) = home_dir() {
         let claude_cfg = home.join(".claude.json");
         if claude_cfg.exists() && remove_mcp_server(&claude_cfg, "reliary") {
-            println!("✓ Removed Reliary from Claude Code (~/.claude.json)");
+            ok("Removed Reliary from Claude Code");
             removed_agents += 1;
         }
     }
@@ -345,7 +349,7 @@ pub fn uninstall() {
 
         if let Some(cfg_path) = opencode_cfg {
             if cfg_path.exists() && remove_mcp_server(&cfg_path, "reliary") {
-                println!("✓ Removed Reliary from OpenCode");
+                ok("Removed Reliary from OpenCode");
                 removed_agents += 1;
             }
         }
@@ -363,7 +367,7 @@ pub fn uninstall() {
 
         if let Some(cfg_path) = cline_cfg {
             if cfg_path.exists() && remove_mcp_server(&cfg_path, "reliary") {
-                println!("✓ Removed Reliary from Cline");
+                ok("Removed Reliary from Cline");
                 removed_agents += 1;
             }
         }
@@ -377,7 +381,7 @@ pub fn uninstall() {
     // 5. Daemon
     println!("Stopping and removing background daemon...");
     if uninstall_daemon() {
-        println!("✓ Removed daemon service\n");
+        ok("Daemon service removed");
     } else {
         println!("- Daemon service not found or could not be removed\n");
     }
@@ -388,7 +392,7 @@ pub fn uninstall() {
             let config_dir = home.join(".reliary");
             if config_dir.exists() {
                 if fs::remove_dir_all(&config_dir).is_ok() {
-                    println!("✓ Deleted ~/.reliary\n");
+                    ok("Deleted ~/.reliary");
                 } else {
                     println!("✗ Failed to delete ~/.reliary\n");
                 }

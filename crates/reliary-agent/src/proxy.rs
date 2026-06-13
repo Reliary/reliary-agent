@@ -80,7 +80,9 @@ pub fn start(port: u16, daemon_state: Option<Arc<SessionState>>) -> Result<(), S
 
     let addr = format!("127.0.0.1:{}", port);
     let server = Server::http(&addr).map_err(|e| format!("proxy bind: {}", e))?;
-    eprintln!("[reliary] listening on {}", addr);
+    eprintln!("\x1b[1m\x1b[34m  reliary-agent v{} ready\x1b[0m", env!("CARGO_PKG_VERSION"));
+    eprintln!("  \x1b[2mDaemon + proxy on \x1b[1m:{}", port);
+    eprintln!("  \x1b[2mRoutes: /health /ping /search /risk /compress /veto /muzzle /prior\x1b[0m");
 
     for request in server.incoming_requests() {
         let method = request.method();

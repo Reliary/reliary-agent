@@ -9,40 +9,44 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 pub fn doctor() {
-    println!("\nReliary Doctor - System Health & Diagnosis");
-    println!("------------------------------------------\n");
-
+    println!("\n{} Reliary Doctor — System Health & Diagnosis {}\n", "\x1b[1m\x1b[34m", "\x1b[0m");
     let mut all_good = true;
 
     // 1. Daemon Status
-    print!("Daemon Status: ");
-    if TcpStream::connect_timeout(&"127.0.0.1:9799".parse().expect("invalid port"), Duration::from_millis(500)).is_ok() {
-        println!("✅ Active on port 9799");
+    print!("{}  Daemon Status: ", "\x1b[34m•\x1b[0m");
+    if TcpStream::connect_timeout(&"127.0.0.1:9090".parse().expect("invalid port"), Duration::from_millis(500)).is_ok() {
+        println!("{} Active on port 9090", "\x1b[32m✓\x1b[0m");
     } else {
-        println!("❌ Inactive or unreachable");
-        println!("   💡 Run 'reliary-agent init' to install the service, or 'reliary-agent daemon &' to start it manually.");
+        println!("{} Inactive or unreachable", "\x1b[31m✗\x1b[0m");
+        println!("     {} Run 'reliary-agent serve' to start it", "\x1b[2m→\x1b[0m");
         all_good = false;
     }
 
-    // 2. Pi Agent
-    print!("Pi Agent Integration: ");
+    // 2. Proxy Status
+    print!("{}  Proxy Status: ", "\x1b[34m•\x1b[0m");
+    if TcpStream::connect_timeout(&"127.0.0.1:9090".parse().expect("invalid port"), Duration::from_millis(500)).is_ok() {
+        println!("{} Active (auth-based routing)", "\x1b[32m✓\x1b[0m");
+    }
+
+    // 3. Pi Agent
+    print!("{}  Pi Agent: ", "\x1b[34m•\x1b[0m");
     let pi_gate = home_dir().map(|h| h.join(".local/share/reliary/gate.js")).unwrap_or_default();
     if pi_gate.exists() {
-        println!("✅ gate.js installed");
+        println!("{} gate.js installed", "\x1b[32m✓\x1b[0m");
     } else {
-        println!("❌ gate.js not found");
+        println!("{} gate.js not found (optional — only needed for Pi)", "\x1b[33m-\x1b[0m");
     }
 
-    // 3. MCP Clients
-    print!("Claude Code MCP: ");
+    // 4. MCP Clients
+    print!("{}  Claude Code MCP: ", "\x1b[34m•\x1b[0m");
     let claude_cfg = home_dir().map(|h| h.join(".claude.json")).unwrap_or_default();
     if has_mcp_server(&claude_cfg, "reliary") {
-        println!("✅ Wired");
+        println!("{} Wired", "\x1b[32m✓\x1b[0m");
     } else {
-        println!("- Not wired");
+        println!("{} Not wired (run 'rel init')", "\x1b[33m-\x1b[0m");
     }
 
-    print!("OpenCode MCP: ");
+    print!("{}  OpenCode MCP: ", "\x1b[34m•\x1b[0m");
     let opencode_cfg = if cfg!(target_os = "windows") {
         dirs::config_dir().map(|d| d.join("opencode").join("opencode.json"))
     } else if cfg!(target_os = "macos") {
@@ -51,31 +55,30 @@ pub fn doctor() {
         home_dir().map(|h| h.join(".config/opencode/opencode.json"))
     }.unwrap_or_default();
     if has_mcp_server(&opencode_cfg, "reliary") {
-        println!("✅ Wired");
+        println!("{} Wired", "\x1b[32m✓\x1b[0m");
     } else {
-        println!("- Not wired");
+        println!("{} Not wired", "\x1b[33m-\x1b[0m");
     }
 
-    // 4. Project Health
-    print!("\nProject Health: ");
+    // 5. Project Health
+    print!("\n{}  Project Health: ", "\x1b[34m•\x1b[0m");
     let index_path = PathBuf::from(".reliary/index.sqlite");
     if index_path.exists() {
-        println!("✅ Index exists");
+        println!("{} Index exists", "\x1b[32m✓\x1b[0m");
     } else {
-        println!("❌ No index found in current directory");
-        println!("   💡 Run 'reliary-agent index .' to build it.");
-        all_good = false;
+        println!("{} No index found", "\x1b[33m-\x1b[0m");
+        println!("     {} Run 'reliary-agent index .' to build it", "\x1b[2m→\x1b[0m");
     }
 
-    // 5. Config State
-    print!("Config State: ");
+    // 6. Config State
+    print!("{}  Config State: ", "\x1b[34m•\x1b[0m");
     let mode = crate::config::resolve_mode(Some("."));
     println!("{} mode", mode.as_str());
 
     if all_good {
-        println!("\n✨ Your system is healthy and ready to go!");
+        println!("\n  {} System ready.", "\x1b[32m✓\x1b[0m");
     } else {
-        println!("\n⚠️ Some checks failed. See the tips above to fix them.");
+        println!("\n  {} Some checks failed. See tips above.", "\x1b[33m⚠\x1b[0m");
     }
 }
 
