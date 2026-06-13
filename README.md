@@ -6,6 +6,16 @@ Grammar-free code intelligence daemon, CLI, MCP server, and API proxy.
 
 Save 30-50% on API tokens across any agent framework — Pi, Claude Code, Cline, OpenCode.
 
+- [Quickstart](#quickstart)
+- [Install](#install)
+- [Features](#features)
+- [Usage by Agent](#usage-by-agent)
+- [CLI](#cli)
+- [API Proxy](#api-proxy)
+- [Output Formats](#output-formats)
+- [Configuration](#configuration)
+- [Development](#development)
+
 ## Quickstart
 
 ```bash
@@ -15,23 +25,35 @@ cargo install reliary-agent
 reliary-agent init
 
 # Or start manually
-reliary-agent serve &               # daemon + proxy on :9090
-reliary-agent watch ./project       # continuously re-index
+reliary-agent serve &              # daemon + proxy on :9090
+reliary-agent index ./project      # build FTS5 search index
 ```
 
 After `init`, your agents have access to the daemon's MCP tools (search, risk, heal).
-For proxy-based conversation compression, set `BASE_URL` in your agent's config or
-environment (see [API Proxy](#api-proxy-for-any-agent-framework)).
+For proxy-based conversation compression, see [API Proxy](#api-proxy).
+
+## Install
+
+```bash
+cargo install reliary-agent
+```
+
+Or download a release tarball:
+
+```bash
+curl -sSfL https://github.com/Reliary/reliary-agent/releases/latest/download/reliary-$(uname -m)-unknown-linux-gnu.tar.gz | tar xz
+cd reliary-* && ./install.sh
+```
 
 ## Features
 
-### Token Compression (works with any agent)
+### Token Compression
 
 | Layer | Where | Savings | How |
 |---|---|---|---|
 | **Reasoning compression** | Gate.js (Pi) / proxy (all agents) | 30-50% | Strip LLM reasoning fluff ("Let me analyze...") before it reaches your bill |
-| **Conversation window** | Proxy | 15-25% | Drop verbose tool results older than 8 turns |
-| **Response cache** | Proxy | 0-100% | Repeated requests (same model, same messages) return cached results |
+| **Conversation window** | Proxy | 15-25% | Collapse verbose tool results older than 8 turns into summary markers |
+| **Response cache** | Proxy | 0-100% | Repeated requests (same model, same messages) return cached results — zero cost on retries |
 | **Tool schema stripping** | Proxy | ~150t/turn | Remove redundant tool descriptions the LLM already knows |
 
 ### Code Intelligence (MCP tools)
@@ -61,36 +83,16 @@ edit → heal applies → cargo test → FAIL → revert → "REVERTED: assertio
 - **Bash guard:** blocks destructive commands; routes `sed -i` through self-healing
 - **Muzzle:** pauses background scavenger during active LLM sessions
 
-## Documentation
+## Usage by Agent
 
-- **[CONFIG.md](./CONFIG.md)** — Mode system, feature flags, config cascade
-- **[SECURITY.md](./SECURITY.md)** — Vulnerability disclosure and security policy
-
-## Install
-
-```bash
-cargo install reliary-agent
-```
-
-Or download a release tarball:
-
-```bash
-curl -sSfL https://github.com/Reliary/reliary-agent/releases/latest/download/reliary-$(uname -m)-unknown-linux-gnu.tar.gz | tar xz
-cd reliary-* && ./install.sh
-```
-
-## Usage
-
-### Usage by Agent
-
-| Agent | What `rel init` does | Savings |
-|---|---|---|---|
+| Agent | What `reliary-agent init` does | Savings |
+|---|---|---|
 | **Pi** | Installs gate.js (tool-level compression + safety) | 30-50% |
 | **Claude Code** | Injects MCP server config (`reliary-agent mcp`) | 15-25% |
 | **Cline** | Injects MCP server config (`reliary-agent mcp`) | 15-25% |
 | **OpenCode** | Injects MCP server config (`reliary-agent mcp`) | 15-25% |
 
-### CLI
+## CLI
 
 ```bash
 # Explore
@@ -98,12 +100,10 @@ reliary-agent index ./project         # Build FTS5 search index
 reliary-agent search "query" ./path   # Search index
 reliary-agent risk ./src/file.rs      # Pre-edit risk analysis
 reliary-agent dead ./project          # Dead code detection
-reliary-agent memory "what we fixed"  # Cross-session memory
 
 # Edit
 reliary-agent fix-dir ./project       # Apply stored fix patterns
 reliary-agent fix-file file old new   # Apply pattern to single file
-reliary-agent apply-edit file tmp wd  # Self-healing edit
 
 # Services
 reliary-agent serve                   # Daemon + proxy (:9090)
@@ -117,7 +117,7 @@ reliary-agent config                  # Show current settings
 reliary-agent config mode strict      # Set safety level (fast/reactive/strict)
 ```
 
-### API Proxy (for any agent framework)
+## API Proxy
 
 The `serve` command starts an OpenAI-compatible compression proxy on `localhost:9090`.
 Point any agent at it to get conversation compression without installing gate.js:
@@ -151,10 +151,10 @@ preserving the typewriter effect in your agent's UI.
   responses — zero API cost on repeat edits
 - **Tool schemas:** redundant description text is stripped from the tools array
   sent with each request (~150t saved per turn)
-- **Context filter:** tool results older than 8 turns are dropped entirely,
-  preventing unbounded context growth
+- **Context filter:** tool results older than 8 turns are collapsed into summary
+  markers, preventing unbounded context growth
 
-### Output Formats
+## Output Formats
 
 ```bash
 # Human (default)
@@ -184,30 +184,33 @@ See [CONFIG.md](./CONFIG.md) for the full documentation.
 | `DEEPSEEK_BASE_URL=http://localhost:9090/v1` | Route Pi/Cline/OpenCode through proxy |
 | `ANTHROPIC_BASE_URL=http://localhost:9090/` | Route Claude Code through proxy |
 
-## Built from
+## Architecture
 
-| Crate | Origin | What |
-|---|---|---|
-| `reliary-search` | stria | BM25 + FTS5, Porter stemming, phrase extraction |
-| `reliary-compress` | gate | IR reasoning compression, conv-window |
-| `reliary-sift` | sift + maxwell | Structural compression, entropy/diversity gates |
-| `reliary-risk` | quale | Pre-edit risk scores, blast radius |
-| `reliary-memory` | cortex-rs | HDC 10K-bit vectors, Hebbian learning |
-| `reliary-fix` | cortex-rs + relay | Pattern extraction, content matching, signature matching |
-| `reliary-dead` | carrion | Grammar-free dead code via occurrence counting |
+This binary consolidates 9 crates — each ported from a standalone tool — into one
+binary. Shared tokenizer, shared session state, no IPC overhead.
 
-## Synergies (one binary)
-
-Search, risk, fix, dead, and memory share a tokenizer and session state.
-Co-occurrence spans all operations. MCP server exposes all capabilities.
+- **search:** BM25 + FTS5, Porter stemming, phrase extraction (from stria)
+- **compress:** IR reasoning compression (from gate.js)
+- **sift:** Structural compression, entropy/diversity gates (from sift + maxwell)
+- **risk:** Pre-edit risk scores, blast radius (from quale)
+- **memory:** HDC 10K-bit vectors, Hebbian learning (from cortex-rs)
+- **fix:** Pattern extraction, content matching, signature matching (from cortex-rs)
+- **dead:** Grammar-free dead code via occurrence counting (from carrion)
+- **agent:** Binary — daemon, proxy (axum + tokio), CLI, MCP
 
 ## Development
 
 ```bash
 cargo build --release
 cargo test --release
-reliary-agent serve &    # start deamon + proxy
+reliary-agent serve &    # start daemon + proxy
 ```
+
+## Documentation
+
+- **[CONFIG.md](./CONFIG.md)** — Mode system, feature flags, config cascade
+- **[SECURITY.md](./SECURITY.md)** — Vulnerability disclosure and security policy
+- **[CONTRIBUTING.md](./CONTRIBUTING.md)** — Build, test, PR workflow
 
 ## License
 
