@@ -188,7 +188,7 @@ fn inject_mcp_server(cfg_path: &PathBuf, server_name: &str) -> bool {
             
             servers.insert(server_name.to_string(), serde_json::json!({
                 "command": exe_str,
-                "args": ["serve"]
+                "args": ["mcp"]
             }));
             
             if let Ok(new_content) = serde_json::to_string_pretty(&v) {
