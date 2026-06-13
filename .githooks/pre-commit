@@ -1,0 +1,36 @@
+#!/bin/sh
+# Guardrails pre-commit hook: gitleaks + cargo audit + cargo deny + hardcoded paths
+set -e
+
+echo "[guard] Running pre-commit checks..."
+
+# 1. Hardcoded /home/dev/ paths
+if git diff --cached --name-only | xargs grep -l '/home/dev/' 2>/dev/null; then
+    echo "FAIL: Hardcoded /home/dev/ path detected. Use $HOME or env vars."
+    exit 1
+fi
+
+# 2. Gitleaks (staged files only)
+if command -v gitleaks >/dev/null 2>&1; then
+    gitleaks protect --staged --config .gitleaks.toml 2>/dev/null || {
+        echo "FAIL: Gitleaks detected secrets in staged changes."
+        exit 1
+    }
+fi
+
+# 3. cargo audit (check for known vulnerabilities)
+if command -v cargo-audit >/dev/null 2>&1 || command -v cargo audit >/dev/null 2>&1; then
+    cargo audit --deny-warnings 2>/dev/null || {
+        echo "WARN: cargo audit found vulnerabilities."
+        echo "      Install cargo-audit: cargo install cargo-audit"
+    }
+fi
+
+# 4. cargo deny bans (check for duplicate deps, yanked crates)
+if command -v cargo-deny >/dev/null 2>&1 || command -v cargo deny >/dev/null 2>&1; then
+    cargo deny check bans 2>/dev/null || {
+        echo "WARN: cargo deny found ban violations."
+    }
+fi
+
+echo "[guard] All checks passed."

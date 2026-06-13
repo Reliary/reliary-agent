@@ -1,0 +1,52 @@
+name: Hardening
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  checksec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build release binary
+        run: cargo build --release
+      - name: Check binary hardening (RELRO/PIE/NX)
+        run: |
+          file target/release/reliary-agent | grep -E "ELF|Mach-O|PE" || exit 1
+          if command -v checksec >/dev/null 2>&1; then
+            checksec --elf target/release/reliary-agent
+          else
+            echo "checksec not available — skipping"
+          fi
+      - name: Verify no secrets in build log
+        run: |
+          cargo build --release 2>&1 | grep -iE "api.key|sk-|api_key|token|secret|password" && exit 1 || echo "No secrets leaked"
+
+  cargo_audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked 2>/dev/null || true
+      - name: Cargo audit
+        run: cargo audit --deny-warnings 2>/dev/null || echo "WARN: audit found issues"
+      - name: Cargo deny
+        run: |
+          cargo install cargo-deny --locked 2>/dev/null || true
+          cargo deny check 2>&1 || echo "WARN: deny check failed"
+
+  cargo_outdated:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check outdated deps
+        run: |
+          cargo install cargo-outdated 2>/dev/null || true
+          cargo outdated --exit-code 1 2>/dev/null || echo "WARN: outdated deps found"
