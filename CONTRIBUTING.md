@@ -43,7 +43,7 @@ cargo test --release
 | `reliary-fix` | Pattern extraction + editing |
 | `reliary-dead` | Dead code analysis |
 | `reliary-core` | Shared session types |
-| `reliary-agent` | Binary — daemon, proxy, CLI, MCP |
+| `reliary-agent` | Binary — daemon, proxy (axum + tokio + reqwest), CLI, MCP |
 
 ## Release
 
