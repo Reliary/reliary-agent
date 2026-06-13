@@ -63,13 +63,21 @@ jobs:
             diff /tmp/deps_master.txt /tmp/deps_head.txt 2>/dev/null | head -20 || true
           fi
       - name: cargo audit
+        run: cargo audit --deny-warnings 2>&1 | tail -5 || true
       - name: cargo deny
         run: cargo deny check bans 2>/dev/null || echo "WARN: deny found violations"
       - name: Test count check
         run: |
           count=$(cargo test --release --no-run 2>&1 | grep -c "running" || true)
           echo "Test count: $count"
-          [ "$count" -ge 55 ] || echo "WARN: test count below 55 ($count)"
+          [ "$count" -ge 62 ] || echo "WARN: test count below 62 ($count)"
       - name: Binary size check
         run: |
           ls -lh target/release/reliary-agent 2>/dev/null || echo "Binary not built"
+      - name: Cross-compile guardrail — no openssl-sys
+        run: |
+          if cargo tree -e normal 2>/dev/null | grep -q "openssl-sys"; then
+            echo "FAIL: openssl-sys in dependency tree — blocks ARM cross-compile"
+            exit 1
+          fi
+          echo "No openssl-sys — cross-compile safe"
