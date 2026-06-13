@@ -1,5 +1,4 @@
 use ahash::AHashMap;
-use std::sync::OnceLock;
 
 /// Dictionary entry: a symbol known to the FTS5 index.
 #[derive(Clone, Debug)]
@@ -106,20 +105,6 @@ pub fn compress_reasoning(text: &str, dict: Option<&CompressionDict>) -> Option<
     if (t.len() as f64) < original_len as f64 * 0.6 { Some(t) } else { None }
 }
 
-fn extract_entities(text: &str) -> Vec<String> {
-    let mut seen: AHashMap<String, u32> = AHashMap::new();
-    for word in text.split_whitespace() {
-        let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
-        if clean.len() >= 3 {
-            *seen.entry(clean.to_lowercase()).or_insert(0) += 1;
-        }
-    }
-    let mut entities: Vec<&String> = seen.keys().collect();
-    entities.sort_by(|a, b| b.len().cmp(&a.len()));
-    entities.truncate(5);
-    entities.into_iter().cloned().collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,11 +137,5 @@ mod tests {
     #[test]
     fn test_short_text_skipped() {
         assert!(compress_reasoning("a b c", None).is_none());
-    }
-
-    #[test]
-    fn test_extract_entities() {
-        let entities = extract_entities("Alice works at Google and Bob works at Google");
-        assert!(entities.contains(&"google".to_string()));
     }
 }

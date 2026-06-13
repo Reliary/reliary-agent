@@ -1,8 +1,3 @@
-/// Agent config scanning for provider-agnostic proxy routing.
-/// Reads agent configs to extract (apiKey -> upstream URL) pairs.
-/// Grammar-free: no model lists, no provider detection.
-
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Discover upstream URL for an auth key by scanning all known agent configs.

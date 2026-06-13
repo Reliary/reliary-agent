@@ -7,13 +7,24 @@ use axum::{
     routing::{get, post},
 };
 use bytes::Bytes;
-use futures_util::stream::{self, StreamExt};
+use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, LazyLock};
 use serde_json::Value;
 
-use crate::session_state::SessionState as SS; // Alias to avoid name conflict
+// ── Token counting (lightweight heuristic) ──
+
+fn estimate_tokens(text: &str) -> usize {
+    if text.is_empty() { return 0; }
+    let whitespace = text.split_whitespace().count();
+    let avg_len = text.len().saturating_sub(whitespace.saturating_sub(1)) / whitespace.max(1);
+    // Common heuristic: ~1.3 tokens per word for code, ~1.5 for prose
+    let tokens_per_word = if avg_len > 5 { 1.3 } else { 1.5 };
+    (whitespace as f64 * tokens_per_word).round() as usize
+}
+
+ // Alias to avoid name conflict
 
 static RESPONSE_CACHE: LazyLock<Mutex<HashMap<u64, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -69,9 +80,6 @@ fn extract_auth_key(headers: &HeaderMap) -> String {
 fn daemon_cmd_str(cmd: &str) -> String {
     crate::daemon::daemon_handle_cmd_str(cmd, &get_state())
 }
-
-#[derive(Clone)]
-struct AppState;
 
 // ── Health / Ping ──
 
@@ -174,6 +182,9 @@ async fn proxy_post(
     }
 
     // Feed-forward compression
+    let input_body_str = serde_json::to_string(&payload).unwrap_or_default();
+    let input_tokens = estimate_tokens(&input_body_str);
+
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let dict = crate::read_summary::load_dictionary();
         for (i, msg) in messages.iter_mut().enumerate() {
@@ -189,6 +200,14 @@ async fn proxy_post(
         }
     }
 
+    let compressed_body_str = serde_json::to_string(&payload).unwrap_or_default();
+    let compressed_tokens = estimate_tokens(&compressed_body_str);
+    let token_savings = if input_tokens > 0 {
+        ((input_tokens.saturating_sub(compressed_tokens)) as f64 / input_tokens as f64 * 100.0) as usize
+    } else { 0 };
+
+    eprintln!("[reliary] tokens: {} → {} ({}% saved, {} win)", input_tokens, compressed_tokens, token_savings, upstream_url);
+
     let body_bytes = serde_json::to_vec(&payload).unwrap_or_default();
 
     let client = reqwest::Client::new();
@@ -202,7 +221,7 @@ async fn proxy_post(
 
     match req_builder.send().await {
         Ok(upstream_resp) => {
-            let status = upstream_resp.status();
+            let _status = upstream_resp.status();
 
     if is_streaming {
         let byte_stream = upstream_resp.bytes_stream();

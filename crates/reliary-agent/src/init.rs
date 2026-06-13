@@ -5,8 +5,6 @@ use std::process::Command;
 use serde_json::Value;
 
 fn ok(msg: &str) { println!("  {} {}", "\x1b[32m✓\x1b[0m", msg); }
-fn warn(msg: &str) { println!("  {} {} \x1b[33m(warning)\x1b[0m", "\x1b[33m⚠\x1b[0m", msg); }
-fn info(msg: &str) { println!("  {} {}", "\x1b[34m•\x1b[0m", msg); }
 
 // Embed gate.js at compile time
 const EMBEDDED_GATE_JS: &str = include_str!("../../../pi/gate.js");

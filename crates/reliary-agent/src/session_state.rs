@@ -3,15 +3,13 @@
 
 use rustc_hash::FxHashMap;
 use std::sync::{atomic::AtomicBool, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use std::path::PathBuf;
-use rusqlite::Connection;
 
 #[derive(Clone)]
 pub struct ReadCacheEntry {
     pub hash: u64,
     pub len: usize,
-    pub mtime: SystemTime,
 }
 
 /// Per-agent state tracked in memory (persisted to chronicle SQLite on changes)
@@ -22,8 +20,6 @@ pub struct SessionState {
     pub chronicle_path: PathBuf,
     read_cache: Mutex<FxHashMap<String, ReadCacheEntry>>,
     risk_cache: Mutex<FxHashMap<String, (String, Instant)>>,
-    db_conn: Mutex<Option<Connection>>,
-    reliary_root: PathBuf,
 }
 
 impl SessionState {
@@ -38,35 +34,6 @@ impl SessionState {
             workdir: PathBuf::from(workdir),
             read_cache: Mutex::new(FxHashMap::default()),
             risk_cache: Mutex::new(FxHashMap::default()),
-            db_conn: Mutex::new(None),
-            reliary_root: base,
-        }
-    }
-
-    /// Get the database connection path for the FTS5 index
-    pub fn index_path(&self) -> PathBuf {
-        self.reliary_root.join("index.sqlite")
-    }
-
-    /// Get a cached FTS5 database connection, opening on first call
-    pub fn get_db(&self) -> Option<Connection> {
-        let mut guard = self.db_conn.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.is_none() {
-            if let Ok(db) = Connection::open(&self.reliary_root.join("index.sqlite")) {
-                if reliary_search::schema::open_existing_db(&db).is_ok() {
-                    *guard = Some(db);
-                }
-            }
-        }
-        match &*guard {
-            Some(db) => {
-                drop(guard);
-                let path = self.reliary_root.join("index.sqlite");
-                Connection::open(&path).ok().filter(|db| {
-                    reliary_search::schema::open_existing_db(db).is_ok()
-                })
-            }
-            None => None,
         }
     }
 

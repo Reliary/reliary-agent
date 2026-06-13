@@ -1,11 +1,11 @@
+#![allow(dead_code)]
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use crate::session_state::SessionState;
-use crate::chronicle;
 
 const MAX_CONCURRENT: usize = 50;
 const MAX_FILE_SIZE: u64 = 10_000_000;
@@ -263,10 +263,7 @@ fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str
                 let path = p1.to_string();
                 let len: usize = p3.parse().unwrap_or(0);
                 let hash_val: u64 = u64::from_str_radix(&p2[..16.min(p2.len())], 16).unwrap_or(0);
-                let mtime = std::fs::metadata(&path)
-                    .and_then(|m| m.modified())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                state.read_cache_set(path, crate::session_state::ReadCacheEntry { hash: hash_val, len, mtime });
+                state.read_cache_set(path, crate::session_state::ReadCacheEntry { hash: hash_val, len });
                 format!("cached {}\n", len)
             }
         }
