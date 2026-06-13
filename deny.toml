@@ -1,0 +1,42 @@
+[advisories]
+db-url = "https://github.com/rustsec/advisory-db"
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "deny"
+notice = "warn"
+ignore = []
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "0BSD",
+]
+unlicensed = "deny"
+allow-osi-fsf-free = "neither"
+default = "deny"
+
+[licenses.private]
+ignore = false
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+deny = []
+skip = [
+    { name = "bitflags", version = "1" },  # transient dep
+    { name = "hashbrown", version = "0.12" },  # transient dep
+]
+skip-tree = []
+
+[sources]
+allow-git = []
+unknown-git = "deny"
+unknown-registry = "warn"
