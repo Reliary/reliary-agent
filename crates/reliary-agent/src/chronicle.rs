@@ -79,6 +79,7 @@ pub fn recent_events_by_type(db: &Connection, event_type: &str, hours: i64) -> V
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ChronicleEvent {
     pub t: i64,
     pub event: String,

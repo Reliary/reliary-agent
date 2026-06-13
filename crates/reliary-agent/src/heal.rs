@@ -16,15 +16,6 @@ pub fn atomic_write(path: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Numbered backup path with rotation (keep last 3)
-fn backup_path(path: &str) -> String {
-    for i in 1..=3 {
-        let bp = format!("{}.bak.{}", path, i);
-        if !Path::new(&bp).exists() { return bp; }
-    }
-    format!("{}.bak.3", path)
-}
-
 /// Apply a fix in a shadow worktree, run tests, revert on failure.
 /// Returns Ok(()) if fix passes tests, Err(error_summary) with first test failure.
 pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), String> {

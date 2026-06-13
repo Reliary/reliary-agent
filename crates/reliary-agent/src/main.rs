@@ -17,7 +17,7 @@ mod ux;
 mod proxy;
 mod routes;
 
-use clap::{Parser, Subcommand, CommandFactory};
+use clap::{Parser, Subcommand};
 use std::io::Read;
 use std::sync::Arc;
 use crate::session_state::SessionState;
@@ -193,7 +193,7 @@ fn main() {
                 Err(e) => eprintln!("Error creating database: {}", e),
             }
         }
-        Commands::Compress { text, gentle } => {
+        Commands::Compress { text, gentle: _ } => {
             let input_buf: String = match text {
                 Some(ref t) if !t.is_empty() && t != "---stdin---" => t.clone(),
                 _ => {
@@ -217,12 +217,6 @@ fn main() {
             let risk_result = reliary_risk::compute_file_risk(file, &content);
             println!("{:?}", risk_result);
         }
-        Commands::FixDir { path } => {
-            let content = std::fs::read_to_string(path).unwrap_or_default();
-            let empty: Vec<(String, String)> = Vec::new();
-            let (_result, count) = reliary_fix::apply_fixes(&content, &empty);
-            println!("Applied {} fixes to {}", count, path);
-        }
         Commands::FixFile { file, old, new } => {
             eprintln!("Use apply-edit instead. 'fix-file' may be removed.");
             println!("Edit: {} → {} in {}", old, new, file);
@@ -239,7 +233,7 @@ fn main() {
         Commands::Dead { path } => {
             println!("Dead code analysis for: {}", path);
         }
-        Commands::ApplyEdit { file, tmp_path, workdir } => {
+        Commands::ApplyEdit { file, tmp_path, workdir: _ } => {
             if let Ok(diff) = std::fs::read(tmp_path) {
                 let body = String::from_utf8_lossy(&diff).to_string();
                 println!("Edit applied to {}: {} chars", file, body.len());
