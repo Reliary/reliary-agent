@@ -1,4 +1,4 @@
-use crate::session::{SessionState, ReadRecord, EditRecord};
+use crate::session::SessionState;
 
 /// Build a ~150-token state block from session state + memory recall + risk analysis
 pub fn build_state_block(state: &SessionState, turn_count: usize) -> String {

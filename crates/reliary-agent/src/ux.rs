@@ -16,7 +16,7 @@ pub fn doctor() {
 
     // 1. Daemon Status
     print!("Daemon Status: ");
-    if TcpStream::connect_timeout(&"127.0.0.1:9799".parse().unwrap(), Duration::from_millis(500)).is_ok() {
+    if TcpStream::connect_timeout(&"127.0.0.1:9799".parse().expect("invalid port"), Duration::from_millis(500)).is_ok() {
         println!("✅ Active on port 9799");
     } else {
         println!("❌ Inactive or unreachable");

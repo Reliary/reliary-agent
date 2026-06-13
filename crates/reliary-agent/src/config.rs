@@ -96,7 +96,7 @@ pub fn set_config(key: &str, value: &str, project: bool, root: Option<&str>) -> 
         Ok(()) => {
             let location = if project { "project" } else { "global" };
             let root_msg = if project && root.is_some() {
-                format!(" for {}", root.unwrap())
+                format!(" for {}", root.unwrap_or_default())
             } else {
                 String::new()
             };

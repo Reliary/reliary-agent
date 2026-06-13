@@ -32,7 +32,8 @@ pub fn build(file: &str) -> String {
     let total_lines = lines.len();
 
     let mut defs: Vec<(usize, &str)> = Vec::new();
-    let sig_re = regex_lite::Regex::new(r"^\s*(pub\s+)?(fn|def|class|struct|enum|trait|function|func)\s+(\w+)").unwrap();
+    let sig_re = regex_lite::Regex::new(r"^\s*(pub\s+)?(fn|def|class|struct|enum|trait|function|func)\s+(\w+)")
+        .expect("invalid regex in read_summary");
     for (i, line) in lines.iter().enumerate() {
         if sig_re.is_match(line) {
             defs.push((i + 1, line.trim()));
@@ -46,14 +47,15 @@ pub fn build(file: &str) -> String {
     // Definitions with caller search (if index exists)
     let workdir = find_workdir(file);
     let db_path = index_db_path(&workdir);
-    let name_re = regex_lite::Regex::new(r"(fn|def|class|struct|enum|trait|function|func)\s+(\w+)").unwrap();
+    let name_re = regex_lite::Regex::new(r"(fn|def|class|struct|enum|trait|function|func)\s+(\w+)")
+        .expect("invalid regex in read_summary");
 
     for (line_no, sig) in defs.iter().take(6) {
         result.push_str(&format!("\n  L{}: {}", line_no, sig));
         if let Ok(db) = rusqlite::Connection::open(&db_path) {
             if reliary_search::schema::open_existing_db(&db).is_ok() {
                 if let Some(caps) = name_re.captures(sig) {
-                    let name = caps.get(2).unwrap().as_str();
+                    let name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
                     let callers = reliary_search::search::search_fts5(&db, name, 5);
                     let caller_files: Vec<&str> = callers.iter()
                         .filter(|r| r.file.split('/').last().unwrap_or("") != fname)
