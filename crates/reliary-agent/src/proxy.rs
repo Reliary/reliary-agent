@@ -6,34 +6,33 @@
 
 use tiny_http::{Server, Response, Request, Header, StatusCode};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 const DEFAULT_UPSTREAM: &str = "https://api.deepinfra.com/v1/openai/chat/completions";
-const RESPONSE_CACHE_LIMIT: usize = 100;
 
 static RESPONSE_CACHE: std::sync::LazyLock<Mutex<HashMap<u64, String>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn cache_key(model: &str, messages_json: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    model.hash(&mut h);
-    messages_json.hash(&mut h);
-    h.finish()
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    model.hash(&mut hasher);
+    messages_json.hash(&mut hasher);
+    hasher.finish()
 }
 
-fn cached_response(model: &str, messages_json: &str) -> Option<String> {
+fn cached_response<'a>(model: &str, messages_json: &str) -> Option<String> {
     let key = cache_key(model, messages_json);
-    RESPONSE_CACHE.lock().ok()?.get(&key).cloned()
+    RESPONSE_CACHE.lock().ok().and_then(|c| c.get(&key).cloned())
 }
 
 fn store_response(model: &str, messages_json: &str, response: &str) {
     let key = cache_key(model, messages_json);
     if let Ok(mut cache) = RESPONSE_CACHE.lock() {
         cache.insert(key, response.to_string());
-        if cache.len() > RESPONSE_CACHE_LIMIT + 20 {
+        if cache.len() > 120 {
             let keys: Vec<u64> = cache.keys().copied().collect();
             for k in keys.iter().take(20) {
                 cache.remove(k);
