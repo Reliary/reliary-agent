@@ -126,11 +126,12 @@ fn handle_request(mut request: Request) {
         Err(e) => { respond(request, 400, &format!("{{\"error\":\"json parse: {}\"}}", e)); return; }
     };
 
-    // Extract auth key for routing
-    let auth_key = request.headers().iter()
+    // Extract auth key for routing (strip "Bearer " prefix if present)
+    let auth_raw = request.headers().iter()
         .find(|h| h.field.to_string().to_lowercase() == "authorization")
         .map(|h| format!("{}", h.value))
         .unwrap_or_default();
+    let auth_key = auth_raw.strip_prefix("Bearer ").unwrap_or(&auth_raw).to_string();
 
     // Determine upstream URL from auth key
     let upstream_url = match get_upstream(&auth_key) {
