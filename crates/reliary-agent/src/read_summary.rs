@@ -98,7 +98,7 @@ pub fn load_dictionary() -> Option<reliary_compress::CompressionDict> {
                 let phrases: Vec<String> = stmt.query_map([], |r| r.get(0)).ok()?
                     .filter_map(|r| r.ok()).collect();
                 if !phrases.is_empty() {
-                    return Some(reliary_compress::CompressionDict::from_phrases(&phrases));
+                    return Some(reliary_compress::build_dict(&phrases));
                 }
             }
         }

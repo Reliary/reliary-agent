@@ -178,11 +178,7 @@ fn main() {
             };
             let input: &str = &input_buf;
             if !input.is_empty() {
-                let result = if *gentle {
-                    reliary_compress::gentle_compress(input)
-                } else {
-                    reliary_compress::aggressive_compress(input)
-                };
+                let result = reliary_compress::compress_reasoning(input, None);
                 if let Some(compressed) = result {
                     println!("{}", cfg.format_output("compressed", &[compressed]));
                 } else {

@@ -6,3 +6,4 @@ license = "MIT"
 [dependencies]
 ahash = "0.8.12"
 regex = "1.12.4"
+regex-lite = "0.1"
