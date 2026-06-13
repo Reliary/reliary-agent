@@ -63,7 +63,7 @@ pub fn serve_stdio() {
                         { "name": "reliary_compress", "description": "IR reasoning compression", "inputSchema": { "type": "object", "properties": { "text": {"type": "string"} } } },
                         { "name": "reliary_risk", "description": "Pre-edit risk analysis", "inputSchema": { "type": "object", "properties": { "file": {"type": "string"} } } },
                         { "name": "reliary_fix", "description": "Pattern-based file fix", "inputSchema": { "type": "object", "properties": { "file": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"} } } },
-                        { "name": "reliary_dead", "description": "Grammar-free dead code detection", "inputSchema": { "type": "object", "properties": { "path": {"type": "string"} } } },
+                        { "name": "reliary_dead", "description": "Grammar-free dead code detection (compact summary + top-N)", "inputSchema": { "type": "object", "properties": { "path": {"type": "string"}, "limit": {"type": "integer", "default": 10}, "confidence": {"type": "string", "enum": ["all","high","medium","low"], "default": "all"} } } },
                         { "name": "reliary_heal", "description": "Apply edit with self-healing", "inputSchema": { "type": "object", "properties": { "file": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}, "workdir": {"type": "string"} } } },
                         { "name": "reliary_prior", "description": "Chronicled project state", "inputSchema": { "type": "object", "properties": { "path": {"type": "string"} } } },
                     ]
@@ -138,6 +138,8 @@ pub fn serve_stdio() {
             "tools/dead" => {
                 let params = msg.get("params").and_then(|v| v.as_object()).cloned().unwrap_or_default();
                 let path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+                let min_confidence = params.get("confidence").and_then(|v| v.as_str()).unwrap_or("all");
                 let config = reliary_dead::DeadConfig::default();
                 let mut candidates = Vec::new();
                 if let Ok(entries) = std::fs::read_dir(path) {
@@ -152,7 +154,45 @@ pub fn serve_stdio() {
                         }
                     }
                 }
-                respond(id, serde_json::json!({ "candidates": candidates.len(), "items": candidates.iter().map(|c| serde_json::json!({"name": c.name, "file": c.file, "line": c.line})).collect::<Vec<_>>() }));
+
+                // Filter by confidence
+                let filtered: Vec<_> = candidates.iter().filter(|c| {
+                    match min_confidence {
+                        "high" => c.confidence == reliary_dead::Confidence::High,
+                        "medium" => c.confidence == reliary_dead::Confidence::High || c.confidence == reliary_dead::Confidence::Medium,
+                        "low" => true,
+                        _ => true,
+                    }
+                }).collect();
+
+                // Count by confidence
+                let high = filtered.iter().filter(|c| c.confidence == reliary_dead::Confidence::High).count();
+                let medium = filtered.iter().filter(|c| c.confidence == reliary_dead::Confidence::Medium).count();
+                let low = filtered.iter().filter(|c| c.confidence == reliary_dead::Confidence::Low).count();
+
+                // Top-N items
+                let top: Vec<_> = filtered.iter().take(limit).map(|c| {
+                    let conf_str = match c.confidence {
+                        reliary_dead::Confidence::High => "high",
+                        reliary_dead::Confidence::Medium => "medium",
+                        reliary_dead::Confidence::Low => "low",
+                    };
+                    serde_json::json!({"name": c.name, "file": c.file, "line": c.line, "confidence": conf_str})
+                }).collect();
+
+                let mut response = serde_json::json!({
+                    "total": filtered.len(),
+                    "high": high,
+                    "medium": medium,
+                    "low": low,
+                    "items": top,
+                });
+                if filtered.len() > limit {
+                    let obj = response.as_object_mut().unwrap();
+                    obj.insert("truncated".to_string(), serde_json::json!(true));
+                    obj.insert("limit".to_string(), serde_json::json!(limit));
+                }
+                respond(id, response);
             }
             "tools/heal" => {
                 let params = msg.get("params").and_then(|v| v.as_object()).cloned().unwrap_or_default();
