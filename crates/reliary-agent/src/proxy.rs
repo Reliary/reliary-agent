@@ -48,6 +48,22 @@ pub fn start(port: u16) -> Result<(), String> {
 
     for request in server.incoming_requests() {
         let method = request.method();
+        let url = request.url().to_string();
+
+        if method == &tiny_http::Method::Get && url == "/health" {
+            let ct = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+            let _ = request.respond(
+                tiny_http::Response::from_string("{\"status\":\"ok\"}")
+                    .with_status_code(200)
+                    .with_header(ct)
+            );
+            continue;
+        }
+        if method == &tiny_http::Method::Get && url == "/ping" {
+            let _ = request.respond(tiny_http::Response::from_string("pong").with_status_code(200));
+            continue;
+        }
+
         if method == &tiny_http::Method::Post {
             handle_request(request);
         } else {

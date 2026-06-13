@@ -309,8 +309,24 @@ function handleToolCall(event) {
     return; // pass through
   }
 
-  // Write: block at safetyLevel >= 2, pass through otherwise
+  // Write: route through heal-apply if file exists
   if (name === "write") {
+    const filePath = input.file || input.path || "";
+    const content = input.content || "";
+    if (filePath && content && existsSync(filePath)) {
+      gateLog("save", `heal-write: ${filePath}`);
+      const tmpFile = `/tmp/gate-heal-write-${Date.now()}.tmp`;
+      try { writeFileSync(tmpFile, content, "utf-8"); } catch {
+        return { block: true, response: `ERROR: could not write temp file` };
+      }
+      const result = daemonCmd(`apply-edit ${filePath} ${tmpFile} ${getRepoRoot() || "."}`);
+      try { unlinkSync(tmpFile); } catch {}
+      if (result && result.trim() !== "") {
+        return { block: true, response: `Edit applied via healing: ${result}` };
+      }
+      // Fall through to native write
+      return;
+    }
     if (safetyLevel >= 2) {
       gateLog("block", `write blocked (strict ${safetyLevel})`);
       return { block: true, response: "write is disabled in strict mode. Use edit to modify existing files or create to add new files." };
