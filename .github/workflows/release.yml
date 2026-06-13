@@ -46,6 +46,7 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
       - name: Package tarball
+        shell: bash
         run: |
           BIN="target/${{ matrix.target }}/release/reliary-agent${{ matrix.ext }}"
           PKG="reliary-${{ github.ref_name }}-${{ matrix.target }}"
