@@ -15,6 +15,7 @@ mod config;
 mod init;
 mod ux;
 mod proxy;
+mod routes;
 
 use clap::{Parser, Subcommand};
 use std::io::Read;
