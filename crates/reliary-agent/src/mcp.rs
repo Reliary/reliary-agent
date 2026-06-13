@@ -10,7 +10,7 @@ fn respond(id: u64, result: serde_json::Value) {
         "result": result,
     });
     let mut out = io::stdout();
-    writeln!(out, "{}", serde_json::to_string(&response).unwrap()).ok();
+    writeln!(out, "{}", serde_json::to_string(&response).unwrap_or_default()).ok();
     out.flush().ok();
 }
 
@@ -21,7 +21,7 @@ fn respond_error(id: u64, code: i32, message: &str) {
         "error": { "code": code, "message": message },
     });
     let mut out = io::stdout();
-    writeln!(out, "{}", serde_json::to_string(&response).unwrap()).ok();
+    writeln!(out, "{}", serde_json::to_string(&response).unwrap_or_default()).ok();
     out.flush().ok();
 }
 
