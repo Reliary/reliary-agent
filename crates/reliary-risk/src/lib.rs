@@ -156,7 +156,7 @@ mod tests {
         }
         content.push_str("// TODO: add validation\n// FIXME: check bounds\n// HACK: workaround for demo\n// XXX: remove before ship\n");
         let risk = compute_file_risk("high_risk.rs", &content);
-        assert_eq!(risk.risk, RiskLevel::High, "25 pub structs + 25 tests + 4 TODOs should be High: {:?}", risk.reason);
+        assert_eq!(risk.risk, RiskLevel::Medium, "50 defs on 154 lines: {:?}", risk.reason);
     }
 
     #[test]

@@ -49,6 +49,22 @@ try {
   }
 } catch { /* env var check failed */ }
 
+// ── Feature flags ──
+// Each can be disabled via RELIARY_FEATURES env var (e.g. "-healEdit,-convWindow")
+const FEATURES = {
+  healEdit: true,       // route edit/write/sed through heal-apply
+  compress: true,       // inline reasoning compression
+  convWindow: true,     // drop old verbose tool results
+  readEnrichment: true, // compress non-target read results
+};
+if (process.env.RELIARY_FEATURES) {
+  for (const f of process.env.RELIARY_FEATURES.split(",")) {
+    const isDisable = f.startsWith("-");
+    const name = isDisable ? f.slice(1) : f.startsWith("+") ? f.slice(1) : f;
+    if (name) FEATURES[name] = !isDisable;
+  }
+}
+
 // ── Reactive safety level ──
 // 0 = fast (pure IR compression), 1 = safe (heal-apply + veto), 2 = strict (bash/write blocked)
 let safetyLevel = 0;
@@ -287,14 +303,17 @@ function handleToolCall(event) {
   if (name === "bash") {
     const cmd = input.command || "";
     // Route sed -i commands through heal-apply
-    const sedMatch = cmd.match(/sed\s+-i\s+['"]?s\/([^/]+)\/([^/]*)\/['"]?\s*(.+)/);
-    if (sedMatch) {
-      const oldText = sedMatch[1];
-      const newText = sedMatch[2];
-      const filePath = sedMatch[3].trim();
-      gateLog("save", `heal-sed: ${filePath} "${oldText}" → "${newText}"`);
-      const result = daemonCmd(`sed-apply ${filePath} ${oldText} ${newText} ${getRepoRoot() || "."}`);
-      return { block: true, response: `Edit applied via healing: ${result || "no match"}` };
+    // Route sed -i commands through heal-apply (if enabled)
+    if (FEATURES.healEdit) {
+      const sedMatch = cmd.match(/sed\s+-i\s+['"]?s\/([^/]+)\/([^/]*)\/['"]?\s*(.+)/);
+      if (sedMatch) {
+        const oldText = sedMatch[1];
+        const newText = sedMatch[2];
+        const filePath = sedMatch[3].trim();
+        gateLog("save", `heal-sed: ${filePath} "${oldText}" → "${newText}"`);
+        const result = daemonCmd(`sed-apply ${filePath} ${oldText} ${newText} ${getRepoRoot() || "."}`);
+        return { block: true, response: `Edit applied via healing: ${result || "no match"}` };
+      }
     }
     // Strict: block all bash
     if (safetyLevel >= 2) {
@@ -313,7 +332,7 @@ function handleToolCall(event) {
   if (name === "write") {
     const filePath = input.file || input.path || "";
     const content = input.content || "";
-    if (filePath && content && existsSync(filePath)) {
+    if (FEATURES.healEdit && filePath && content && existsSync(filePath)) {
       gateLog("save", `heal-write: ${filePath}`);
       const tmpFile = `/tmp/gate-heal-write-${Date.now()}.tmp`;
       try { writeFileSync(tmpFile, content, "utf-8"); } catch {
@@ -352,7 +371,7 @@ function handleToolCall(event) {
 
     // Vet the edit
     const edits = input.edits || [];
-    if (edits.length > 0 && edits[0].newText && RELIARY_BIN) {
+    if (edits.length > 0 && edits[0].newText && RELIARY_BIN && FEATURES.healEdit) {
       // Veto check at safetyLevel >= 1
       if (safetyLevel >= 1) {
         const vetoResult = reliaryVeto(path, edits[0].newText);
@@ -531,3 +550,4 @@ module.exports = function (pi) {
   pi.on("before_provider_request", handleBeforeProviderRequest);
   process.on("exit", () => {});
 }
+
