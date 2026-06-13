@@ -10,7 +10,7 @@ const EMBEDDED_GATE_JS: &str = include_str!("../../../pi/gate.js");
 fn ask_yes_no(prompt: &str, default: bool) -> bool {
     let def_str = if default { "[Y/n]" } else { "[y/N]" };
     print!("{} {}: ", prompt, def_str);
-    io::stdout().flush().unwrap();
+    let _ = io::stdout().flush();
 
     let mut input = String::new();
     if io::stdin().read_line(&mut input).is_ok() {
@@ -55,12 +55,12 @@ pub fn run() {
                 if fs::create_dir_all(&target_dir).is_ok() {
                     let target_path = target_dir.join("gate.js");
                     if fs::write(&target_path, EMBEDDED_GATE_JS).is_ok() {
-                        let pi_cmd = if pi_bin.exists() { pi_bin.to_str().unwrap() } else { "pi" };
+                        let pi_cmd = if pi_bin.exists() { pi_bin.to_str().unwrap_or("pi") } else { "pi" };
                         let status = Command::new(pi_cmd)
-                            .args(["install", target_path.to_str().unwrap()])
+                            .args(["install", target_path.to_str().unwrap_or("/dev/null")])
                             .status();
                         
-                        if status.is_ok() && status.unwrap().success() {
+                        if status.is_ok() && status.unwrap_or_default().success() {
                             println!("✓ Installed gate.js\n");
                             configured_agents += 1;
                         } else {
@@ -217,7 +217,7 @@ fn install_daemon() -> bool {
             
             let _ = Command::new("systemctl").args(["--user", "daemon-reload"]).status();
             let enable = Command::new("systemctl").args(["--user", "enable", "--now", "reliary-daemon.service"]).status();
-            return enable.is_ok() && enable.unwrap().success();
+            return enable.is_ok() && enable.unwrap_or_default().success();
         }
         false
     }
@@ -251,9 +251,9 @@ fn install_daemon() -> bool {
             
             if fs::write(&plist_path, plist_content).is_err() { return false; }
             
-            let _ = Command::new("launchctl").args(["unload", "-w", plist_path.to_str().unwrap()]).status();
-            let load = Command::new("launchctl").args(["load", "-w", plist_path.to_str().unwrap()]).status();
-            return load.is_ok() && load.unwrap().success();
+            let _ = Command::new("launchctl").args(["unload", "-w", plist_path.to_str().unwrap_or("")]).status();
+            let load = Command::new("launchctl").args(["load", "-w", plist_path.to_str().unwrap_or("")]).status();
+            return load.is_ok() && load.unwrap_or_default().success();
         }
         false
     }
@@ -271,7 +271,7 @@ fn install_daemon() -> bool {
             
             if fs::write(&vbs_path, vbs_content).is_ok() {
                 // Try to start it right now too
-                let _ = Command::new("wscript").arg(vbs_path.to_str().unwrap()).status();
+                let _ = Command::new("wscript").arg(vbs_path.to_str().unwrap_or("")).status();
                 return true;
             }
         }
@@ -301,9 +301,9 @@ pub fn uninstall() {
             let target_path = target_dir.join("gate.js");
             
             if target_path.exists() {
-                let pi_cmd = if pi_bin.exists() { pi_bin.to_str().unwrap() } else { "pi" };
+                let pi_cmd = if pi_bin.exists() { pi_bin.to_str().unwrap_or("pi") } else { "pi" };
                 let _ = Command::new(pi_cmd)
-                    .args(["uninstall", target_path.to_str().unwrap()])
+                    .args(["uninstall", target_path.to_str().unwrap_or("/dev/null")])
                     .status();
                 
                 let _ = fs::remove_file(&target_path);
@@ -447,7 +447,7 @@ fn uninstall_daemon() -> bool {
         if let Some(home) = home_dir() {
             let plist_path = home.join("Library/LaunchAgents/com.reliary.daemon.plist");
             if plist_path.exists() {
-                let _ = Command::new("launchctl").args(["unload", "-w", plist_path.to_str().unwrap()]).status();
+                let _ = Command::new("launchctl").args(["unload", "-w", plist_path.to_str().unwrap_or("")]).status();
                 if fs::remove_file(&plist_path).is_ok() {
                     removed = true;
                 }
