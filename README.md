@@ -56,6 +56,15 @@ cd reliary-* && ./install.sh
 | **Response cache** | Proxy | 0-100% | Repeated requests (same model, same messages) return cached results — zero cost on retries |
 | **Tool schema stripping** | Proxy | ~150t/turn | Remove redundant tool descriptions the LLM already knows |
 
+```mermaid
+flowchart LR
+    A[Raw conversation] --> B[Reasoning compression<br/>30-50% saved]
+    B --> C[Conv window collapse<br/>15-25% saved]
+    C --> D[Tool schema strip<br/>~150t/turn]
+    D --> E[Response cache<br/>0-100% on repeats]
+    E --> F[Billed tokens]
+```
+
 ### Code Intelligence (MCP tools)
 
 ```bash
@@ -71,9 +80,16 @@ Every tool also available through MCP — works with Claude Code, Cline, OpenCod
 
 When the LLM edits a file, `reliary` shadow-applies the change, runs tests, and reverts if tests fail. The LLM never sees the failure spiral.
 
-```
-edit → heal applies → cargo test → PASS → commit
-edit → heal applies → cargo test → FAIL → revert → "REVERTED: assertion L42"
+```mermaid
+flowchart LR
+    A[LLM sends edit] --> B{Daemon intercepts}
+    B --> C[Shadow-apply to temp]
+    C --> D[Run cargo test]
+    D --> E{Tests pass?}
+    E -->|Yes| F[Write to real file]
+    E -->|No| G[Revert temp file]
+    G --> H[Return REVERTED to LLM]
+    F --> I[Return OK to LLM]
 ```
 
 ### Safety Features
@@ -137,6 +153,17 @@ pi --model deepseek/deepseek-v4-flash --print "fix bug"
 > directly in your agent's config file (Pi, Cline, and OpenCode all support
 > `baseUrl` in their provider settings).
 
+```mermaid
+flowchart LR
+    A[Agent Request] --> B{Auth Routing}
+    B --> C[Compression]
+    C --> D{Cache Hit?}
+    D -->|Yes| E[Return cached]
+    D -->|No| F[Forward to API]
+    F --> G[Stream back to agent]
+    G --> H[Cache response]
+```
+
 **Provider-agnostic routing:** The proxy automatically detects the API provider
 from the `Authorization` header. OpenAI, Anthropic, and DeepSeek keys all route
 to the correct upstream without manual configuration.
@@ -188,6 +215,21 @@ See [CONFIG.md](./CONFIG.md) for the full documentation.
 
 This binary consolidates 9 crates — each ported from a standalone tool — into one
 binary. Shared tokenizer, shared session state, no IPC overhead.
+
+```mermaid
+graph TD
+    A[CLI] --> D[Daemon Core]
+    B[MCP Server] --> D
+    C[API Proxy :9090] --> D
+    D --> E[(FTS5 Index)]
+    D --> F[(Chronicle)]
+    D --> G[(Co-occurrence)]
+
+    C --> H[Upstream API<br/>DeepSeek / OpenAI / Anthropic]
+    I[Gate.js<br/>Pi Agent] --> C
+    J[Claude Code] --> C
+    K[Cline] --> C
+```
 
 - **search:** BM25 + FTS5, Porter stemming, phrase extraction (from stria)
 - **compress:** IR reasoning compression (from gate.js)
