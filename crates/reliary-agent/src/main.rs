@@ -17,10 +17,20 @@ mod ux;
 mod proxy;
 mod routes;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, CommandFactory};
 use std::io::Read;
 use std::sync::Arc;
 use crate::session_state::SessionState;
+
+/// Simple ANSI color helpers
+#[allow(dead_code)]
+mod color {
+    pub fn green(s: &str) -> String { format!("\x1b[32m{}\x1b[0m", s) }
+    pub fn red(s: &str) -> String { format!("\x1b[31m{}\x1b[0m", s) }
+    pub fn yellow(s: &str) -> String { format!("\x1b[33m{}\x1b[0m", s) }
+    pub fn bold(s: &str) -> String { format!("\x1b[1m{}\x1b[0m", s) }
+    pub fn dim(s: &str) -> String { format!("\x1b[2m{}\x1b[0m", s) }
+}
 
 fn index_db_path(path: &str) -> String {
     format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
@@ -34,7 +44,19 @@ fn open_or_create_index(path: &str) -> Option<rusqlite::Connection> {
 }
 
 #[derive(Parser)]
-#[command(name = "reliary-agent", about = "Grammar-free code intelligence daemon, CLI, and MCP server")]
+#[command(name = "reliary-agent", about = "Grammar-free code intelligence daemon, CLI, and MCP server",
+          after_help = "\
+EXAMPLES:
+  rel index .              Build search index for current project
+  rel search query .       Search indexed project
+  rel risk src/main.rs     Check edit risk before making changes
+  rel serve                Start daemon + proxy on :9090
+  rel init                 Auto-configure agents (Pi, Claude, Cline)
+  rel doctor               System health check
+
+ALIAS:
+  The binary also responds to 'rel' for shorter commands.
+  e.g. 'rel serve', 'rel init', 'rel doctor'")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -127,6 +149,9 @@ fn main() {
     let cli = Cli::parse();
     let fmt = format_config(&cli.format);
     let cfg = reliary_core::FormatConfig::new(fmt);
+
+    // If the binary is invoked as "rel", the subcommand name comes from $0
+    // Otherwise use the standard name
 
     match &cli.command {
         Commands::Search { query, path } => {
