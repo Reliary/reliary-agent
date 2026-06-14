@@ -6,6 +6,7 @@ on:
     branches: [master]
   schedule:
     - cron: '0 3 * * *'
+jobs:
   test:
     runs-on: ubuntu-latest
     steps:
