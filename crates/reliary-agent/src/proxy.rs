@@ -318,6 +318,14 @@ fn truncate_tool_result(content: &str) -> String {
     format!("{} …[truncated {} chars]… {}", prefix, content.len() - 250, suffix)
 }
 
+/// Zone-compress recent tool results — keep first 300 + last 100 chars.
+fn zone_compress_tool_result(content: &str) -> String {
+    if content.len() <= 400 { return content.to_string(); }
+    let prefix = &content[..300];
+    let suffix = &content[content.len().saturating_sub(100)..];
+    format!("{} …[compressed {} chars]… {}", prefix, content.len() - 400, suffix)
+}
+
 /// Compress all messages in the conversation history.
 fn compress_messages(messages: &mut Vec<Value>, state: &mut PerKeyState) -> (usize, usize) {
     let total = messages.len();
@@ -350,16 +358,25 @@ fn compress_messages(messages: &mut Vec<Value>, state: &mut PerKeyState) -> (usi
                     }
                 }
             }
-            "tool" | "toolResult" if age > 2 => {
-                // Dedup repeated file reads
+            "tool" | "toolResult" if age > 2 && age <= 4 => {
+                // Dedup repeated file reads, then zone-compress remaining
                 if let Some(content) = messages[i].get("content").and_then(|c| c.as_str()) {
-                    // Extract file path from content (heuristic: first line that looks like a path)
+                    // Try dedup first
                     let path = content.lines().find(|l| l.contains(".rs") || l.contains(".py") || l.contains(".js") || l.contains(".ts"))
                         .unwrap_or("file");
-                    if let Some(deduped) = state.check_dedup(content, path) {
-                        let saved = content.len().saturating_sub(deduped.len());
+                    let deduped = state.check_dedup(content, path);
+                    if let Some(d) = deduped {
+                        let saved = content.len().saturating_sub(d.len());
                         history_saved += saved;
-                        messages[i]["content"] = Value::String(deduped);
+                        messages[i]["content"] = Value::String(d);
+                    } else {
+                        // Not a file read — zone compress (keep first 300 + last 100)
+                        let compressed = zone_compress_tool_result(content);
+                        if compressed.len() < content.len() {
+                            let saved = content.len().saturating_sub(compressed.len());
+                            history_saved += saved;
+                            messages[i]["content"] = Value::String(compressed);
+                        }
                     }
                 }
             }
