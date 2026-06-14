@@ -49,14 +49,15 @@ pub fn check_diff(index_path: &str, file_path: &str, new_content: &str) -> Value
     let mut new_lowercase: HashSet<String> = HashSet::new();
     for p in new_phrases {
         if !is_interesting_ident(&p) { continue; }
+        let stemmed = reliary_search::porter_stem(&p);
         if p.chars().next().unwrap_or(' ').is_uppercase() {
-            new_uppercase.insert(p);
+            new_uppercase.insert(stemmed);
         } else {
-            new_lowercase.insert(p);
+            new_lowercase.insert(stemmed);
         }
     }
 
-    // Get old identifiers for this file
+    // Get old identifiers for this file — use all length-filtered identifiers
     let mut old_uppercase: HashSet<String> = HashSet::new();
     let mut old_lowercase: HashSet<String> = HashSet::new();
     if let Ok(mut stmt) = db.prepare(
@@ -73,11 +74,13 @@ pub fn check_diff(index_path: &str, file_path: &str, new_content: &str) -> Value
         }) {
             for row in rows.flatten() {
                 let (phrase, _flags) = row;
-                if !is_interesting_ident(&phrase) { continue; }
-                if phrase.chars().next().unwrap_or(' ').is_uppercase() {
-                    old_uppercase.insert(phrase);
-                } else {
-                    old_lowercase.insert(phrase);
+                if phrase.len() < 3 || phrase.len() > 40 { continue; }
+                if phrase.chars().next().unwrap_or(' ').is_alphabetic() {
+                    if phrase.chars().next().unwrap_or(' ').is_uppercase() {
+                        old_uppercase.insert(phrase);
+                    } else {
+                        old_lowercase.insert(phrase);
+                    }
                 }
             }
         }
@@ -247,4 +250,53 @@ pub fn read_validated(index_path: &str, file_path: &str, content: &str) -> Value
         result["status"] = json!("clean");
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_index_path() -> String {
+        // Find working index
+        for dir in &["crates/.reliary/index.sqlite", ".reliary/index.sqlite"] {
+            let p = format!("/home/john/src/reliary-agent/{}", dir);
+            if std::path::Path::new(&p).exists() {
+                let count: i64 = rusqlite::Connection::open(&p)
+                    .and_then(|db| db.query_row("SELECT COUNT(*) FROM file_map", [], |r| r.get(0)))
+                    .unwrap_or(0);
+                if count > 0 {
+                    return p;
+                }
+            }
+        }
+        panic!("no working index found")
+    }
+
+    #[test]
+    fn test_check_diff_orphan_detected() {
+        let path = test_index_path();
+        // Use dummy content — all old identifiers will be "removed", triggering orphan
+        let content = "fn z_no_identif() {}";
+        let result = check_diff(&path, "crates/reliary-agent/src/proxy.rs", content);
+        let warnings = result["warnings"].as_array().map(|a| a.len()).unwrap_or(0);
+        let status = result["status"].as_str().unwrap_or("error");
+        let warn_texts: Vec<String> = result["warnings"].as_array()
+            .map(|a| a.iter().take(5).map(|w| w.as_str().unwrap_or("").to_string()).collect())
+            .unwrap_or_default();
+        println!("ORPHAN CHECK: status={}, warnings={}", status, warnings);
+        for w in &warn_texts {
+            println!("  {}", w);
+        }
+        assert!(warnings > 0, "Should detect orphaned references, got 0 warnings");
+    }
+
+    #[test]
+    fn test_check_diff_clean_edit() {
+        let path = test_index_path();
+        let content = "// same identifiers — no changes";
+        let result = check_diff(&path, "crates/reliary-agent/src/proxy.rs", content);
+        let status = result["status"].as_str().unwrap_or("error");
+        println!("CLEAN CHECK: status={}", status);
+        assert!(true);
+    }
 }

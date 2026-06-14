@@ -600,6 +600,30 @@ async fn proxy_post(
     }
 }
 
+/// Try multiple relative path forms to match the index's stored paths.
+fn resolve_index_paths(file_path: &str, root: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if file_path.starts_with(root) {
+        let rel = file_path[root.len() + 1..].trim_start_matches('/').to_string();
+        candidates.push(rel.clone());
+        if let Some(stripped) = rel.strip_prefix("crates/") {
+            candidates.push(stripped.to_string());
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_str = cwd.to_string_lossy().to_string();
+        if file_path.starts_with(&cwd_str) {
+            let rel = file_path[cwd_str.len() + 1..].trim_start_matches('/').to_string();
+            candidates.push(rel.clone());
+            if let Some(stripped) = rel.strip_prefix("crates/") {
+                candidates.push(stripped.to_string());
+            }
+        }
+    }
+    candidates.push(file_path.to_string());
+    candidates
+}
+
 /// GET /check-diff — check a proposed edit for structural issues.
 async fn check_diff_handler(Query(params): Query<HashMap<String, String>>) -> String {
     let file_path = params.get("file").map(|s| s.as_str()).unwrap_or("");
@@ -607,8 +631,18 @@ async fn check_diff_handler(Query(params): Query<HashMap<String, String>>) -> St
     if file_path.is_empty() || new_content.is_empty() {
         return "{\"error\": \"missing file or content param\"}".to_string();
     }
-    if let Some((_root, index_path, _)) = crate::daemon::find_reliary_root(file_path) {
-        let result = crate::guard::check_diff(&index_path, file_path, new_content);
+    if let Some((root, index_path, _)) = crate::daemon::find_reliary_root(file_path) {
+        // Try multiple relative path forms to match index
+        let rel_paths = resolve_index_paths(file_path, &root);
+        // Try each, return first that produces warnings
+        for rp in &rel_paths {
+            let result = crate::guard::check_diff(&index_path, rp, new_content);
+            if result.get("status").and_then(|s| s.as_str()) != Some("clean") {
+                return serde_json::to_string(&result).unwrap_or_else(|_| "{\"error\": \"serialization failed\"}".to_string());
+            }
+        }
+        // All returned clean — return the first
+        let result = crate::guard::check_diff(&index_path, &rel_paths[0], new_content);
         serde_json::to_string(&result).unwrap_or_else(|_| "{\"error\": \"serialization failed\"}".to_string())
     } else {
         "{\"error\": \"no .reliary index\"}".to_string()
@@ -623,12 +657,21 @@ async fn read_validated_handler(Query(params): Query<HashMap<String, String>>) -
     }
     if let Some((root, index_path, _)) = crate::daemon::find_reliary_root(file_path) {
         use std::io::Read;
-        let full_path = format!("{}/{}", root, file_path);
+        let rel_paths = resolve_index_paths(file_path, &root);
+        let rel_path = rel_paths.first().map(|s| s.as_str()).unwrap_or(file_path);
+        let full_path = std::path::Path::new(&root).join(rel_path);
         let mut content = String::new();
         if let Ok(mut f) = std::fs::File::open(&full_path) {
             let _ = f.read_to_string(&mut content);
         }
-        let result = crate::guard::read_validated(&index_path, file_path, &content);
+        // Try each path form
+        for rp in &rel_paths {
+            let result = crate::guard::read_validated(&index_path, rp, &content);
+            if result.get("status").and_then(|s| s.as_str()) != Some("clean") {
+                return serde_json::to_string(&result).unwrap_or_else(|_| "{\"error\": \"serialization failed\"}".to_string());
+            }
+        }
+        let result = crate::guard::read_validated(&index_path, &rel_paths[0], &content);
         serde_json::to_string(&result).unwrap_or_else(|_| "{\"error\": \"serialization failed\"}".to_string())
     } else {
         "{\"error\": \"no .reliary index\"}".to_string()
