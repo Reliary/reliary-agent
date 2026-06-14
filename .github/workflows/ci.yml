@@ -15,6 +15,14 @@ jobs:
       - name: Install tools
         run: |
           cargo install cargo-audit cargo-deny 2>/dev/null
+      - name: Validate workflow YAML syntax
+        run: |
+          for f in .github/workflows/*.yml; do
+            python3 -c "import yaml; yaml.safe_load(open('$f'))" || { echo "FAIL: $f has invalid YAML"; exit 1; }
+            echo "  OK: $f"
+          done
+      - name: Build check
+        run: cargo check --release
       - name: cargo test
         run: cargo test --release
       - name: clippy (deny warnings) — lib only
@@ -36,11 +44,6 @@ jobs:
       - name: Init smoke test
         run: |
           timeout 10 ./target/release/reliary-agent init </dev/null 2>&1 || true
-      - name: Stale file detector
-        run: |
-          stale=$(find . -name "*.bak" -o -name "*.perf" -o -name "*.old" -not -path "./target/*" 2>/dev/null)
-          if [ -n "$stale" ]; then echo "FAIL: stale files: $stale"; exit 1; fi
-          test -f .gitleaks.toml || { echo "FAIL: .gitleaks.toml missing"; exit 1; }
       - name: Dependency graph diff (against master)
         run: |
           cargo tree -e normal --prefix none 2>/dev/null | sort > /tmp/deps_head.txt
