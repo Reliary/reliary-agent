@@ -88,6 +88,20 @@ pub fn check_diff(index_path: &str, file_path: &str, new_content: &str) -> Value
 
     let mut warnings: Vec<String> = Vec::new();
 
+    // Helper: count document frequency (how many files contain this identifier)
+    let doc_frequency = |db: &Connection, ident: &str| -> i64 {
+        if let Ok(mut stmt) = db.prepare(
+            "SELECT COUNT(*) FROM phrase_occ po
+             JOIN phrases p ON p.id = po.phrase_id
+             WHERE p.phrase = ?1",
+        ) {
+            if let Ok(count) = stmt.query_row([ident], |r| r.get::<_, i64>(0)) {
+                return count;
+            }
+        }
+        0
+    };
+
     // Helper: find files that define an identifier
     let find_defined = |db: &Connection, ident: &str| -> Vec<String> {
         if let Ok(mut stmt) = db.prepare(
@@ -139,8 +153,9 @@ pub fn check_diff(index_path: &str, file_path: &str, new_content: &str) -> Value
         }
     }
 
-    // Tier 2: Orphaned reference detection
+    // Tier 2: Orphaned reference detection (skip if idents appear in >=10 files — likely lib/std)
     for ident in old_lowercase.difference(&new_lowercase) {
+        if doc_frequency(&db, ident) >= 10 { continue; }
         let referenced_in = find_referenced(&db, ident);
         if !referenced_in.is_empty() {
             warnings.push(format!(
@@ -150,6 +165,7 @@ pub fn check_diff(index_path: &str, file_path: &str, new_content: &str) -> Value
         }
     }
     for ident in old_uppercase.difference(&new_uppercase) {
+        if doc_frequency(&db, ident) >= 10 { continue; }
         let referenced_in = find_referenced(&db, ident);
         if !referenced_in.is_empty() {
             warnings.push(format!(
