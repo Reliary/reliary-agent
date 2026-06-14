@@ -54,7 +54,7 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
                 if count > 0 && modified != content {
                     match crate::heal::heal_edit(&c.file, &modified, &workdir) {
                         Ok(()) => {
-                            std::fs::write(&c.file, &modified).ok();
+                            let _ = std::fs::write(&c.file, &modified);
                             chronicle::append(&chronicle_db, "scavenge", &c.file, &c.name, "removed");
                             eprintln!("[reliary] scavenger: removed {} from {}", c.name, c.file);
                         }
