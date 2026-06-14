@@ -128,7 +128,7 @@ impl MemoryStore {
     }    pub fn ensure_token_hv(&mut self, token: &str) -> Hypervector {
         let dims = self.dims;
         self.token_hvs.entry(token.to_string())
-            .or_insert_with(|| make_hv(token.as_bytes().len() as u64, dims))
+            .or_insert_with(|| make_hv(token.len() as u64, dims))
             .clone()
     }
 
