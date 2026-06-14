@@ -318,12 +318,45 @@ fn truncate_tool_result(content: &str) -> String {
     format!("{} …[truncated {} chars]… {}", prefix, content.len() - 250, suffix)
 }
 
-/// Zone-compress recent tool results — keep first 300 + last 100 chars.
-fn zone_compress_tool_result(content: &str) -> String {
+/// Sift-based tool result compression — keep errors/summaries wherever they appear.
+fn sift_compress_tool_result(content: &str) -> String {
     if content.len() <= 400 { return content.to_string(); }
-    let prefix = &content[..300];
-    let suffix = &content[content.len().saturating_sub(100)..];
-    format!("{} …[compressed {} chars]… {}", prefix, content.len() - 400, suffix)
+    let classified = reliary_sift::classify_content(content);
+    let total = classified.len();
+    if total <= 25 { return content.to_string(); }
+
+    let head = 25.min(total / 3);
+    let tail = 15.min(total / 3);
+
+    let mut result: Vec<String> = Vec::new();
+    let mut prev_blank = false;
+
+    for (i, line) in classified.iter().enumerate() {
+        let keep = if i < head || i >= total - tail {
+            true
+        } else {
+            line.line_type == reliary_sift::LineType::Error
+                || line.line_type == reliary_sift::LineType::Summary
+                // Sift classifies "test ... FAILED" as Code (starts with "test", not "FAILED").
+                // Catch uppercase FAILED in the middle to preserve failing test diagnostics.
+                || line.text.contains("FAILED")
+        };
+
+        if !keep { continue; }
+
+        let is_blank = line.line_type == reliary_sift::LineType::Blank;
+        if is_blank && prev_blank { continue; }
+        prev_blank = is_blank;
+
+        result.push(line.text.clone());
+    }
+
+    let compressed = result.join("\n");
+    if compressed.len() < content.len() {
+        compressed
+    } else {
+        content.to_string()
+    }
 }
 
 /// Compress all messages in the conversation history.
@@ -370,8 +403,8 @@ fn compress_messages(messages: &mut Vec<Value>, state: &mut PerKeyState) -> (usi
                         history_saved += saved;
                         messages[i]["content"] = Value::String(d);
                     } else {
-                        // Not a file read — zone compress (keep first 300 + last 100)
-                        let compressed = zone_compress_tool_result(content);
+                        // Not a file read — sift-based compression
+                        let compressed = sift_compress_tool_result(content);
                         if compressed.len() < content.len() {
                             let saved = content.len().saturating_sub(compressed.len());
                             history_saved += saved;
@@ -571,7 +604,7 @@ async fn proxy_post(
                     Ok(bytes) => {
                         let body_str = String::from_utf8_lossy(&bytes).to_string();
                         store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str);
-                        let (final_body, resp_saved, resp_pct) = compress_response_body(&body_str);
+                        let (final_body, resp_saved, _) = compress_response_body(&body_str);
                         // Update adaptive policy with output length
                         if let Ok(mut guard) = PER_KEY_STATE.lock() {
                             if let Some(st) = guard.get_mut(&auth_key) {
