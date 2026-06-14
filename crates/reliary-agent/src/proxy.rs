@@ -463,6 +463,22 @@ async fn proxy_post(
 
     let is_streaming = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
+    // Normalize roles: translate provider-specific roles to API-compatible
+    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        for msg in messages.iter_mut() {
+            if let Some(role) = msg.get_mut("role") {
+                if let Some(r) = role.as_str() {
+                    match r {
+                        "developer" | "latest_reminder" => {
+                            *role = Value::String("system".to_string());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
     // Context filter: drop old tool results
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let mut turn_count = 0;
@@ -575,6 +591,27 @@ async fn proxy_post(
                         let body_str = String::from_utf8_lossy(&bytes).to_string();
                         store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str);
                         let (final_body, resp_saved, _) = compress_response_body(&body_str);
+
+                        // Log per-request token data for benchmarking
+                        if let Ok(mut log_fh) = std::fs::OpenOptions::new()
+                            .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
+                        {
+                            use std::io::Write;
+                            let log_entry = serde_json::json!({
+                                "event": "proxy_response",
+                                "auth_prefix": &auth_key[..auth_key.len().min(12)],
+                                "input_tokens": input_tokens,
+                                "compressed_tokens": compressed_tokens,
+                                "history_saved": history_saved,
+                                "aggressiveness": aggressiveness,
+                                "response_saved": resp_saved,
+                                "timestamp": std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs()).unwrap_or(0),
+                            });
+                            let _ = writeln!(log_fh, "{}", log_entry);
+                        }
+
                         // Update adaptive policy with output length
                         if let Ok(mut guard) = PER_KEY_STATE.lock() {
                             if let Some(st) = guard.get_mut(&auth_key) {

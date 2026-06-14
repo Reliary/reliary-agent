@@ -245,3 +245,51 @@ mod tests {
         assert!(compressed.contains("E0308"), "E0308 should survive: {}", compressed);
     }
 }
+
+    #[test]
+    fn bench_compression_ratios() {
+        // Cargo build output (25 repeated Compiling lines)
+        let mut cargo = String::new();
+        for i in 0..25 {
+            cargo.push_str(&format!("   Compiling crate{} v0.1.0 (build/{}-abc)\n", i, i));
+        }
+        cargo.push_str("    Finished dev [unoptimized + debuginfo] in 2.34s\n");
+
+        // Test output (20 ok + 1 FAILED + error block)
+        let mut test = String::new();
+        for i in 0..20 {
+            test.push_str(&format!("test test_{} ... ok\n", i));
+        }
+        test.push_str("test test_error ... FAILED\n");
+        test.push_str("test result: FAILED. 20 passed, 1 failed\n");
+        test.push_str("error[E0308]: mismatched types\n");
+        test.push_str("  --> src/lib.rs:47\n");
+        test.push_str("   = help: use .to_string()\n");
+
+        // Small file content (not compressible)
+        let file = "fn parse() {}\nfn tokenize() {}\nfn eval() {}\n";
+
+        // Cargo build
+        let compressed_cargo = compress_output(&cargo);
+        let cargo_pct = (1.0 - compressed_cargo.len() as f64 / cargo.len() as f64) * 100.0;
+        println!("Cargo build:   {} -> {} chars ({:.0}%)", cargo.len(), compressed_cargo.len(), cargo_pct);
+        assert!(compressed_cargo.contains("Compiling"), "should still mention compiling");
+
+        // Test output
+        let compressed_test = compress_output(&test);
+        let test_pct = (1.0 - compressed_test.len() as f64 / test.len() as f64) * 100.0;
+        println!("Test output:   {} -> {} chars ({:.0}%)", test.len(), compressed_test.len(), test_pct);
+        assert!(compressed_test.contains("FAILED"), "FAILED should survive");
+        assert!(compressed_test.contains("E0308"), "E0308 should survive");
+
+        // File content (too short to compress)
+        let compressed_file = compress_output(&file);
+        let file_pct = (1.0 - compressed_file.len() as f64 / file.len() as f64) * 100.0;
+        println!("File content:  {} -> {} chars ({:.0}%)", file.len(), compressed_file.len(), file_pct);
+        assert_eq!(compressed_file.len(), file.len(), "short file should pass through");
+
+        println!("\n---");
+        println!("Cargo compressed: {}", &compressed_cargo[..compressed_cargo.len().min(200)]);
+        println!();
+        println!("Test compressed:  {}", &compressed_test[..compressed_test.len().min(200)]);
+    }
