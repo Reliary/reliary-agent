@@ -94,15 +94,15 @@ struct AdaptivePolicy {
 
 impl AdaptivePolicy {
     fn new() -> Self {
-        Self { last_output_len: 0, aggressiveness: 0.4, concise_turns: 0 }
+        Self { last_output_len: 0, aggressiveness: 0.7, concise_turns: 0 }
     }
 
     fn compute_aggressiveness(last_output_len: usize) -> f32 {
         match last_output_len {
-            0..=500   => 0.2,
-            501..=1500 => 0.4,
-            1501..=3000 => 0.6,
-            _          => 0.8,
+            0..=500   => 0.3,
+            501..=1500 => 0.5,
+            1501..=3000 => 0.7,
+            _          => 0.9,
         }
     }
 
@@ -164,9 +164,150 @@ fn get_or_create_state(auth_key: &str) -> std::sync::MutexGuard<'static, HashMap
     guard
 }
 
-/// Compress old assistant reasoning — strip verbose explanations, keep structural intent.
+/// Compress old assistant reasoning — strip verbose explanations, keep code blocks intact.
+/// Splits message into code blocks (```...```) and prose sections.
+/// Compresses prose, leaves code verbatim.
 fn compress_assistant_text(text: &str, dict: Option<&reliary_compress::CompressionDict>) -> Option<String> {
-    reliary_compress::compress_reasoning(text, dict)
+    // First try full-text compress (works for prose-only with no code blocks)
+    if let Some(compressed) = reliary_compress::compress_reasoning(text, dict) {
+        return Some(compressed);
+    }
+
+    // Split on code blocks
+    let mut parts: Vec<String> = Vec::new();
+    let mut in_code = false;
+    let mut code_buf = String::new();
+    let mut prose_buf = String::new();
+
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            if in_code {
+                parts.push(code_buf.clone());
+                code_buf.clear();
+                in_code = false;
+            } else {
+                if !prose_buf.is_empty() {
+                    parts.push(prose_buf.clone());
+                    prose_buf.clear();
+                }
+                in_code = true;
+                code_buf.push_str(line);
+                code_buf.push('\n');
+            }
+        } else if in_code {
+            code_buf.push_str(line);
+            code_buf.push('\n');
+        } else {
+            prose_buf.push_str(line);
+            prose_buf.push('\n');
+        }
+    }
+    if in_code && !code_buf.is_empty() {
+        parts.push(code_buf);
+    } else if !prose_buf.is_empty() {
+        parts.push(prose_buf);
+    }
+
+    // Compress each section: keep code verbatim, compress prose
+    let mut result = String::new();
+    let mut total_original = 0usize;
+    let mut total_compressed = 0usize;
+
+    for part in &parts {
+        total_original += part.len();
+        if part.contains("```") || part.len() < 50 {
+            result.push_str(part);
+            total_compressed += part.len();
+        } else {
+            let compressed = reliary_compress::compress_reasoning(part, dict)
+                .or_else(|| compress_prose_inline(part));
+            match compressed {
+                Some(c) if c.len() < part.len() => {
+                    result.push_str(&c);
+                    result.push('\n');
+                    total_compressed += c.len();
+                }
+                _ => {
+                    result.push_str(part);
+                    total_compressed += part.len();
+                }
+            }
+        }
+    }
+    if total_original > 0 && total_compressed < total_original {
+        Some(result)
+    } else {
+        None
+    }
+}
+
+/// Lightweight prose compression for sections too short for compress_reasoning.
+fn compress_prose_inline(text: &str) -> Option<String> {
+    let original_len = text.len();
+    if original_len < 50 || original_len > 5000 { return None; }
+
+    let patterns = [
+        r"(?i)\b(Let me (analyze|look|check|review|see|think|consider)\b[^.]*\.?)",
+        r"(?i)\b(I (?:would|will|can|could) need to)[^.]*\.?",
+        r"(?i)\b(In order to)[^.]*\.?",
+        r"(?i)\b(First(?:,|ly)? let me)[^.]*\.?",
+        r"(?i)\b(This means that)[^.]*\.?",
+        r"(?i)\b(The (?:next|final|first) step)[^.]*\.?",
+        r"(?i)\b(Now I(?: can| will|'ll| need to| should))[^.,;]*",
+        r"(?i)\b(Alright|Okay|So,?|Well,?|Now,?)\s*",
+        r"(?i)\bessentially|basically|simply|actually|obviously|clearly|currently\b",
+    ];
+
+    let mut t = text.to_string();
+    for pattern in &patterns {
+        if let Ok(re) = regex::Regex::new(pattern) {
+            t = re.replace_all(&t, " ").to_string();
+        }
+    }
+    t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    let saved = original_len.saturating_sub(t.len());
+    // Accept any savings — even 10 chars is worth it for response compression
+    if saved > 10 {
+        Some(t)
+    } else {
+        None
+    }
+}
+
+/// Compress the assistant message content in an API response before returning to the agent.
+/// Returns (modified_body, chars_saved, savings_percent).
+fn compress_response_body(body: &str) -> (String, String, String) {
+    let mut value: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return (body.to_string(), "0".to_string(), "0".to_string()),
+    };
+
+    let mut total_saved = 0usize;
+    let mut total_original = 0usize;
+
+    if let Some(choices) = value.get_mut("choices").and_then(|c| c.as_array_mut()) {
+        for choice in choices.iter_mut() {
+            if let Some(content) = choice.get_mut("message").and_then(|m| m.get_mut("content")) {
+                if let Some(text) = content.as_str() {
+                    total_original += text.len();
+                    if let Some(compressed) = compress_assistant_text(text, None) {
+                        if compressed.len() < text.len() {
+                            total_saved += text.len().saturating_sub(compressed.len());
+                            *content = Value::String(compressed);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let modified = serde_json::to_string(&value).unwrap_or_else(|_| body.to_string());
+    let saved_str = total_saved.to_string();
+    let pct = if total_original > 0 {
+        ((total_saved as f64 / total_original as f64) * 100.0) as usize
+    } else { 0 };
+    (modified, saved_str, pct.to_string())
 }
 
 /// Truncate old tool results — keep first 200 + last 50 chars.
@@ -413,18 +554,20 @@ async fn proxy_post(
                     Ok(bytes) => {
                         let body_str = String::from_utf8_lossy(&bytes).to_string();
                         store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str);
+                        let (final_body, resp_saved, resp_pct) = compress_response_body(&body_str);
                         // Update adaptive policy with output length
                         if let Ok(mut guard) = PER_KEY_STATE.lock() {
                             if let Some(st) = guard.get_mut(&auth_key) {
                                 st.policy.update(body_str.len());
                             }
                         }
-                        let mut resp = (StatusCode::OK, [("content-type", "application/json")], body_str).into_response();
+                        let mut resp = (StatusCode::OK, [("content-type", "application/json")], final_body).into_response();
                         resp.headers_mut().insert("x-reliaty-input-tokens", header::HeaderValue::from_str(&token_hdr_input).unwrap());
                         resp.headers_mut().insert("x-reliaty-compressed-tokens", header::HeaderValue::from_str(&token_hdr_compressed).unwrap());
                         resp.headers_mut().insert("x-reliaty-savings-pct", header::HeaderValue::from_str(&token_hdr_savings).unwrap());
                         resp.headers_mut().insert("x-reliaty-history-saved", header::HeaderValue::from_str(&hdr_history_saved).unwrap());
                         resp.headers_mut().insert("x-reliaty-aggressiveness", header::HeaderValue::from_str(&hdr_aggr).unwrap());
+                        resp.headers_mut().insert("x-reliaty-response-saved", header::HeaderValue::from_str(&resp_saved).unwrap());
                         resp
                     }
                     Err(_) => (StatusCode::BAD_GATEWAY, "empty upstream response").into_response(),
