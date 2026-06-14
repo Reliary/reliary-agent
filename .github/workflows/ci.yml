@@ -41,7 +41,7 @@ jobs:
           ok=$(grep -rn "fs::write" crates/ --include="*.rs" 2>/dev/null | grep -v ".tmp\|atomic_write\|\.ok()\|_ok\|test\|#\[" || true)
           if [ -n "$ok" ]; then echo "WARN: non-atomic fs::write calls:"; echo "$ok"; fi
       - name: Check gitleaks config exists
-        run: test -f .gitleaks.toml || { echo "FAIL: .gitleaks.toml missing"; exit 1; }
+        run: 'test -f .gitleaks.toml || { echo "FAIL: .gitleaks.toml missing"; exit 1; }'
       - name: Stale file detector
         run: |
           stale=$(find . -name "*.bak" -o -name "*.perf" -o -name "*.old" -not -path "./target/*" 2>/dev/null)
@@ -65,12 +65,12 @@ jobs:
       - name: cargo audit
         run: cargo audit --deny-warnings 2>&1 | tail -5 || true
       - name: cargo deny
-        run: cargo deny check bans 2>/dev/null || echo "WARN: deny found violations"
+        run: 'cargo deny check bans 2>/dev/null || echo "WARN: deny found violations"'
       - name: Test count check
         run: |
           count=$(cargo test --release --no-run 2>&1 | grep -c "running" || true)
           echo "Test count: $count"
-          [ "$count" -ge 75 ] || echo "WARN: test count below 75 ($count)"
+          [ "$count" -ge 75 ] || 'echo "WARN: test count below 75 ($count)"'
       - name: Binary size check
         run: |
           ls -lh target/release/reliary-agent 2>/dev/null || echo "Binary not built"
