@@ -3,7 +3,7 @@
 
 use axum::{
     Router, extract::Query, http::{HeaderMap, StatusCode, header},
-    response::{sse::Sse, IntoResponse, Json, sse::Event},
+    response::{IntoResponse, Json},
     routing::{get, post},
 };
 use bytes::Bytes;
@@ -563,14 +563,43 @@ async fn proxy_post(
         Ok(upstream_resp) => {
             if is_streaming {
                 let byte_stream = upstream_resp.bytes_stream();
-                let event_stream = byte_stream.map(|chunk| {
-                    let data = match chunk {
-                        Ok(b) => String::from_utf8_lossy(&b).to_string(),
-                        Err(_) => "[error]".to_string(),
-                    };
-                    Ok::<Event, std::convert::Infallible>(Event::default().data(data))
+                let body_stream = byte_stream.map({
+                    let auth_key = auth_key.clone();
+                    let input_tokens = input_tokens;
+                    let compressed_tokens = compressed_tokens;
+                    let _aggressiveness = aggressiveness;
+                    move |chunk| {
+                        if let Ok(bytes) = &chunk {
+                            let text = String::from_utf8_lossy(bytes);
+                            // Log token usage from final SSE chunk
+                            if text.contains("\"usage\"") {
+                                // Extract prompt_tokens and completion_tokens
+                                let pt = text.split("\"prompt_tokens\":").nth(1)
+                                    .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                                    .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                                let ct = text.split("\"completion_tokens\":").nth(1)
+                                    .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                                    .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                                let log_entry = serde_json::json!({
+                                    "event": "stream_usage",
+                                    "auth_prefix": &auth_key[..auth_key.len().min(12)],
+                                    "input_tokens": input_tokens,
+                                    "compressed_tokens": compressed_tokens,
+                                    "prompt_tokens": pt,
+                                    "completion_tokens": ct,
+                                });
+                                if let Ok(mut lf) = std::fs::OpenOptions::new()
+                                    .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
+                                {
+                                    use std::io::Write;
+                                    let _ = writeln!(lf, "{}", log_entry);
+                                }
+                            }
+                        }
+                        Ok::<Bytes, std::convert::Infallible>(chunk.unwrap_or_else(|_| Bytes::from("[error]\n")))
+                    }
                 });
-                let mut resp = Sse::new(event_stream).into_response();
+                let mut resp = axum::response::Response::new(axum::body::Body::from_stream(body_stream));
                 resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
                 resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
                 resp.headers_mut().insert("x-reliaty-input-tokens", header::HeaderValue::from_str(&token_hdr_input).unwrap());
@@ -578,13 +607,7 @@ async fn proxy_post(
                 resp.headers_mut().insert("x-reliaty-savings-pct", header::HeaderValue::from_str(&token_hdr_savings).unwrap());
                 resp.headers_mut().insert("x-reliaty-history-saved", header::HeaderValue::from_str(&hdr_history_saved).unwrap());
                 resp.headers_mut().insert("x-reliaty-aggressiveness", header::HeaderValue::from_str(&hdr_aggr).unwrap());
-                // Update adaptive policy
-                if let Ok(mut guard) = PER_KEY_STATE.lock() {
-                    if let Some(st) = guard.get_mut(&auth_key) {
-                        st.policy.update(body_bytes.len());
-                    }
-                }
-                resp.into_response()
+                resp
             } else {
                 match upstream_resp.bytes().await {
                     Ok(bytes) => {
