@@ -94,9 +94,7 @@ pub fn compute_blast_radius(content: &str) -> Vec<String> {
             || t.starts_with("export ")
         {
             let name = t.split_whitespace()
-                .skip_while(|&w| w != "fn" && w != "struct" && w != "enum" && w != "trait" && w != "type" && w != "const" && w != "static")
-                .skip(1)
-                .next()
+                .skip_while(|&w| w != "fn" && w != "struct" && w != "enum" && w != "trait" && w != "type" && w != "const" && w != "static").nth(1)
                 .unwrap_or("")
                 .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_')
                 .to_string();

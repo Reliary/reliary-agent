@@ -53,7 +53,7 @@ pub fn search_fts5(db: &Connection, query: &str, top_n: usize) -> Vec<SearchResu
     }) {
         for row in rows.flatten() {
             let (file, _phrase_id, flags, line_nos, doc_freq) = row;
-            let zone = if flags.len() >= 1 { Some(crate::schema::unpack_zone_int(flags[0]) as u8) } else { None };
+            let zone = if !flags.is_empty() { Some(crate::schema::unpack_zone_int(flags[0]) as u8) } else { None };
             let line = if line_nos.len() >= 2 { Some(crate::schema::unpack_line_nos(&line_nos)) } else { None };
 
             // Proper BM25: idf from actual doc_freq per phrase

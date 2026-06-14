@@ -23,7 +23,7 @@ pub fn scan_identifiers(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|t| {
             let len = t.len();
-            len >= 3 && len <= 40
+            (3..=40).contains(&len)
                 && t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
                 && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         })
@@ -104,7 +104,7 @@ pub fn is_definition(phrase: &str, line: &str, match_start: usize) -> bool {
 
 /// Convenience wrapper: is `phrase` a definition in `line`?
 pub fn is_definition_str(phrase: &str, line: &str) -> bool {
-    line.find(phrase).map_or(false, |idx| is_definition(phrase, line, idx))
+    line.find(phrase).is_some_and(|idx| is_definition(phrase, line, idx))
 }
 
 #[cfg(test)]

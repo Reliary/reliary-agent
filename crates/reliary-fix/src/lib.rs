@@ -40,7 +40,7 @@ pub fn extract_fixes(memory_content: &str) -> Vec<(String, String)> {
         for cap in re.captures_iter(memory_content) {
             let old_str = cap[1].to_string();
             let new_str = cap[2].to_string();
-            if old_str.len() >= 1 && !new_str.is_empty() && old_str != new_str {
+            if !old_str.is_empty() && !new_str.is_empty() && old_str != new_str {
                 fixes.push((old_str, new_str));
             }
         }
