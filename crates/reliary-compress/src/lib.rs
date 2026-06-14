@@ -62,11 +62,10 @@ impl CompressionDict {
     pub fn apply(&self, text: &str) -> String {
         let mut result = text.to_string();
         for entry in &self.entries {
-            if result.len() < 1000 {
-                if result.contains(&entry.symbol) {
+            if result.len() < 1000
+                && result.contains(&entry.symbol) {
                     result = result.replace(&entry.symbol, &format!("[{}]", entry.symbol));
                 }
-            }
         }
         result
     }

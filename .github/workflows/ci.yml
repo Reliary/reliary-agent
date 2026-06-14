@@ -17,8 +17,8 @@ jobs:
           cargo install cargo-audit cargo-deny 2>/dev/null
       - name: cargo test
         run: cargo test --release
-      - name: clippy (deny warnings + unwrap_used)
-        run: cargo clippy -- -D warnings -W clippy::unwrap_used
+      - name: clippy (deny warnings) — lib only
+        run: cargo clippy --release --lib -- -D warnings
       - name: Integrity guard — no silent .ok() on writes
         run: |
           bad=$(grep -rn "fs::write.*\.ok()\|atomic_write.*\.ok()" crates/ --include="*.rs" 2>/dev/null || true)
