@@ -10,7 +10,7 @@ fn e2e_concurrent_load() {
     let start = Instant::now();
     let mut handles = vec![];
 
-    for i in 0..50 {
+    for _ in 0..50 {
         handles.push(std::thread::spawn(|| {
             let c = common::http_client();
             let resp = c
