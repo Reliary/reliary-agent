@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master
       - name: Install cross-compile target
         shell: bash
         run: rustup target add ${{ matrix.target }}
@@ -56,7 +56,7 @@ jobs:
           if [ -f "scripts/install.sh" ]; then cp "scripts/install.sh" "${PKG}/"; fi
           tar czf "${PKG}.tar.gz" "${PKG}/"
           echo "tarball=${PKG}.tar.gz" >> $GITHUB_ENV
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: ${{ matrix.target }}
           path: "*.tar.gz"
@@ -65,7 +65,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           path: artifacts
       - name: Compute SHA256 checksums
@@ -74,7 +74,7 @@ jobs:
             sha256sum "$file"
           done > artifacts/SHA256SUMS
           cat artifacts/SHA256SUMS
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: checksums
           path: artifacts/SHA256SUMS
@@ -85,11 +85,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           path: artifacts
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.2.2
         with:
           files: |
             artifacts/*/*.tar.gz

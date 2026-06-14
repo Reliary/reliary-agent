@@ -43,8 +43,8 @@ impl SessionState {
         let mut unique: Vec<ReadRecord> = Vec::new();
         for r in self.reads.iter().rev() {
             let key = format!("{}{}", r.path, r.hash);
-            if !seen.contains_key(&key) {
-                seen.insert(key, true);
+            if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(key) {
+                e.insert(true);
                 unique.push(r.clone());
             }
         }

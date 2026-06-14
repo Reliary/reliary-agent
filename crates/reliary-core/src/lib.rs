@@ -14,6 +14,12 @@ pub struct Session {
     pub file_hashes: HashMap<String, u64>,
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Session {
     pub fn new() -> Self {
         Self { turn_count: 0, file_hashes: HashMap::new() }

@@ -214,7 +214,6 @@ pub fn serve_stdio() {
                 };
                 respond(id, serde_json::json!({ "prior": prior }));
             }
-            "notifications/initialized" => {}  // noop
             _ => {
                 if !method.starts_with("notifications/") {
                     respond_error(id, -32601, &format!("method not found: {}", method));
