@@ -94,15 +94,15 @@ struct AdaptivePolicy {
 
 impl AdaptivePolicy {
     fn new() -> Self {
-        Self { last_output_len: 0, aggressiveness: 0.4, concise_turns: 0 }
+        Self { last_output_len: 0, aggressiveness: 0.7, concise_turns: 0 }
     }
 
     fn compute_aggressiveness(last_output_len: usize) -> f32 {
         match last_output_len {
-            0..=500   => 0.2,
-            501..=1500 => 0.4,
-            1501..=3000 => 0.6,
-            _          => 0.8,
+            0..=500   => 0.3,
+            501..=1500 => 0.5,
+            1501..=3000 => 0.7,
+            _          => 0.9,
         }
     }
 
@@ -164,9 +164,89 @@ fn get_or_create_state(auth_key: &str) -> std::sync::MutexGuard<'static, HashMap
     guard
 }
 
-/// Compress old assistant reasoning — strip verbose explanations, keep structural intent.
+/// Compress old assistant reasoning — strip verbose explanations, keep code blocks intact.
+/// Splits message into code blocks (```...```) and prose sections.
+/// Compresses prose, leaves code verbatim.
 fn compress_assistant_text(text: &str, dict: Option<&reliary_compress::CompressionDict>) -> Option<String> {
-    reliary_compress::compress_reasoning(text, dict)
+    // Split on code blocks
+    let mut parts: Vec<String> = Vec::new();
+    let mut in_code = false;
+    let mut code_buf = String::new();
+    let mut prose_buf = String::new();
+
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            if in_code {
+                // End code block
+                parts.push(code_buf.clone());
+                code_buf.clear();
+                in_code = false;
+            } else {
+                // Flush prose buffer, compressed
+                if !prose_buf.is_empty() {
+                    parts.push(prose_buf.clone());
+                    prose_buf.clear();
+                }
+                in_code = true;
+                code_buf.push_str(line);
+                code_buf.push('\n');
+            }
+        } else if in_code {
+            code_buf.push_str(line);
+            code_buf.push('\n');
+        } else {
+            prose_buf.push_str(line);
+            prose_buf.push('\n');
+        }
+    }
+    // Flush remaining buffers
+    if in_code && !code_buf.is_empty() {
+        parts.push(code_buf);
+    } else if !prose_buf.is_empty() {
+        parts.push(prose_buf);
+    }
+
+    // If no code blocks, use compress_reasoning directly
+    if parts.len() <= 1 && !text.contains("```") {
+        return reliary_compress::compress_reasoning(text, dict);
+    }
+
+    // Compress prose sections
+    let mut result = String::new();
+    let mut total_original = 0usize;
+    let mut total_compressed = 0usize;
+
+    for part in &parts {
+        total_original += part.len();
+        // Check if this part looks like prose (no code patterns)
+        if part.contains("```") || part.len() < 100 {
+            // Code block or too short — keep verbatim
+            result.push_str(part);
+            total_compressed += part.len();
+        } else {
+            // Prose section — attempt to compress
+            match reliary_compress::compress_reasoning(part, dict) {
+                Some(c) => {
+                    result.push_str(&c);
+                    result.push('\n');
+                    total_compressed += c.len();
+                }
+                None => {
+                    result.push_str(part);
+                    total_compressed += part.len();
+                }
+            }
+        }
+    }
+
+    // Require at least 15% savings
+    if total_original > 0 && total_compressed < (total_original as f64 * 0.85) as usize {
+        Some(result)
+    } else if parts.len() <= 1 && total_compressed < total_original {
+        Some(result)
+    } else {
+        None
+    }
 }
 
 /// Truncate old tool results — keep first 200 + last 50 chars.
