@@ -318,40 +318,10 @@ fn truncate_tool_result(content: &str) -> String {
     format!("{} …[truncated {} chars]… {}", prefix, content.len() - 250, suffix)
 }
 
-/// Sift-based tool result compression — keep errors/summaries wherever they appear.
+/// Sift-based tool result compression — uses reliary-output for structural collapse.
 fn sift_compress_tool_result(content: &str) -> String {
-    if content.len() <= 400 { return content.to_string(); }
-    let classified = reliary_sift::classify_content(content);
-    let total = classified.len();
-    if total <= 25 { return content.to_string(); }
-
-    let head = 25.min(total / 3);
-    let tail = 15.min(total / 3);
-
-    let mut result: Vec<String> = Vec::new();
-    let mut prev_blank = false;
-
-    for (i, line) in classified.iter().enumerate() {
-        let keep = if i < head || i >= total - tail {
-            true
-        } else {
-            line.line_type == reliary_sift::LineType::Error
-                || line.line_type == reliary_sift::LineType::Summary
-                // Sift classifies "test ... FAILED" as Code (starts with "test", not "FAILED").
-                // Catch uppercase FAILED in the middle to preserve failing test diagnostics.
-                || line.text.contains("FAILED")
-        };
-
-        if !keep { continue; }
-
-        let is_blank = line.line_type == reliary_sift::LineType::Blank;
-        if is_blank && prev_blank { continue; }
-        prev_blank = is_blank;
-
-        result.push(line.text.clone());
-    }
-
-    let compressed = result.join("\n");
+    if content.len() <= 200 { return content.to_string(); }
+    let compressed = reliary_output::compress_output(content);
     if compressed.len() < content.len() {
         compressed
     } else {
@@ -403,7 +373,7 @@ fn compress_messages(messages: &mut Vec<Value>, state: &mut PerKeyState) -> (usi
                         history_saved += saved;
                         messages[i]["content"] = Value::String(d);
                     } else {
-                        // Not a file read — sift-based compression
+                        // Not a file read — sift output compression
                         let compressed = sift_compress_tool_result(content);
                         if compressed.len() < content.len() {
                             let saved = content.len().saturating_sub(compressed.len());
