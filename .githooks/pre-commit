@@ -33,4 +33,23 @@ if command -v cargo-deny >/dev/null 2>&1 || command -v cargo deny >/dev/null 2>&
     }
 fi
 
+# 5. Validate workflow YAML syntax
+if command -v python3 >/dev/null 2>&1; then
+    for f in .github/workflows/*.yml; do
+        if [ -f "$f" ]; then
+            python3 -c "import yaml; yaml.safe_load(open('$f'))" 2>/dev/null || {
+                echo "FAIL: $f has invalid YAML syntax"
+                exit 1
+            }
+        fi
+    done
+fi
+
+# 6. Check for stale .perf files in src
+stale=$(find . -name "*.perf" -not -path "./target/*" 2>/dev/null)
+if [ -n "$stale" ]; then
+    echo "FAIL: stale .perf files committed: $stale"
+    exit 1
+fi
+
 echo "[guard] All checks passed."
