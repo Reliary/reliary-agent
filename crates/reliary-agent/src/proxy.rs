@@ -600,6 +600,41 @@ async fn proxy_post(
     }
 }
 
+/// GET /check-diff — check a proposed edit for structural issues.
+async fn check_diff_handler(Query(params): Query<HashMap<String, String>>) -> String {
+    let file_path = params.get("file").map(|s| s.as_str()).unwrap_or("");
+    let new_content = params.get("content").map(|s| s.as_str()).unwrap_or("");
+    if file_path.is_empty() || new_content.is_empty() {
+        return "{\"error\": \"missing file or content param\"}".to_string();
+    }
+    if let Some((_root, index_path, _)) = crate::daemon::find_reliary_root(file_path) {
+        let result = crate::guard::check_diff(&index_path, file_path, new_content);
+        serde_json::to_string(&result).unwrap_or_else(|_| "{\"error\": \"serialization failed\"}".to_string())
+    } else {
+        "{\"error\": \"no .reliary index\"}".to_string()
+    }
+}
+
+/// GET /read-validated — warn about externally-referenced identifiers before editing.
+async fn read_validated_handler(Query(params): Query<HashMap<String, String>>) -> String {
+    let file_path = params.get("file").map(|s| s.as_str()).unwrap_or("");
+    if file_path.is_empty() {
+        return "{\"error\": \"missing file param\"}".to_string();
+    }
+    if let Some((root, index_path, _)) = crate::daemon::find_reliary_root(file_path) {
+        use std::io::Read;
+        let full_path = format!("{}/{}", root, file_path);
+        let mut content = String::new();
+        if let Ok(mut f) = std::fs::File::open(&full_path) {
+            let _ = f.read_to_string(&mut content);
+        }
+        let result = crate::guard::read_validated(&index_path, file_path, &content);
+        serde_json::to_string(&result).unwrap_or_else(|_| "{\"error\": \"serialization failed\"}".to_string())
+    } else {
+        "{\"error\": \"no .reliary index\"}".to_string()
+    }
+}
+
 // ── Startup ──
 
 pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::SessionState>>) -> Result<(), String> {
@@ -647,6 +682,8 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
         .route("/prior", get(prior_handler))
         .route("/read-summary", get(read_summary_handler))
         .route("/status", get(status_handler))
+        .route("/check-diff", get(check_diff_handler))
+        .route("/read-validated", get(read_validated_handler))
         .route("/v1/chat/completions", post(proxy_post))
         .route("/v1/messages", post(proxy_post));  // Anthropic/Claude Code compatibility
 
