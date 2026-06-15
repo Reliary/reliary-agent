@@ -305,7 +305,8 @@ function handleToolCall(event) {
     const workdir = input.workdir || input.path || process.cwd();
     gateLog("ok", `test: ${workdir}`);
     const result = runTest(workdir);
-    return { block: true, response: result };
+    const sifted = siftOutput(result);
+    return { block: true, response: sifted !== result ? sifted : result };
   }
 
   // Explain tool: get function context
@@ -340,7 +341,6 @@ function handleToolCall(event) {
     try {
       if (existsSync(file)) return { block: true, response: `ERROR: ${file} already exists (use edit to modify)` };
       writeFileSync(file, content, "utf-8");
-      gateLog("save", `create: ${file} (${content.length}c)`);
       return { block: true, response: `Created ${file} (${content.length} chars). Run 'test <workdir>' to verify.` };
     } catch (e) {
       return { block: true, response: `ERROR: ${e.message}` };
