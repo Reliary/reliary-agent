@@ -171,15 +171,19 @@ to the correct upstream without manual configuration.
 **True SSE streaming:** The proxy streams chunks back to the client in real-time,
 preserving the typewriter effect in your agent's UI.
 
-**What the proxy compresses:**
-- **Conversation history:** old assistant reasoning messages are compressed before
-  being sent to the API (~15-25% fewer billable tokens)
-- **Response cache:** identical requests (same model, same messages) return cached
-  responses — zero API cost on repeat edits
-- **Tool schemas:** redundant description text is stripped from the tools array
-  sent with each request (~150t saved per turn)
-- **Context filter:** tool results older than 8 turns are collapsed into summary
-  markers, preventing unbounded context growth
+**First-appearance freeze compression:** Every message is compressed on its first
+occurrence and frozen in cache. The provider never sees the uncompressed version,
+so KV cache hits are preserved across turns. Two compressors are applied:
+- **Tool results** (sift): cargo/build output collapsed (~71-93% smaller)
+- **Assistant reasoning** (compress_reasoning): verbose prose stripped (~40-60%
+  smaller, only fires on messages >300 chars)
+- **Total savings: ~16% average, up to 84% on long multi-turn sessions**
+
+**Guard (on by default):** The proxy intercepts edit tool calls in the assistant's
+response and checks new content against the FTS5 index. If an edit would orphan
+cross-file references (e.g., renaming a function without updating callers), a
+warning is injected before the edit reaches the LLM. Benchmark: -72% weighted
+cost on cross-file rename tasks by preventing debug spirals.
 
 ## Output Formats
 
@@ -208,6 +212,7 @@ See [CONFIG.md](./CONFIG.md) for the full documentation.
 | `RELIARY_MODE=strict` | Full sandbox (bash blocked, edits always healed) |
 | `RELIARY_FEATURES=+editMerge,-taskTargets` | Toggle individual features |
 | `RELIARY_UPSTREAM_URL=https://api.openai.com/v1` | Set API upstream (default: auth-based routing) |
+| `RELIARY_PROXY_GUARD_DISABLE=1` | Disable guard (cross-file edit safety) — on by default |
 | `DEEPSEEK_BASE_URL=http://localhost:9090/v1` | Route Pi/Cline/OpenCode through proxy |
 | `ANTHROPIC_BASE_URL=http://localhost:9090/` | Route Claude Code through proxy |
 
