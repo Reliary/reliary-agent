@@ -136,6 +136,14 @@ enum Commands {
     },
     /// Tail daemon logs
     Logs,
+    /// Sift: pipe command output through reliary-output compression (tool-agnostic)
+    /// Usage: reliary-agent sift <command> [args...]
+    /// Example: reliary-agent sift cargo test, reliary-agent sift ls -la
+    Sift {
+        /// Command and arguments to execute and compress
+        #[arg(required = true, trailing_var_arg = true)]
+        command: Vec<String>,
+    },
 }
 
 fn format_config(fmt: &str) -> reliary_core::OutputFormat {
@@ -144,6 +152,33 @@ fn format_config(fmt: &str) -> reliary_core::OutputFormat {
         "json" => reliary_core::OutputFormat::Json,
         _ => reliary_core::OutputFormat::Default,
     }
+}
+
+fn exec_sift(cmd: &[String]) {
+    if cmd.is_empty() {
+        eprintln!("Usage: reliary-agent sift <command> [args...]");
+        std::process::exit(1);
+    }
+    let program = &cmd[0];
+    let args = &cmd[1..];
+
+    let output = match std::process::Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Error executing '{}': {}", program, e);
+            std::process::exit(1);
+        }
+    };
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let compressed = reliary_output::compress_output(&raw);
+    print!("{}", compressed);
+    std::process::exit(output.status.code().unwrap_or(0));
 }
 
 fn main() {
@@ -282,6 +317,9 @@ fn main() {
         }
         Commands::Logs => {
             ux::logs();
+        }
+        Commands::Sift { command } => {
+            exec_sift(command);
         }
         Commands::Daemon => {
             eprintln!("'daemon' subcommand is deprecated. Use 'serve' instead.");
