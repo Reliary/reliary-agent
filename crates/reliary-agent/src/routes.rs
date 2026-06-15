@@ -2,15 +2,28 @@ use std::path::PathBuf;
 
 /// Discover upstream URL for an auth key by scanning all known agent configs.
 pub fn discover_upstream(auth_key: &str) -> Option<String> {
-    // Pi provider configs
+    // 1. Local proxy-routes.json (explicit user override, highest priority)
+    if let Some(url) = scan_proxy_routes(auth_key) {
+        return Some(url);
+    }
+    // 2. Pi provider configs
     if let Some(url) = scan_pi_configs(auth_key) {
         return Some(url);
     }
-    // Environment variables (generic fallback)
+    // 3. Environment variables (generic fallback)
     if let Some(url) = scan_env_vars(auth_key) {
         return Some(url);
     }
     None
+}
+
+/// Scan ~/.reliary/proxy-routes.json for explicit auth→upstream mappings.
+fn scan_proxy_routes(auth_key: &str) -> Option<String> {
+    let routes_path = home_dir().join(".reliary/proxy-routes.json");
+    let content = std::fs::read_to_string(routes_path).ok()?;
+    let routes: std::collections::HashMap<String, String> =
+        serde_json::from_str(&content).ok()?;
+    routes.get(auth_key).cloned()
 }
 
 /// Scan Pi's ~/.pi/agent/models.json for provider API keys matching the auth key.
@@ -44,7 +57,7 @@ fn scan_env_vars(auth_key: &str) -> Option<String> {
     let env_key_map: [(&str, &str); 4] = [
         ("ANTHROPIC_API_KEY", "https://api.anthropic.com/v1/messages"),
         ("OPENAI_API_KEY", "https://api.openai.com/v1/chat/completions"),
-        ("DEEPSEEK_API_KEY", "https://api.deepinfra.com/v1/openai/chat/completions"),
+        ("DEEPSEEK_API_KEY", "https://api.deepseek.com/v1/chat/completions"),
         ("RELIARY_UPSTREAM_URL", ""),  // Direct URL override, checked below
     ];
 

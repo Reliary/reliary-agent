@@ -3,7 +3,7 @@
 
 use axum::{
     Router, extract::Query, http::{HeaderMap, StatusCode, header},
-    response::{sse::Sse, IntoResponse, Json, sse::Event},
+    response::{IntoResponse, Json},
     routing::{get, post},
 };
 use bytes::Bytes;
@@ -318,6 +318,17 @@ fn truncate_tool_result(content: &str) -> String {
     format!("{} …[truncated {} chars]… {}", prefix, content.len() - 250, suffix)
 }
 
+/// Sift-based tool result compression — uses reliary-output for structural collapse.
+fn sift_compress_tool_result(content: &str) -> String {
+    if content.len() <= 200 { return content.to_string(); }
+    let compressed = reliary_output::compress_output(content);
+    if compressed.len() < content.len() {
+        compressed
+    } else {
+        content.to_string()
+    }
+}
+
 /// Compress all messages in the conversation history.
 fn compress_messages(messages: &mut Vec<Value>, state: &mut PerKeyState) -> (usize, usize) {
     let total = messages.len();
@@ -350,16 +361,25 @@ fn compress_messages(messages: &mut Vec<Value>, state: &mut PerKeyState) -> (usi
                     }
                 }
             }
-            "tool" | "toolResult" if age > 2 => {
-                // Dedup repeated file reads
+            "tool" | "toolResult" if age > 2 && age <= 4 => {
+                // Dedup repeated file reads, then zone-compress remaining
                 if let Some(content) = messages[i].get("content").and_then(|c| c.as_str()) {
-                    // Extract file path from content (heuristic: first line that looks like a path)
+                    // Try dedup first
                     let path = content.lines().find(|l| l.contains(".rs") || l.contains(".py") || l.contains(".js") || l.contains(".ts"))
                         .unwrap_or("file");
-                    if let Some(deduped) = state.check_dedup(content, path) {
-                        let saved = content.len().saturating_sub(deduped.len());
+                    let deduped = state.check_dedup(content, path);
+                    if let Some(d) = deduped {
+                        let saved = content.len().saturating_sub(d.len());
                         history_saved += saved;
-                        messages[i]["content"] = Value::String(deduped);
+                        messages[i]["content"] = Value::String(d);
+                    } else {
+                        // Not a file read — sift output compression
+                        let compressed = sift_compress_tool_result(content);
+                        if compressed.len() < content.len() {
+                            let saved = content.len().saturating_sub(compressed.len());
+                            history_saved += saved;
+                            messages[i]["content"] = Value::String(compressed);
+                        }
                     }
                 }
             }
@@ -442,6 +462,22 @@ async fn proxy_post(
     };
 
     let is_streaming = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    // Normalize roles: translate provider-specific roles to API-compatible
+    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        for msg in messages.iter_mut() {
+            if let Some(role) = msg.get_mut("role") {
+                if let Some(r) = role.as_str() {
+                    match r {
+                        "developer" | "latest_reminder" => {
+                            *role = Value::String("system".to_string());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
 
     // Context filter: drop old tool results
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
@@ -527,14 +563,43 @@ async fn proxy_post(
         Ok(upstream_resp) => {
             if is_streaming {
                 let byte_stream = upstream_resp.bytes_stream();
-                let event_stream = byte_stream.map(|chunk| {
-                    let data = match chunk {
-                        Ok(b) => String::from_utf8_lossy(&b).to_string(),
-                        Err(_) => "[error]".to_string(),
-                    };
-                    Ok::<Event, std::convert::Infallible>(Event::default().data(data))
+                let body_stream = byte_stream.map({
+                    let auth_key = auth_key.clone();
+                    let input_tokens = input_tokens;
+                    let compressed_tokens = compressed_tokens;
+                    let _aggressiveness = aggressiveness;
+                    move |chunk| {
+                        if let Ok(bytes) = &chunk {
+                            let text = String::from_utf8_lossy(bytes);
+                            // Log token usage from final SSE chunk
+                            if text.contains("\"usage\"") {
+                                // Extract prompt_tokens and completion_tokens
+                                let pt = text.split("\"prompt_tokens\":").nth(1)
+                                    .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                                    .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                                let ct = text.split("\"completion_tokens\":").nth(1)
+                                    .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                                    .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                                let log_entry = serde_json::json!({
+                                    "event": "stream_usage",
+                                    "auth_prefix": &auth_key[..auth_key.len().min(12)],
+                                    "input_tokens": input_tokens,
+                                    "compressed_tokens": compressed_tokens,
+                                    "prompt_tokens": pt,
+                                    "completion_tokens": ct,
+                                });
+                                if let Ok(mut lf) = std::fs::OpenOptions::new()
+                                    .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
+                                {
+                                    use std::io::Write;
+                                    let _ = writeln!(lf, "{}", log_entry);
+                                }
+                            }
+                        }
+                        Ok::<Bytes, std::convert::Infallible>(chunk.unwrap_or_else(|_| Bytes::from("[error]\n")))
+                    }
                 });
-                let mut resp = Sse::new(event_stream).into_response();
+                let mut resp = axum::response::Response::new(axum::body::Body::from_stream(body_stream));
                 resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
                 resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
                 resp.headers_mut().insert("x-reliaty-input-tokens", header::HeaderValue::from_str(&token_hdr_input).unwrap());
@@ -542,19 +607,34 @@ async fn proxy_post(
                 resp.headers_mut().insert("x-reliaty-savings-pct", header::HeaderValue::from_str(&token_hdr_savings).unwrap());
                 resp.headers_mut().insert("x-reliaty-history-saved", header::HeaderValue::from_str(&hdr_history_saved).unwrap());
                 resp.headers_mut().insert("x-reliaty-aggressiveness", header::HeaderValue::from_str(&hdr_aggr).unwrap());
-                // Update adaptive policy
-                if let Ok(mut guard) = PER_KEY_STATE.lock() {
-                    if let Some(st) = guard.get_mut(&auth_key) {
-                        st.policy.update(body_bytes.len());
-                    }
-                }
-                resp.into_response()
+                resp
             } else {
                 match upstream_resp.bytes().await {
                     Ok(bytes) => {
                         let body_str = String::from_utf8_lossy(&bytes).to_string();
                         store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str);
-                        let (final_body, resp_saved, resp_pct) = compress_response_body(&body_str);
+                        let (final_body, resp_saved, _) = compress_response_body(&body_str);
+
+                        // Log per-request token data for benchmarking
+                        if let Ok(mut log_fh) = std::fs::OpenOptions::new()
+                            .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
+                        {
+                            use std::io::Write;
+                            let log_entry = serde_json::json!({
+                                "event": "proxy_response",
+                                "auth_prefix": &auth_key[..auth_key.len().min(12)],
+                                "input_tokens": input_tokens,
+                                "compressed_tokens": compressed_tokens,
+                                "history_saved": history_saved,
+                                "aggressiveness": aggressiveness,
+                                "response_saved": resp_saved,
+                                "timestamp": std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs()).unwrap_or(0),
+                            });
+                            let _ = writeln!(log_fh, "{}", log_entry);
+                        }
+
                         // Update adaptive policy with output length
                         if let Ok(mut guard) = PER_KEY_STATE.lock() {
                             if let Some(st) = guard.get_mut(&auth_key) {
@@ -577,6 +657,84 @@ async fn proxy_post(
         Err(e) => {
             (StatusCode::BAD_GATEWAY, format!("upstream error: {}", e)).into_response()
         }
+    }
+}
+
+/// Try multiple relative path forms to match the index's stored paths.
+fn resolve_index_paths(file_path: &str, root: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if file_path.starts_with(root) {
+        let rel = file_path[root.len() + 1..].trim_start_matches('/').to_string();
+        candidates.push(rel.clone());
+        if let Some(stripped) = rel.strip_prefix("crates/") {
+            candidates.push(stripped.to_string());
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_str = cwd.to_string_lossy().to_string();
+        if file_path.starts_with(&cwd_str) {
+            let rel = file_path[cwd_str.len() + 1..].trim_start_matches('/').to_string();
+            candidates.push(rel.clone());
+            if let Some(stripped) = rel.strip_prefix("crates/") {
+                candidates.push(stripped.to_string());
+            }
+        }
+    }
+    candidates.push(file_path.to_string());
+    candidates
+}
+
+/// GET /check-diff — check a proposed edit for structural issues.
+async fn check_diff_handler(Query(params): Query<HashMap<String, String>>) -> String {
+    let file_path = params.get("file").map(|s| s.as_str()).unwrap_or("");
+    let new_content = params.get("content").map(|s| s.as_str()).unwrap_or("");
+    if file_path.is_empty() || new_content.is_empty() {
+        return "{\"error\": \"missing file or content param\"}".to_string();
+    }
+    if let Some((root, index_path, _)) = crate::daemon::find_reliary_root(file_path) {
+        // Try multiple relative path forms to match index
+        let rel_paths = resolve_index_paths(file_path, &root);
+        // Try each, return first that produces warnings
+        for rp in &rel_paths {
+            let result = crate::guard::check_diff(&index_path, rp, new_content);
+            if result.get("status").and_then(|s| s.as_str()) != Some("clean") {
+                return serde_json::to_string(&result).unwrap_or_else(|_| "{\"error\": \"serialization failed\"}".to_string());
+            }
+        }
+        // All returned clean — return the first
+        let result = crate::guard::check_diff(&index_path, &rel_paths[0], new_content);
+        serde_json::to_string(&result).unwrap_or_else(|_| "{\"error\": \"serialization failed\"}".to_string())
+    } else {
+        "{\"error\": \"no .reliary index\"}".to_string()
+    }
+}
+
+/// GET /read-validated — warn about externally-referenced identifiers before editing.
+async fn read_validated_handler(Query(params): Query<HashMap<String, String>>) -> String {
+    let file_path = params.get("file").map(|s| s.as_str()).unwrap_or("");
+    if file_path.is_empty() {
+        return "{\"error\": \"missing file param\"}".to_string();
+    }
+    if let Some((root, index_path, _)) = crate::daemon::find_reliary_root(file_path) {
+        use std::io::Read;
+        let rel_paths = resolve_index_paths(file_path, &root);
+        let rel_path = rel_paths.first().map(|s| s.as_str()).unwrap_or(file_path);
+        let full_path = std::path::Path::new(&root).join(rel_path);
+        let mut content = String::new();
+        if let Ok(mut f) = std::fs::File::open(&full_path) {
+            let _ = f.read_to_string(&mut content);
+        }
+        // Try each path form
+        for rp in &rel_paths {
+            let result = crate::guard::read_validated(&index_path, rp, &content);
+            if result.get("status").and_then(|s| s.as_str()) != Some("clean") {
+                return serde_json::to_string(&result).unwrap_or_else(|_| "{\"error\": \"serialization failed\"}".to_string());
+            }
+        }
+        let result = crate::guard::read_validated(&index_path, &rel_paths[0], &content);
+        serde_json::to_string(&result).unwrap_or_else(|_| "{\"error\": \"serialization failed\"}".to_string())
+    } else {
+        "{\"error\": \"no .reliary index\"}".to_string()
     }
 }
 
@@ -627,6 +785,8 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
         .route("/prior", get(prior_handler))
         .route("/read-summary", get(read_summary_handler))
         .route("/status", get(status_handler))
+        .route("/check-diff", get(check_diff_handler))
+        .route("/read-validated", get(read_validated_handler))
         .route("/v1/chat/completions", post(proxy_post))
         .route("/v1/messages", post(proxy_post));  // Anthropic/Claude Code compatibility
 

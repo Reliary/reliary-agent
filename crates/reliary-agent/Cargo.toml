@@ -15,6 +15,7 @@ reliary-risk = { path = "../reliary-risk" }
 reliary-memory = { path = "../reliary-memory" }
 reliary-fix = { path = "../reliary-fix" }
 reliary-dead = { path = "../reliary-dead" }
+reliary-output = { path = "../reliary-output" }
 rusqlite = { version = "0.31", features = ["bundled"] }
 mimalloc = "0.1"
 regex = "1"
