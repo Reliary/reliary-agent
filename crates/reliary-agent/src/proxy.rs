@@ -359,6 +359,38 @@ async fn proxy_post(
         }
     }
 
+    // Guard: check edit tool calls for orphaned references / missing identifiers (on by default)
+    let guard_activated = !std::env::var("RELIARY_PROXY_GUARD_DISABLE").is_ok_and(|v| v == "1");
+    if guard_activated {
+        if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+            if let Some(last) = messages.last() {
+                if last.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+                    let content = last.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                    // Scan for edit tool calls in JSON content
+                    if content.contains("\"edit\"") || content.contains("\"apply-edit\"") {
+                        if let Some((file_path, new_text)) = extract_edit_from_assistant(content) {
+                            if let Some((root, index_path, _)) = crate::daemon::find_reliary_root(&file_path) {
+                                let rel_paths = resolve_index_paths(&file_path, &root);
+                                for rp in &rel_paths {
+                                    let guard_result = crate::guard::check_diff(&index_path, rp, &new_text);
+                                    if guard_result.get("status").and_then(|s| s.as_str()) != Some("clean") {
+                                        // Inject guard warning as user message
+                                        let n_warnings = guard_result.get("warnings").and_then(|w| w.as_array()).map(|a| a.len()).unwrap_or(0);
+                                        messages.push(serde_json::json!({
+                                            "role": "user",
+                                            "content": format!("[guard: {} potential issues in {} - verify cross-file references]", n_warnings, rp)
+                                        }));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // First-appearance freeze: compress every message on first occurrence
     let (history_saved, _aggressiveness) = {
         let mut guard = get_or_create_state(&auth_key);
@@ -474,6 +506,32 @@ async fn proxy_post(
             (StatusCode::BAD_GATEWAY, format!("upstream error: {}", e)).into_response()
         }
     }
+}
+
+/// Extract file path and new content from an edit tool call embedded in assistant JSON.
+fn extract_edit_from_assistant(text: &str) -> Option<(String, String)> {
+    // Try to find edit/apply-edit tool call patterns in the assistant's response.
+    // Pattern 1: "edit" -> "filePath": "..." "newText": "..."
+    if let Some(file_start) = text.find("\"filePath\"") {
+        let after_file = &text[file_start + 10..];
+        let file_path = after_file.split('"').nth(1).map(|s| s.to_string())?;
+        if let Some(text_start) = text.find("\"newText\"") {
+            let after_text = &text[text_start + 9..];
+            let new_text = after_text.split('"').nth(1).map(|s| s.to_string())?;
+            return Some((file_path, new_text));
+        }
+    }
+    // Pattern 2: try term-encoded "write" -> "path": "..."
+    if let Some(file_start) = text.find("\"path\":") {
+        let after_file = &text[file_start + 6..];
+        let file_path = after_file.split('"').nth(1).map(|s| s.to_string())?;
+        if let Some(text_start) = text.find("\"content\":") {
+            let after_text = &text[text_start + 9..];
+            let new_text = after_text.split('"').nth(1).map(|s| s.to_string())?;
+            return Some((file_path, new_text));
+        }
+    }
+    None
 }
 
 /// Try multiple relative path forms to match the index's stored paths.
