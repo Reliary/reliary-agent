@@ -1210,6 +1210,7 @@ dependencies = [
  "reliary-dead",
  "reliary-fix",
  "reliary-memory",
+ "reliary-output",
  "reliary-risk",
  "reliary-search",
  "reliary-sift",
@@ -1264,6 +1265,13 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "reliary-output"
+version = "0.3.0"
+dependencies = [
+ "regex",
 ]
 
 [[package]]
