@@ -50,6 +50,7 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
 | `RELIARY_FEATURES` | `+editMerge,-taskTargets` | Enable/disable individual features |
 | `RELIARY_REPLAY` | `record`, `replay` | Deterministic benchmark mode |
 | `RELIARY_UPSTREAM_URL` | URL | Override auth-based routing. Default: resolved from `Authorization` header |
+| `RELIARY_PROXY_GUARD_DISABLE` | `1` | Disable guard (cross-file edit safety). On by default. |
 | `DEEPSEEK_BASE_URL` | URL (default: DeepInfra) | Route Pi/Cline/OpenCode through proxy: `http://localhost:9090/v1` |
 | `ANTHROPIC_BASE_URL` | URL (default: Anthropic) | Route Claude Code through proxy: `http://localhost:9090/` |
 
