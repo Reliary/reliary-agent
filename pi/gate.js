@@ -239,7 +239,16 @@ function handleToolResult(event) {
       return { content: [{ type: "text", text: enriched }] };
     }
   }
+
+  // Sift: compress any tool result with repeated patterns
+  if (text.length > 300) {
+    const compressed = siftOutput(text);
+    if (compressed !== text) {
+      gateLog("save", `sift: ${name} ${text.length}→${compressed.length}c (${Math.round((1-compressed.length/text.length)*100)}%)`);
+      return { content: [{ type: "text", text: compressed }] };
+    }
   }
+}
 
 // ── Sift: inline class-line compression (port of reliary-output, zero subprocess) ──
 function siftOutput(text) {
@@ -276,23 +285,6 @@ function siftOutput(text) {
 
   const result = collapsed.filter(l => l !== undefined && l !== null).join("\n");
   return result.length < text.length ? result : text;
-}
-  }
-
-  const result = collapsed.filter(l => l !== undefined && l !== null).join("\n");
-  return result.length < text.length ? result : text;
-}
-
-  // Bash output: inline sift (tool-agnostic, zero subprocess, preserves errors)
-  if (name === "bash" && text.length > 600) {
-    if (text.length > 600) {
-      const compressed = siftOutput(text);
-      if (compressed !== text) {
-        gateLog("save", `bash: ${text.length}→${compressed.length}c (${Math.round((1-compressed.length/text.length)*100)}%)`);
-        return { content: [{ type: "text", text: compressed }] };
-      }
-    }
-  }
 }
 
 // ── Hook B: tool_call — handle test/explain, pass read/edit through ──
@@ -341,6 +333,7 @@ function handleToolCall(event) {
     try {
       if (existsSync(file)) return { block: true, response: `ERROR: ${file} already exists (use edit to modify)` };
       writeFileSync(file, content, "utf-8");
+      gateLog("save", `create: ${file} (${content.length}c)`);
       return { block: true, response: `Created ${file} (${content.length} chars). Run 'test <workdir>' to verify.` };
     } catch (e) {
       return { block: true, response: `ERROR: ${e.message}` };
