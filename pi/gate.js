@@ -278,6 +278,11 @@ function siftOutput(text) {
   const result = collapsed.filter(l => l !== undefined && l !== null).join("\n");
   return result.length < text.length ? result : text;
 }
+  }
+
+  const result = collapsed.filter(l => l !== undefined && l !== null).join("\n");
+  return result.length < text.length ? result : text;
+}
 
   // Bash output: inline sift (tool-agnostic, zero subprocess, preserves errors)
   if (name === "bash" && text.length > 600) {
