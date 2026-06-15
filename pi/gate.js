@@ -222,27 +222,71 @@ function handleToolResult(event) {
     } catch {}
   }
 
-  // Read content: build structured summary (grammar-free)
+  // Read content: build structured summary (grammar-free) or sift for large files
   if (name === "read" && text.length > 1000) {
+    // Large files: sift first (collapses structural noise), then fall back to summary
+    if (text.length > 5000 && !input.offset && !input.limit) {
+      const sifted = siftOutput(text);
+      if (sifted !== text) {
+        gateLog("save", `read: ${(pathHint || name).split("/").pop()} ${text.length}→${sifted.length}c (${Math.round((1-sifted.length/text.length)*100)}%)`);
+        return { content: [{ type: "text", text: sifted }] };
+      }
+    }
+    // Medium files: structured summary (signatures + callers)
     const enriched = buildStructuredSummary(text, pathHint || name);
     if (enriched && enriched.length < text.length * 0.8) {
-      gateLog("save", `read: ${(pathHint || name).split("/").pop()} ${text.length}→${enriched.length}c (${Math.round((1 - enriched.length/text.length)*100)}%)`);
+      gateLog("save", `read: ${(pathHint || name).split("/").pop()} ${text.length}→${enriched.length}c (${Math.round((1-enriched.length/text.length)*100)}%)`);
       return { content: [{ type: "text", text: enriched }] };
     }
   }
+  }
 
-  // Bash output: zone truncation for large output (preserve errors)
-  if (name === "bash") {
-    let compressed = text;
-    if (compressed.length > 2000) {
-      const head = compressed.slice(0, 1000);
-      const errorSig = /[Ee]rror|[Ww]arning|FAILED|failed|expected |unexpected|not found/i.test(head);
-      if (errorSig) {
-        compressed = head.length > 1200 ? head.slice(0, 1200).replace(/\n\s*\n\s*\n.*$/s, "\n") : head;
-      }
+// ── Sift: inline class-line compression (port of reliary-output, zero subprocess) ──
+function siftOutput(text) {
+  if (text.length <= 300) return text;
+  const lines = text.split("\n");
+  if (lines.length <= 20) return text;
+
+  // Classify each line
+  const types = lines.map(l => {
+    const t = l.trim();
+    if (!t) return "blank";
+    if (/^(Compiling|Checking|Building|Linking|Running)\b/.test(t)) return "progress";
+    if (t === "ok" || /\b\.\.\. ok$/.test(t)) return "ok";
+    if (/\b(FAILED|failed|error|Error|ERROR|E\d{4}|Traceback)\b/.test(t)) return "error";
+    if (t.startsWith("  --> ") || t.startsWith("   = help") || t.startsWith("   = note")) return "help";
+    return "code";
+  });
+
+  // Collapse runs of 3+ same-type lines
+  const collapsed = [];
+  let i = 0;
+  while (i < lines.length) {
+    const type = types[i];
+    let j = i + 1;
+    while (j < lines.length && types[j] === type) j++;
+    const count = j - i;
+    if (count >= 3 && (type === "progress" || type === "ok" || type === "blank")) {
+      collapsed.push(type === "ok" ? `[${count} ok]` : type === "blank" ? "" : `[${count} ${lines[i].trim().split(/\s/)[0]} ...]`);
+      i = j;
+    } else {
+      collapsed.push(lines[i]);
+      i++;
     }
-    if (compressed !== text) {
-      return { content: [{ type: "text", text: compressed }] };
+  }
+
+  const result = collapsed.filter(l => l !== undefined && l !== null).join("\n");
+  return result.length < text.length ? result : text;
+}
+
+  // Bash output: inline sift (tool-agnostic, zero subprocess, preserves errors)
+  if (name === "bash" && text.length > 600) {
+    if (text.length > 600) {
+      const compressed = siftOutput(text);
+      if (compressed !== text) {
+        gateLog("save", `bash: ${text.length}→${compressed.length}c (${Math.round((1-compressed.length/text.length)*100)}%)`);
+        return { content: [{ type: "text", text: compressed }] };
+      }
     }
   }
 }
