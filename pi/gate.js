@@ -245,7 +245,6 @@ function handleToolResult(event) {
 function siftOutput(text) {
   if (text.length <= 300) return text;
   const lines = text.split("\n");
-  if (lines.length <= 20) return text;
 
   // Classify each line
   const types = lines.map(l => {
