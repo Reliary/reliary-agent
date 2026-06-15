@@ -84,54 +84,22 @@ fn daemon_cmd_str(cmd: &str) -> String {
 
 // ── History Compression Components ──
 
-/// Adaptive compression policy — adjusts aggressiveness based on last output length.
-#[derive(Clone)]
-struct AdaptivePolicy {
-    last_output_len: usize,
-    aggressiveness: f32,
-    concise_turns: u32,
-}
-
-impl AdaptivePolicy {
-    fn new() -> Self {
-        Self { last_output_len: 0, aggressiveness: 0.7, concise_turns: 0 }
-    }
-
-    fn compute_aggressiveness(last_output_len: usize) -> f32 {
-        match last_output_len {
-            0..=500   => 0.3,
-            501..=1500 => 0.5,
-            1501..=3000 => 0.7,
-            _          => 0.9,
-        }
-    }
-
-    fn update(&mut self, output_len: usize) {
-        self.last_output_len = output_len;
-        let new = Self::compute_aggressiveness(output_len);
-        // Decay aggressiveness when LLM is concise
-        if output_len < 500 {
-            self.concise_turns += 1;
-            if self.concise_turns >= 2 {
-                self.aggressiveness = self.aggressiveness.max(0.1) - 0.1;
-            }
-        } else {
-            self.concise_turns = 0;
-            self.aggressiveness = new;
-        }
-        self.aggressiveness = self.aggressiveness.clamp(0.1, 0.9);
-    }
-}
-
-/// Per-auth-key state (policy + dedup cache).
+/// Per-auth-key state (dedup cache + system prompt stabilization + tool result cache).
 struct PerKeyState {
-    policy: AdaptivePolicy,
     dedup_cache: HashMap<u64, (String, Instant)>,  // hash -> (file_path, last_seen)
+    no_output_compress: bool,
+    canonical_system: Option<String>,  // turn 1 system prompt for KV cache stabilization
+    tool_cache: HashMap<u64, String>,  // hash -> compressed tool result (first-appearance freeze)
 }
 
 impl PerKeyState {
     fn new() -> Self {
-        Self { policy: AdaptivePolicy::new(), dedup_cache: HashMap::new() }
+        Self {
+            dedup_cache: HashMap::new(),
+            no_output_compress: std::env::var("RELIARY_PROXY_NO_OUTPUT_COMPRESS").is_ok_and(|v| v == "1" || v == "true"),
+            canonical_system: None,
+            tool_cache: HashMap::new(),
+        }
     }
 
     fn check_dedup(&mut self, content: &str, path: &str) -> Option<String> {
@@ -164,152 +132,6 @@ fn get_or_create_state(auth_key: &str) -> std::sync::MutexGuard<'static, HashMap
     guard
 }
 
-/// Compress old assistant reasoning — strip verbose explanations, keep code blocks intact.
-/// Splits message into code blocks (```...```) and prose sections.
-/// Compresses prose, leaves code verbatim.
-fn compress_assistant_text(text: &str, dict: Option<&reliary_compress::CompressionDict>) -> Option<String> {
-    // First try full-text compress (works for prose-only with no code blocks)
-    if let Some(compressed) = reliary_compress::compress_reasoning(text, dict) {
-        return Some(compressed);
-    }
-
-    // Split on code blocks
-    let mut parts: Vec<String> = Vec::new();
-    let mut in_code = false;
-    let mut code_buf = String::new();
-    let mut prose_buf = String::new();
-
-    for line in text.lines() {
-        if line.trim_start().starts_with("```") {
-            if in_code {
-                parts.push(code_buf.clone());
-                code_buf.clear();
-                in_code = false;
-            } else {
-                if !prose_buf.is_empty() {
-                    parts.push(prose_buf.clone());
-                    prose_buf.clear();
-                }
-                in_code = true;
-                code_buf.push_str(line);
-                code_buf.push('\n');
-            }
-        } else if in_code {
-            code_buf.push_str(line);
-            code_buf.push('\n');
-        } else {
-            prose_buf.push_str(line);
-            prose_buf.push('\n');
-        }
-    }
-    if in_code && !code_buf.is_empty() {
-        parts.push(code_buf);
-    } else if !prose_buf.is_empty() {
-        parts.push(prose_buf);
-    }
-
-    // Compress each section: keep code verbatim, compress prose
-    let mut result = String::new();
-    let mut total_original = 0usize;
-    let mut total_compressed = 0usize;
-
-    for part in &parts {
-        total_original += part.len();
-        if part.contains("```") || part.len() < 50 {
-            result.push_str(part);
-            total_compressed += part.len();
-        } else {
-            let compressed = reliary_compress::compress_reasoning(part, dict)
-                .or_else(|| compress_prose_inline(part));
-            match compressed {
-                Some(c) if c.len() < part.len() => {
-                    result.push_str(&c);
-                    result.push('\n');
-                    total_compressed += c.len();
-                }
-                _ => {
-                    result.push_str(part);
-                    total_compressed += part.len();
-                }
-            }
-        }
-    }
-    if total_original > 0 && total_compressed < total_original {
-        Some(result)
-    } else {
-        None
-    }
-}
-
-/// Lightweight prose compression for sections too short for compress_reasoning.
-fn compress_prose_inline(text: &str) -> Option<String> {
-    let original_len = text.len();
-    if original_len < 50 || original_len > 5000 { return None; }
-
-    let patterns = [
-        r"(?i)\b(Let me (analyze|look|check|review|see|think|consider)\b[^.]*\.?)",
-        r"(?i)\b(I (?:would|will|can|could) need to)[^.]*\.?",
-        r"(?i)\b(In order to)[^.]*\.?",
-        r"(?i)\b(First(?:,|ly)? let me)[^.]*\.?",
-        r"(?i)\b(This means that)[^.]*\.?",
-        r"(?i)\b(The (?:next|final|first) step)[^.]*\.?",
-        r"(?i)\b(Now I(?: can| will|'ll| need to| should))[^.,;]*",
-        r"(?i)\b(Alright|Okay|So,?|Well,?|Now,?)\s*",
-        r"(?i)\bessentially|basically|simply|actually|obviously|clearly|currently\b",
-    ];
-
-    let mut t = text.to_string();
-    for pattern in &patterns {
-        if let Ok(re) = regex::Regex::new(pattern) {
-            t = re.replace_all(&t, " ").to_string();
-        }
-    }
-    t = t.split_whitespace().collect::<Vec<_>>().join(" ");
-
-    let saved = original_len.saturating_sub(t.len());
-    // Accept any savings — even 10 chars is worth it for response compression
-    if saved > 10 {
-        Some(t)
-    } else {
-        None
-    }
-}
-
-/// Compress the assistant message content in an API response before returning to the agent.
-/// Returns (modified_body, chars_saved, savings_percent).
-fn compress_response_body(body: &str) -> (String, String, String) {
-    let mut value: Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(_) => return (body.to_string(), "0".to_string(), "0".to_string()),
-    };
-
-    let mut total_saved = 0usize;
-    let mut total_original = 0usize;
-
-    if let Some(choices) = value.get_mut("choices").and_then(|c| c.as_array_mut()) {
-        for choice in choices.iter_mut() {
-            if let Some(content) = choice.get_mut("message").and_then(|m| m.get_mut("content")) {
-                if let Some(text) = content.as_str() {
-                    total_original += text.len();
-                    if let Some(compressed) = compress_assistant_text(text, None) {
-                        if compressed.len() < text.len() {
-                            total_saved += text.len().saturating_sub(compressed.len());
-                            *content = Value::String(compressed);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let modified = serde_json::to_string(&value).unwrap_or_else(|_| body.to_string());
-    let saved_str = total_saved.to_string();
-    let pct = if total_original > 0 {
-        ((total_saved as f64 / total_original as f64) * 100.0) as usize
-    } else { 0 };
-    (modified, saved_str, pct.to_string())
-}
-
 /// Truncate old tool results — keep first 200 + last 50 chars.
 fn truncate_tool_result(content: &str) -> String {
     if content.len() <= 250 { return content.to_string(); }
@@ -329,65 +151,40 @@ fn sift_compress_tool_result(content: &str) -> String {
     }
 }
 
-/// Compress all messages in the conversation history.
-fn compress_messages(messages: &mut Vec<Value>, state: &mut PerKeyState) -> (usize, usize) {
-    let total = messages.len();
-    let mut history_saved: usize = 0;
-    for i in (0..total).rev() {
-        let age = total - i; // 1 = most recent
-        let role = messages[i].get("role").and_then(|r| r.as_str()).unwrap_or("");
+/// Compress tool results via first-appearance freeze.
+/// Never touches assistant or user messages (preserves reasoning context).
+/// Each tool result is compressed ONCE on first occurrence and cached — subsequent
+/// turns get the identical compressed version, ensuring KV cache stability.
+fn compress_messages(messages: &mut Vec<Value>, state: &mut PerKeyState) -> (usize, f32) {
+    let mut saved = 0usize;
+    for msg in messages.iter_mut() {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        if role != "tool" && role != "toolResult" { continue; }
 
-        match role {
-            "assistant" if age > 2 && state.policy.aggressiveness >= 0.3 => {
-                // Compress old assistant reasoning
-                if let Some(content) = messages[i].get("content").and_then(|c| c.as_str()) {
-                    if let Some(compressed) = compress_assistant_text(content, None) {
-                        let saved = content.len().saturating_sub(compressed.len());
-                        if saved > 10 {
-                            history_saved += saved;
-                            messages[i]["content"] = Value::String(compressed);
-                        }
-                    }
-                }
+        let content = match msg.get("content") {
+            Some(Value::String(s)) => s.clone(),
+            _ => continue,
+        };
+        if content.len() < 200 { continue; }
+
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        content.hash(&mut h);
+        let hash = h.finish();
+
+        if let Some(cached) = state.tool_cache.get(&hash) {
+            saved += content.len().saturating_sub(cached.len());
+            msg["content"] = Value::String(cached.clone());
+        } else {
+            // First appearance — compress and cache
+            let compressed = sift_compress_tool_result(&content);
+            if compressed.len() < content.len() {
+                saved += content.len().saturating_sub(compressed.len());
+                state.tool_cache.insert(hash, compressed.clone());
+                msg["content"] = Value::String(compressed);
             }
-            "tool" | "toolResult" if age > 4 => {
-                // Truncate old tool results
-                if let Some(content) = messages[i].get("content").and_then(|c| c.as_str()) {
-                    let truncated = truncate_tool_result(content);
-                    if truncated.len() < content.len() {
-                        let saved = content.len().saturating_sub(truncated.len());
-                        history_saved += saved;
-                        messages[i]["content"] = Value::String(truncated);
-                    }
-                }
-            }
-            "tool" | "toolResult" if age > 2 && age <= 4 => {
-                // Dedup repeated file reads, then zone-compress remaining
-                if let Some(content) = messages[i].get("content").and_then(|c| c.as_str()) {
-                    // Try dedup first
-                    let path = content.lines().find(|l| l.contains(".rs") || l.contains(".py") || l.contains(".js") || l.contains(".ts"))
-                        .unwrap_or("file");
-                    let deduped = state.check_dedup(content, path);
-                    if let Some(d) = deduped {
-                        let saved = content.len().saturating_sub(d.len());
-                        history_saved += saved;
-                        messages[i]["content"] = Value::String(d);
-                    } else {
-                        // Not a file read — sift output compression
-                        let compressed = sift_compress_tool_result(content);
-                        if compressed.len() < content.len() {
-                            let saved = content.len().saturating_sub(compressed.len());
-                            history_saved += saved;
-                            messages[i]["content"] = Value::String(compressed);
-                        }
-                    }
-                }
-            }
-            _ => {}
         }
     }
-
-    (history_saved, (state.policy.aggressiveness * 100.0) as usize)
+    (saved, 0.7)
 }
 
 // ── Health / Ping ──
@@ -461,9 +258,25 @@ async fn proxy_post(
         Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("json parse: {}", e)}))).into_response(),
     };
 
+    // Log raw request + compressed request + billed tokens
+    let request_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+
+    // Log raw request body for replay benchmark
+    if let Ok(body_str) = std::str::from_utf8(&body) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/reliary_proxy_requests.jsonl") {
+            let _ = writeln!(f, "{}", body_str);
+        }
+    }
+
     let is_streaming = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    // Normalize roles: translate provider-specific roles to API-compatible
+    // Passthrough mode: skip all compression, only relay (for baseline benchmarking)
+    let passthrough = std::env::var("RELIARY_PROXY_PASSTHROUGH").is_ok_and(|v| v == "1" || v == "true");
+    // No-output-compress: skip reliary-output crate (sift-based) compression, keep feed-forward + history
+    let no_output_compress = std::env::var("RELIARY_PROXY_NO_OUTPUT_COMPRESS").is_ok_and(|v| v == "1" || v == "true");
+
+    // Normalize roles: always on (required for compatibility)
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         for msg in messages.iter_mut() {
             if let Some(role) = msg.get_mut("role") {
@@ -479,35 +292,80 @@ async fn proxy_post(
         }
     }
 
-    // Context filter: drop old tool results
-    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
-        let mut turn_count = 0;
-        let mut to_keep: Vec<bool> = vec![true; messages.len()];
-        for (i, msg) in messages.iter().enumerate() {
-            match msg.get("role").and_then(|r| r.as_str()).unwrap_or("") {
-                "user" => { turn_count += 1; }
-                "tool" | "toolResult" if turn_count > 8 => { to_keep[i] = false; }
-                _ => {}
+    // System prompt stabilization: prevent Pi's per-turn _rebuildSystemPrompt
+    // from invalidating the provider's KV cache. On turns 2+, replace the system
+    // message with the canonical turn-1 version (toolSnippets are duplicates of
+    // content already in the messages array). Gated behind env var.
+    let stabilize_system = std::env::var("RELIARY_PROXY_STABILIZE_SYSTEM").is_ok_and(|v| v == "1" || v == "true");
+    if stabilize_system && !passthrough {
+        if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+            if !messages.is_empty() && messages[0].get("role").and_then(|r| r.as_str()) == Some("system") {
+                let mut guard = get_or_create_state(&auth_key);
+                let state = guard.get_mut(&auth_key).unwrap();
+                let current_text = messages[0].get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                if state.canonical_system.is_none() {
+                    state.canonical_system = Some(current_text);
+                } else if let Some(ref canonical) = state.canonical_system.clone() {
+                    if &current_text == canonical {
+                        messages.remove(0); // Identical — provider has it KV-cached
+                    } else {
+                        messages[0]["content"] = Value::String(canonical.clone());
+                        // Log the stabilization event
+                        if let Ok(mut lf) = std::fs::OpenOptions::new()
+                            .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
+                        {
+                            use std::io::Write;
+                            let saved = current_text.len().saturating_sub(canonical.len());
+                            let _ = writeln!(lf, "{}", serde_json::json!({
+                                "event": "system_stabilized",
+                                "auth_prefix": &auth_key[..auth_key.len().min(12)],
+                                "bytes_replaced": saved,
+                                "canonical_len": canonical.len(),
+                                "current_len": current_text.len(),
+                            }));
+                        }
+                    }
+                }
             }
-        }
-        for i in (0..messages.len()).rev() {
-            if !to_keep[i] { messages.remove(i); }
         }
     }
 
-    // History compression: compress old assistant reasoning + truncate old tool results
-    let (history_saved, aggressiveness) = {
-        let mut guard = get_or_create_state(&auth_key);
-        let state = guard.get_mut(&auth_key).unwrap();
+    // Context filter — only active when NOT in passthrough mode
+    if !passthrough {
         if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
-            compress_messages(messages, state)
+            let mut turn_count = 0;
+            let mut to_keep: Vec<bool> = vec![true; messages.len()];
+            for (i, msg) in messages.iter().enumerate() {
+                match msg.get("role").and_then(|r| r.as_str()).unwrap_or("") {
+                    "user" => { turn_count += 1; }
+                    "tool" | "toolResult" if turn_count > 8 => { to_keep[i] = false; }
+                    _ => {}
+                }
+            }
+            for i in (0..messages.len()).rev() {
+                if !to_keep[i] { messages.remove(i); }
+            }
+        }
+    }
+
+    // Universal tool-result compression (first-appearance freeze, feature-gated)
+    let (history_saved, aggressiveness) = {
+        let compress_enabled = std::env::var("RELIARY_PROXY_OUTPUT_COMPRESS").is_ok_and(|v| v == "1" || v == "true");
+        if !passthrough && compress_enabled {
+            let mut guard = get_or_create_state(&auth_key);
+            let state = guard.get_mut(&auth_key).unwrap();
+            if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+                compress_messages(messages, state)
+            } else {
+                (0, 0.0)
+            }
         } else {
-            (0, 0)
+            (0, 0.0)
         }
     };
 
-    // Response cache (non-streaming only)
-    if !is_streaming {
+    // Response cache (skip in passthrough)
+    if !passthrough && !is_streaming {
         if let Some(messages) = payload.get("messages") {
             if let Ok(msg_str) = serde_json::to_string(messages) {
                 if let Some(cached) = cached_response(&auth_key, &msg_str) {
@@ -517,28 +375,13 @@ async fn proxy_post(
         }
     }
 
-    // Feed-forward compression
+    // Feed-forward compression (skip — compressing prior reasoning harms multi-turn sessions)
     let input_body_str = serde_json::to_string(&payload).unwrap_or_default();
     let input_tokens = estimate_tokens(&input_body_str);
 
-    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
-        let dict = crate::read_summary::load_dictionary();
-        for (i, msg) in messages.iter_mut().enumerate() {
-            if i < 2 { continue; }
-            if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") { continue; }
-            if let Some(content) = msg.get_mut("content") {
-                if let Some(text) = content.as_str() {
-                    if let Some(compressed) = reliary_compress::compress_reasoning(text, dict.as_ref()) {
-                        *content = Value::String(compressed);
-                    }
-                }
-            }
-        }
-    }
-
     let compressed_body_str = serde_json::to_string(&payload).unwrap_or_default();
-    let compressed_tokens = estimate_tokens(&compressed_body_str);
-    let token_savings = if input_tokens > 0 {
+    let compressed_tokens = if !passthrough { estimate_tokens(&compressed_body_str) } else { input_tokens };
+    let token_savings = if input_tokens > 0 && !passthrough {
         ((input_tokens.saturating_sub(compressed_tokens)) as f64 / input_tokens as f64 * 100.0) as usize
     } else { 0 };
 
@@ -613,7 +456,6 @@ async fn proxy_post(
                     Ok(bytes) => {
                         let body_str = String::from_utf8_lossy(&bytes).to_string();
                         store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str);
-                        let (final_body, resp_saved, _) = compress_response_body(&body_str);
 
                         // Log per-request token data for benchmarking
                         if let Ok(mut log_fh) = std::fs::OpenOptions::new()
@@ -627,7 +469,6 @@ async fn proxy_post(
                                 "compressed_tokens": compressed_tokens,
                                 "history_saved": history_saved,
                                 "aggressiveness": aggressiveness,
-                                "response_saved": resp_saved,
                                 "timestamp": std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.as_secs()).unwrap_or(0),
@@ -635,19 +476,13 @@ async fn proxy_post(
                             let _ = writeln!(log_fh, "{}", log_entry);
                         }
 
-                        // Update adaptive policy with output length
-                        if let Ok(mut guard) = PER_KEY_STATE.lock() {
-                            if let Some(st) = guard.get_mut(&auth_key) {
-                                st.policy.update(body_str.len());
-                            }
-                        }
-                        let mut resp = (StatusCode::OK, [("content-type", "application/json")], final_body).into_response();
+                        let mut resp = (StatusCode::OK, [("content-type", "application/json")], body_str).into_response();
                         resp.headers_mut().insert("x-reliaty-input-tokens", header::HeaderValue::from_str(&token_hdr_input).unwrap());
                         resp.headers_mut().insert("x-reliaty-compressed-tokens", header::HeaderValue::from_str(&token_hdr_compressed).unwrap());
                         resp.headers_mut().insert("x-reliaty-savings-pct", header::HeaderValue::from_str(&token_hdr_savings).unwrap());
                         resp.headers_mut().insert("x-reliaty-history-saved", header::HeaderValue::from_str(&hdr_history_saved).unwrap());
                         resp.headers_mut().insert("x-reliaty-aggressiveness", header::HeaderValue::from_str(&hdr_aggr).unwrap());
-                        resp.headers_mut().insert("x-reliaty-response-saved", header::HeaderValue::from_str(&resp_saved).unwrap());
+                        resp.headers_mut().insert("x-reliaty-response-saved", header::HeaderValue::from_str("0").unwrap());
                         resp
                     }
                     Err(_) => (StatusCode::BAD_GATEWAY, "empty upstream response").into_response(),
