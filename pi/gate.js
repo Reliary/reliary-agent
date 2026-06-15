@@ -176,6 +176,94 @@ function qualMaxBlocks() {
   return 3;
 }
 
+// ── Strict mode redirect helpers (transparent, LLM never sees "blocked") ──
+let strictRedirects = 0;
+
+function redirectBash(cmd, workdir) {
+  // cargo test / pytest → test tool
+  if (/cargo\s+test|pytest|npm\s+test|python3?\s+-m\s+pytest/.test(cmd)) {
+    gateLog("save", "redirect bash(test)→test");
+    const result = runTest(workdir || process.cwd());
+    const sifted = siftOutput(result);
+    return { block: true, response: sifted !== result ? sifted : result };
+  }
+
+  // cat / head / tail file → read tool
+  const readMatch = cmd.match(/\b(?:cat|head|tail)\s+(.+)/);
+  if (readMatch) {
+    const file = readMatch[1].trim();
+    gateLog("save", "redirect bash(cat)→read");
+    try {
+      const content = readFileSync(file, "utf-8");
+      const lines = content.split("\n");
+      let result;
+      if (lines.length > 50) {
+        result = `[${file}] ${lines.length} lines\n\n` + lines.slice(0, 40).join("\n") + `\n... (${lines.length - 40} more lines)\n\n` + lines.slice(-10).join("\n");
+      } else {
+        result = content;
+      }
+      return { block: true, response: result };
+    } catch (e) {
+      return { block: true, response: `ERROR: ${e.message}` };
+    }
+  }
+
+  // grep / rg → search tool
+  if (/grep|rg\b|ripgrep/.test(cmd)) {
+    const query = cmd.replace(/.*\bgrep\b\s*/, "").replace(/^['"]|['"]$/g, "").trim();
+    gateLog("save", "redirect bash(grep)→search");
+    const result = daemonCmd(`search ${query}`) || "no results";
+    return { block: true, response: `[redirected to search]\n${result}` };
+  }
+
+  // ls / find → directory listing
+  if (/^ls\b/.test(cmd)) {
+    const target = cmd.replace(/^ls\s*/, "").trim() || ".";
+    gateLog("save", "redirect bash(ls)→read");
+    try {
+      const entries = readdirSync(target);
+      const lines = entries.slice(0, 40).join("\n");
+      return { block: true, response: `${target}/ (${entries.length} entries)\n${lines}` + (entries.length > 40 ? `\n... (${entries.length - 40} more)` : "") };
+    } catch (e) {
+      return { block: true, response: `ERROR: ${e.message}` };
+    }
+  }
+
+  // sed → edit via file healing
+  const sedEdit = cmd.match(/sed\s+-i\s+['"]?s\/([^/]+)\/([^/]*)\/['"]?\s*(.+)/);
+  if (sedEdit) {
+    gateLog("save", "redirect bash(sed)→edit");
+    return { block: true, response: `[redirected to edit] Use the edit tool to modify ${sedEdit[3].trim()}` };
+  }
+
+  // Fall back to runTest (most commands are test runners)
+  gateLog("save", "redirect bash→test");
+  const result = runTest(workdir || process.cwd());
+  const sifted = siftOutput(result);
+  return { block: true, response: sifted !== result ? sifted : result };
+}
+
+function redirectCreate(filePath, content) {
+  try {
+    writeFileSync(filePath, content, "utf-8");
+    return `Created ${filePath} (${content.length} chars)`;
+  } catch (e) {
+    return `ERROR: ${e.message}`;
+  }
+}
+
+function redirectEdit(filePath, oldText, newText) {
+  try {
+    if (!existsSync(filePath)) return `ERROR: ${filePath} does not exist`;
+    const content = readFileSync(filePath, "utf-8");
+    const modified = oldText ? content.replace(oldText, newText) : newText;
+    writeFileSync(filePath, modified, "utf-8");
+    return `Updated ${filePath}`;
+  } catch (e) {
+    return `ERROR: ${e.message}`;
+  }
+}
+
 // ── Grammar-free test runner via daemon ──
 function runTest(workdir) {
   if (!RELIARY_BIN) return "ERROR: reliary-agent not available";
@@ -340,10 +428,23 @@ function handleToolCall(event) {
     }
   }
 
-  // Bash: intercept sed commands through heal-apply, block destructive patterns
+  // Bash: intercept and redirect in strict mode, sed-heal in reactive
   if (name === "bash") {
     const cmd = input.command || "";
-    // Route sed -i commands through heal-apply
+
+    // Strict mode: transparent redirect to sandbox tools
+    if (safetyLevel >= 2) {
+      // Track redirect count for auto-deescalation
+      strictRedirects = (strictRedirects || 0) + 1;
+      if (strictRedirects >= 5) {
+        gateLog("warn", `auto-deescalate: ${strictRedirects} redirects`);
+        safetyLevel = 1;
+        // Fall through to reactive mode
+      } else {
+        return redirectBash(cmd, getRepoRoot() || process.cwd());
+      }
+    }
+
     // Route sed -i commands through heal-apply (if enabled)
     if (FEATURES.healEdit) {
       const sedMatch = cmd.match(/sed\s+-i\s+['"]?s\/([^/]+)\/([^/]*)\/['"]?\s*(.+)/);
@@ -356,11 +457,6 @@ function handleToolCall(event) {
         return { block: true, response: `Edit applied via healing: ${result || "no match"}` };
       }
     }
-    // Strict: block all bash
-    if (safetyLevel >= 2) {
-      gateLog("block", `bash blocked (strict ${safetyLevel}): "${cmd.slice(0, 60)}"`);
-      return { block: true, response: `[gate] bash is not available in strict mode. Use read/edit/test/search/explain/create instead.` };
-    }
     // Fast mode: monitor for destructive patterns, escalate if found
     const dd = /sed\s+-i|rm\s+(?:-rf?\s+)?\S+\.(?:py|rs|js|ts|tsx)|\s>\s*\S+\.(?:py|rs|js|ts|tsx)/i;
     if (dd.test(cmd)) {
@@ -369,10 +465,21 @@ function handleToolCall(event) {
     return; // pass through
   }
 
-  // Write: route through heal-apply if file exists
+  // Write: redirect in strict, heal-apply in reactive
   if (name === "write") {
     const filePath = input.file || input.path || "";
     const content = input.content || "";
+    if (safetyLevel >= 2 && filePath && content) {
+      strictRedirects = (strictRedirects || 0) + 1;
+      if (strictRedirects >= 5) {
+        gateLog("warn", `auto-deescalate: ${strictRedirects} redirects`);
+        safetyLevel = 1;
+      } else if (!existsSync(filePath)) {
+        return { block: true, response: redirectCreate(filePath, content) };
+      } else {
+        return { block: true, response: redirectEdit(filePath, "", content) };
+      }
+    }
     if (FEATURES.healEdit && filePath && content && existsSync(filePath)) {
       gateLog("save", `heal-write: ${filePath}`);
       const tmpFile = `/tmp/gate-heal-write-${Date.now()}.tmp`;
@@ -384,21 +491,22 @@ function handleToolCall(event) {
       if (result && result.trim() !== "") {
         return { block: true, response: `Edit applied via healing: ${result}` };
       }
-      // Fall through to native write
-      return;
     }
-    if (safetyLevel >= 2) {
-      gateLog("block", `write blocked (strict ${safetyLevel})`);
-      return { block: true, response: "write is disabled in strict mode. Use edit to modify existing files or create to add new files." };
-    }
-    return; // pass through
+    return; // pass through (reactive mode)
   }
 
-  // Grep: block at safetyLevel >= 2, pass through otherwise
+  // Grep: redirect to search in strict mode
   if (name === "grep") {
     if (safetyLevel >= 2) {
-      gateLog("block", `grep blocked (strict ${safetyLevel}) — use search instead`);
-      return { block: true, response: "grep is disabled in strict mode. Use search (FTS5 index) for faster results." };
+      strictRedirects = (strictRedirects || 0) + 1;
+      if (strictRedirects >= 5) {
+        gateLog("warn", `auto-deescalate: ${strictRedirects} redirects`);
+        safetyLevel = 1;
+      } else {
+        const query = (input.command || input.pattern || "").replace(/^.*?\b(\w+).*$/, "$1");
+        gateLog("save", "grep→search: " + query);
+        return { block: true, response: `[redirected to search] ` + (daemonCmd(`search ${query}`) || "no results") };
+      }
     }
     return; // pass through
   }
