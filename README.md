@@ -109,12 +109,58 @@ flowchart LR
 
 ## Usage by Agent
 
-| Agent | What `reliary-agent init` does | Savings |
+Every agent gets proxy-level compression (first-appearance freeze, guard) simply by routing through `:9090`. The agent-specific setup differs only in config file injection.
+
+### Pi (gate.js extension)
+
+```bash
+reliary-agent init   # installs gate.js extension automatically
+# Or skip init and just run:
+reliary-agent serve &
+pi --model deepseek-v4-flash --print "fix it"
+```
+
+Pi gets the full stack:
+- ✅ Proxy compression + guard (via `:9090` — routed automatically by `init`)
+- ✅ Gate.js sift (tool result compression, all tools)
+- ✅ Transparent strict mode (bash/write/grep redirect to sandbox tools, auto-deescalate)
+- ✅ Self-healing edits + veto + heal-apply
+- Default mode: **strict** (100% pass rate on benchmarks, ~70K WC median vs ~92K reactive)
+
+### Claude Code
+
+```bash
+reliary-agent serve &
+export ANTHROPIC_BASE_URL=http://localhost:9090/
+```
+
+Claude Code gets:
+- ✅ Proxy compression + guard (via `:9090`, routed via env var)
+- ✅ MCP tools (search, risk, guard, dead) — auto-injected by `init`
+- ✅ Transparent redirect does not apply (Claude uses its own Bash tool handling)
+
+### Cline / OpenCode
+
+```bash
+reliary-agent serve &
+export DEEPSEEK_BASE_URL=http://localhost:9090/v1   # or your provider
+```
+
+Both get:
+- ✅ Proxy compression + guard (via `:9090`)
+- ✅ MCP tools — auto-injected by `init`
+- ❌ No gate.js (Pi-only extension)
+
+### Savings by Agent Stack
+
+| Agent | Stack | Savings |
 |---|---|---|
-| **Pi** | Installs gate.js (tool-level compression + safety) | 30-50% |
-| **Claude Code** | Injects MCP server config (`reliary-agent mcp`) | 15-25% |
-| **Cline** | Injects MCP server config (`reliary-agent mcp`) | 15-25% |
-| **OpenCode** | Injects MCP server config (`reliary-agent mcp`) | 15-25% |
+| **Pi** | Proxy + guard + gate.js strict mode | **16-84% weighted cost**, ~70K WC median |
+| **Claude Code** | Proxy + guard + MCP | **16-60%** |
+| **Cline / OpenCode** | Proxy + guard + MCP | **16-60%** |
+| **Any agent** | Proxy only (passthrough) | **0%** (just routing) |
+
+> Savings vary by session length. Long multi-turn sessions (15+ turns) hit the upper end. Short 3-turn fixes hit the lower end. The guard eliminates catastrophic debug spirals (1.2M WC avoided on cross-file tasks).
 
 ## CLI
 
@@ -216,8 +262,8 @@ See [CONFIG.md](./CONFIG.md) for the full documentation.
 | Env var | Effect |
 |---|---|
 | `RELIARY_MODE=fast` | Maximum compression (no safety rails) |
-| `RELIARY_MODE=reactive` | Safety escalates on unsafe behavior (default) |
-| `RELIARY_MODE=strict` | Full sandbox (bash blocked, edits always healed) |
+| `RELIARY_MODE=reactive` | Safety escalates on unsafe behavior |
+| `RELIARY_MODE=strict` | Full sandbox — bash/write/grep transparently redirected to sandbox tools; auto-deescalates after 5 redirects (default) |
 | `RELIARY_FEATURES=+editMerge,-taskTargets` | Toggle individual features |
 | `RELIARY_UPSTREAM_URL=https://api.openai.com/v1` | Set API upstream (default: auth-based routing) |
 | `RELIARY_PROXY_GUARD_DISABLE=1` | Disable guard (cross-file edit safety) — on by default |

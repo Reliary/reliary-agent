@@ -35,7 +35,8 @@ let sessionTurns = 0;
 let repoRoot = null;
 
 // ── Config mode: query daemon or env var ──
-let GATE_MODE = "reactive"; // default
+// ── Gate configuration ──
+let GATE_MODE = "strict"; // default (transparent redirect, auto-deescalates to reactive after 5 redirects)
 try {
   if (RELIARY_BIN) {
     const modeCmd = execFileSync(RELIARY_BIN, ["config"], { encoding: "utf-8", timeout: 3000, maxBuffer: 512 });
