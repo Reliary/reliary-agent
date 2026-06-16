@@ -6,6 +6,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod mcp;
 mod mcp_sse;
 mod daemon;
+mod log;
 mod heal;
 mod session_state;
 mod chronicle;
@@ -23,6 +24,7 @@ mod antidecision;
 use clap::{Parser, Subcommand};
 use std::io::Read;
 use std::sync::Arc;
+use tracing::{info, warn, error};
 use crate::session_state::SessionState;
 
 /// Simple ANSI color helpers
@@ -147,7 +149,14 @@ enum Commands {
         all: bool,
     },
     /// Tail daemon logs
-    Logs,
+    Logs {
+        /// Follow log file in real-time
+        #[arg(long)]
+        tail: bool,
+        /// Filter by log level (error, warn, info, debug, trace)
+        #[arg(long)]
+        level: Option<String>,
+    },
     /// Pipe command output through reliary-output compression
     Sift {
         /// Command and arguments to execute and compress
@@ -192,6 +201,8 @@ fn exec_sift(cmd: &[String]) {
 }
 
 fn main() {
+    // Initialize logging before anything else
+    log::init();
     let cli = Cli::parse();
     let fmt = format_config(&cli.format);
     let cfg = reliary_core::FormatConfig::new(fmt);
@@ -229,16 +240,16 @@ fn main() {
                 Ok(db) => {
                     let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
                     if reliary_search::schema::create_new_db(&db).is_err() {
-                        eprintln!("Error creating database schema");
+                        error!("Database schema creation failed");
                         return;
                     }
                     println!("Building index for {}...", path);
                     match reliary_search::ingest::index_directory(&db, path) {
                         Ok(count) => println!("✓ Indexed {} files", count),
-                        Err(e) => eprintln!("✗ Error indexing: {}", e),
+                        Err(e) => error!("Indexing error: {}", e),
                     }
                 }
-                Err(e) => eprintln!("Error creating database: {}", e),
+                Err(e) => error!("DB create error: {}", e),
             }
         }
         Commands::Compress { text, gentle: _ } => {
@@ -291,7 +302,7 @@ fn main() {
             println!("Memory query: {}", query);
         }
         Commands::Mcp => {
-            eprintln!("Starting MCP server on stdio");
+            info!("Starting MCP server on stdio");
             mcp::serve_stdio();
         }
         Commands::Config { key, value, local, root } => {
@@ -327,20 +338,20 @@ fn main() {
         Commands::Clean { global, all } => {
             ux::clean(*global, *all);
         }
-        Commands::Logs => {
-            ux::logs();
+        Commands::Logs { tail, level } => {
+            ux::logs(*tail, level.clone());
         }
         Commands::Sift { command } => {
             exec_sift(command);
         }
         Commands::Daemon => {
-            eprintln!("'daemon' subcommand is deprecated. Use 'serve' instead.");
+            warn!("'daemon' subcommand is deprecated. Use 'serve' instead.");
             let state = Arc::new(SessionState::new(
                 &std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
             ));
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async { crate::proxy::start(9799, Some(state)).await })
-                .unwrap_or_else(|e| eprintln!("Server error: {}", e));
+                .unwrap_or_else(|e| error!("Server error: {}", e));
         }
         Commands::Serve { port } => {
             let state = Arc::new(SessionState::new(
@@ -348,7 +359,7 @@ fn main() {
             ));
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async { crate::proxy::start(*port, Some(state)).await })
-                .unwrap_or_else(|e| eprintln!("Server error: {}", e));
+                .unwrap_or_else(|e| error!("Server error: {}", e));
         }
         Commands::SessionState { file } => {
             match reliary_core::parse_session_file(file) {
@@ -359,7 +370,7 @@ fn main() {
                         println!("{}", reliary_core::build_state_block(&state, state.turn_count));
                     }
                 }
-                Err(e) => eprintln!("Error: {}", e),
+                Err(e) => error!("{}", e),
             }
         }
         Commands::Veto { file } => {
