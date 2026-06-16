@@ -75,7 +75,8 @@ pub fn serve_stdio() {
                 let path = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
                 let db_path = format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'));
                 if let Ok(db) = rusqlite::Connection::open(&db_path) {
-                    if reliary_search::schema::open_existing_db(&db).is_ok() {
+                        let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+                        if reliary_search::schema::open_existing_db(&db).is_ok() {
                         let results = reliary_search::search::search_fts5(&db, query, 10);
                         respond(id, serde_json::json!({
                             "results": results.iter().map(|r| serde_json::json!({"file": r.file, "score": r.score})).collect::<Vec<_>>()

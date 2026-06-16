@@ -41,6 +41,7 @@ fn index_db_path(path: &str) -> String {
 fn open_or_create_index(path: &str) -> Option<rusqlite::Connection> {
     let db_path = index_db_path(path);
     let db = rusqlite::Connection::open(&db_path).ok()?;
+    let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
     reliary_search::schema::open_existing_db(&db).ok()?;
     Some(db)
 }
@@ -225,6 +226,7 @@ fn main() {
             let _ = std::fs::remove_file(&db_path_str);
             match rusqlite::Connection::open(&db_path_str) {
                 Ok(db) => {
+                    let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
                     if reliary_search::schema::create_new_db(&db).is_err() {
                         eprintln!("Error creating database schema");
                         return;
@@ -367,7 +369,8 @@ fn main() {
             match daemon::find_reliary_root(file) {
                 Some((_root, index_path, _)) => {
                     if let Ok(db) = rusqlite::Connection::open(&index_path) {
-                        if reliary_search::schema::open_existing_db(&db).is_ok() {
+                            let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+                            if reliary_search::schema::open_existing_db(&db).is_ok() {
                             let ids = reliary_search::scan_identifiers(new_text);
                             let mut blocked = Vec::new();
                             let known_libs = [

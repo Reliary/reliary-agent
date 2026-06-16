@@ -56,10 +56,11 @@ pub fn build(file: &str) -> String {
     let db_path = index_db_path(&workdir);
     let name_re = &NAME_RE;
 
-    for (line_no, sig) in defs.iter().take(6) {
-        result.push_str(&format!("\n  L{}: {}", line_no, sig));
-        if let Ok(db) = rusqlite::Connection::open(&db_path) {
-            if reliary_search::schema::open_existing_db(&db).is_ok() {
+    if let Ok(db) = rusqlite::Connection::open(&db_path) {
+        let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+        if reliary_search::schema::open_existing_db(&db).is_ok() {
+            for (line_no, sig) in defs.iter().take(6) {
+                result.push_str(&format!("\n  L{}: {}", line_no, sig));
                 if let Some(caps) = name_re.captures(sig) {
                     let name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
                     let callers = reliary_search::search::search_fts5(&db, name, 5);
@@ -101,6 +102,7 @@ pub fn load_dictionary() -> Option<reliary_compress::CompressionDict> {
     for dir in &[".", ".."] {
         let db_path = format!("{}/.reliary/index.sqlite", dir);
         if let Ok(db) = rusqlite::Connection::open(&db_path) {
+            let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
             if reliary_search::schema::open_existing_db(&db).is_ok() {
                 let mut stmt = db.prepare("SELECT phrase FROM phrases_fts LIMIT 200").ok()?;
                 let phrases: Vec<String> = stmt.query_map([], |r| r.get(0)).ok()?
