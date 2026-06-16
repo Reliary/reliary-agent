@@ -1,4 +1,4 @@
-/// Grammar-free structural edit guards. Ported from stria guard.rs.
+/// Grammar-free structural edit guards.
 /// Uses FTS5 phrase_occ table to detect missing imports and orphaned references.
 
 use rusqlite::Connection;

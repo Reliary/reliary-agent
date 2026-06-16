@@ -1,4 +1,4 @@
-/// FTS5 Sensory Cortex: replaces raw file reads with structured index output.
+/// replaces raw file reads with structured index output.
 /// Every identifier in the summary is verified against the FTS5 index before reaching the LLM.
 ///
 /// Grammar-free design: uses regex identifier scanning, not AST/tree-sitter.

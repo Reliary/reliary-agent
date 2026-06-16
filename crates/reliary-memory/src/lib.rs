@@ -1,5 +1,4 @@
 /// HDC memory: 10K-bit hypervectors with Hebbian updates, SQLite persistence.
-/// Ported from cortex-rs (github.com/Reliary/cortex-rs).
 
 use std::collections::HashMap;
 use rand::{Rng, SeedableRng};

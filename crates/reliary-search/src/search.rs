@@ -1,5 +1,4 @@
 /// FTS5 query and BM25 scoring against the inverted index.
-/// Ported from stria src/search/mod.rs
 
 use rusqlite::{params, Connection};
 

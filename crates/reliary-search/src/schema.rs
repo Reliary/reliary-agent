@@ -1,5 +1,4 @@
 /// SQLite schema for FTS5 phrase index.
-/// Ported from stria (github.com/Reliary/stria) src/index/schema.rs
 
 use rusqlite::Connection;
 
@@ -85,7 +84,6 @@ fn create_tables(db: &Connection) -> rusqlite::Result<()> {
 }
 
 // --- Zone classification (grammar-free byte DFA) ---
-// Ported from stria src/zone.rs line_zone()
 pub fn classify_line(line: &str) -> u8 {
     let s = line.trim();
     if s.is_empty() { return 1; }
