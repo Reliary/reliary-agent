@@ -82,24 +82,24 @@ pub const CLI_COMMANDS: &[&str] = &[
 
 #[derive(Subcommand)]
 enum Commands {
-    /// BM25 search against FTS5 index (from stria)
+    /// BM25 search against FTS5 index
     Search { query: String, #[arg(default_value = ".")] path: String },
     /// Build FTS5 index from directory
     Index { path: String },
-    /// IR reasoning compression (from gate)
+    /// IR reasoning compression
     Compress {
         text: Option<String>,
         /// Gentle mode: preserve code context, only strip reasoning fluff
         #[arg(long)]
         gentle: bool,
     },
-    /// Pre-edit risk analysis (from quale)
+    /// Pre-edit risk analysis
     Risk { file: String },
-    /// Apply known fix patterns to directory (from cortex)
+    /// Apply known fix patterns to directory
     FixDir { path: String },
     /// Apply fix pattern to single file
     FixFile { file: String, old: String, new: String },
-    /// Dead code detection (from carrion)
+    /// Dead code detection
     Dead { path: String },
     /// Cross-session memory info
     Memory { query: String },

@@ -1,4 +1,4 @@
-/// Grammar-free dead code detection. Ported from carrion.
+/// Grammar-free dead code detection.
 /// Uses occurrence counting: an identifier is dead if total_occurrences == definition_occurrences.
 
 use std::collections::{HashMap, HashSet};

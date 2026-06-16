@@ -339,7 +339,7 @@ function handleToolResult(event) {
   }
 }
 
-// ── Sift: inline class-line compression (port of reliary-output, zero subprocess) ──
+// ── Sift: inline class-line compression ──
 function siftOutput(text) {
   if (text.length <= 300) return text;
   const lines = text.split("\n");

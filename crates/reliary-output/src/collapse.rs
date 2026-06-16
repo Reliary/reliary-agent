@@ -1,5 +1,4 @@
 /// Collapse repetitive command-output patterns.
-/// Ported from sift src/filter.rs (grammar-free structural compression).
 
 use crate::classify::*;
 

@@ -301,13 +301,13 @@ graph TD
     K[Cline] --> C
 ```
 
-- **search:** BM25 + FTS5, Porter stemming, phrase extraction (from stria)
-- **compress:** IR reasoning compression (from gate.js)
-- **sift:** Structural compression, entropy/diversity gates (from sift + maxwell)
-- **risk:** Pre-edit risk scores, blast radius (from quale)
-- **memory:** HDC 10K-bit vectors, Hebbian learning (from cortex-rs)
-- **fix:** Pattern extraction, content matching, signature matching (from cortex-rs)
-- **dead:** Grammar-free dead code via occurrence counting (from carrion)
+- **search:** BM25 + FTS5, Porter stemming, phrase extraction
+- **compress:** IR reasoning compression
+- **sift:** Structural compression, entropy/diversity gates
+- **risk:** Pre-edit risk scores, blast radius
+- **memory:** HDC 10K-bit vectors, Hebbian learning
+- **fix:** Pattern extraction, content matching, signature matching
+- **dead:** Grammar-free dead code via occurrence counting
 - **agent:** Binary — daemon, proxy (axum + tokio), CLI, MCP
 
 ## Development

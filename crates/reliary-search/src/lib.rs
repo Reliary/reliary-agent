@@ -1,5 +1,4 @@
 /// Grammar-free phrase search with BM25 scoring and Porter stemming.
-/// Ported from stria (github.com/Reliary/stria).
 
 pub mod schema;
 pub mod search;
