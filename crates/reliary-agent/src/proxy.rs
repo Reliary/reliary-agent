@@ -12,10 +12,6 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, LazyLock};
 use serde_json::Value;
-use std::time::Instant;
-
-// ── Token counting (lightweight heuristic) ──
-
 
  // Alias to avoid name conflict
 
