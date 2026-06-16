@@ -3,4 +3,7 @@ name = "reliary-risk"
 version = "0.4.1"
 edition = "2021"
 license = "MIT"
+description = "Grammar-free code intelligence daemon, CLI, MCP server, and API proxy."
+repository = "https://github.com/Reliary/reliary-agent"
+homepage = "https://github.com/Reliary/reliary-agent"
 [dependencies]
