@@ -4,11 +4,24 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use crate::session_state::SessionState;
 
 const MAX_CONCURRENT: usize = 50;
 const MAX_FILE_SIZE: u64 = 10_000_000;
+
+/// Known library identifiers to skip during veto (grammar-free: names that appear
+/// in practically every file but aren't project-specific).
+static LIBS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        "std", "core", "alloc", "vec", "string", "option", "result", "box", "rc", "arc",
+        "clone", "copy", "debug", "display", "fmt", "iter", "into", "from",
+        "os", "sys", "json", "re", "math", "time", "datetime", "pathlib", "typing",
+        "list", "dict", "tuple", "set", "str", "int", "float", "bool", "none",
+        "test", "assert", "assert_eq", "assert_ne",
+        "setup", "teardown", "before_each", "after_each",
+    ].into()
+});
 
 pub fn find_reliary_root(path: &str) -> Option<(String, String, String)> {
     let path = Path::new(path);
@@ -44,16 +57,7 @@ fn identifier_veto(new_text: &str, file_path: &str) -> Result<(), String> {
         Some((_, idx, _)) => idx,
         None => return Err("veto: no .reliary index found for this project".to_string()),
     };
-    let libs = std::sync::LazyLock::new(|| -> HashSet<&'static str> {
-        [
-            "std", "core", "alloc", "vec", "string", "option", "result", "box", "rc", "arc",
-            "clone", "copy", "debug", "display", "fmt", "iter", "into", "from",
-            "os", "sys", "json", "re", "math", "time", "datetime", "pathlib", "typing",
-            "list", "dict", "tuple", "set", "str", "int", "float", "bool", "none",
-            "test", "assert", "assert_eq", "assert_ne",
-            "setup", "teardown", "before_each", "after_each",
-        ].into()
-    });
+    let libs = &LIBS;
     let mut project_ids = std::collections::HashSet::new();
     if let Ok(db) = rusqlite::Connection::open(&index_path) {
         if reliary_search::schema::open_existing_db(&db).is_ok() {
@@ -123,6 +127,30 @@ pub fn daemon_handle_cmd_str(cmd: &str, state: &SessionState) -> String {
     daemon_handle_cmd(p0, p1, p2, p3, p4, cmd, state)
 }
 
+fn open_index_db(path: &str) -> Option<rusqlite::Connection> {
+    if let Ok(db) = rusqlite::Connection::open(path) {
+        let _ = db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -8000;");
+        if reliary_search::schema::open_existing_db(&db).is_ok() {
+            return Some(db);
+        }
+        drop(db);
+        eprintln!("[daemon] search index corrupted — rebuilding...");
+        let _ = std::fs::remove_file(path);
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(new_db) = rusqlite::Connection::open(path) {
+            let _ = new_db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
+            if reliary_search::schema::create_new_db(&new_db).is_ok() {
+                let rel_path = std::path::Path::new(path).parent().and_then(|p| p.parent()).and_then(|p| p.to_str()).unwrap_or(".");
+                let _ = reliary_search::ingest::index_directory(&new_db, rel_path);
+                return Some(new_db);
+            }
+        }
+    }
+    None
+}
+
 fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str, state: &SessionState) -> String {
     // Generic file size guard for all file-reading endpoints
     let _size_guard = if !p1.is_empty() && (p0 == "risk" || p0 == "read-summary" || p0 == "veto" || p0 == "fix") && Path::new(p1).exists() {
@@ -142,23 +170,7 @@ fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str
             } else {
                 let path = if p2.is_empty() { "." } else { p2 };
                 let db_path = index_db_path(path);
-                let results_db: Option<rusqlite::Connection> = if let Ok(db) = rusqlite::Connection::open(&db_path) {
-                    if reliary_search::schema::open_existing_db(&db).is_ok() {
-                        Some(db)
-                    } else {
-                        drop(db);
-                        eprintln!("[daemon] search index corrupted — rebuilding...");
-                        let _ = std::fs::remove_file(&db_path);
-                        let index_dir = std::path::Path::new(&db_path).parent().unwrap_or(std::path::Path::new("."));
-                        let _ = std::fs::create_dir_all(index_dir);
-                        if let Ok(new_db) = rusqlite::Connection::open(&db_path) {
-                            if reliary_search::schema::create_new_db(&new_db).is_ok() {
-                                let _ = reliary_search::ingest::index_directory(&new_db, p2);
-                                Some(new_db)
-                            } else { None }
-                        } else { None }
-                    }
-                } else { None };
+                let results_db = open_index_db(&db_path);
 
                 if let Some(db) = results_db {
                     let results = reliary_search::search::search_fts5(&db, p1, 10);
@@ -356,8 +368,12 @@ fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str
 
 fn append_chronicle(file: &str, event: &str, detail: &str, outcome: &str) {
     if let Some((root, _, _)) = find_reliary_root(file) {
-        if let Ok(db) = rusqlite::Connection::open(&format!("{}/.reliary/chronicle.sqlite", root)) {
-            let _ = crate::chronicle::append(&db, event, file, detail, outcome);
+        let path = format!("{}/.reliary/chronicle.sqlite", root);
+        if let Ok(db) = rusqlite::Connection::open(&path) {
+            if let Err(e) = db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;") {
+                eprintln!("[daemon] chronicle PRAGMA: {}", e);
+            }
+            crate::chronicle::append(&db, event, file, detail, outcome);
         }
     }
 }
@@ -373,10 +389,12 @@ pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
 
     // Start scavenger thread
     let scavenger_state = Arc::clone(&state);
-    std::thread::Builder::new()
+    if let Err(e) = std::thread::Builder::new()
         .name("scavenger".into())
         .spawn(move || crate::scavenger::scavenger_loop(scavenger_state))
-        .ok();
+    {
+        eprintln!("[daemon] scavenger thread: {}", e);
+    }
 
     let connections = Arc::new(AtomicUsize::new(0));
 
@@ -395,10 +413,12 @@ pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
                     continue;
                 }
                 let state = Arc::clone(&state);
-                std::thread::Builder::new()
+                if let Err(e) = std::thread::Builder::new()
                     .name("handler".into())
                     .spawn(move || { daemon_handle(s, state); conns.fetch_sub(1, Ordering::Relaxed); })
-                    .ok();
+                {
+                    eprintln!("[daemon] handler thread: {}", e);
+                }
             }
             Err(e) => eprintln!("[reliary] accept error: {}", e),
         }

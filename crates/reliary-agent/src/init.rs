@@ -56,7 +56,11 @@ pub fn run() {
                 let target_dir = data_dir.join("reliary");
                 if fs::create_dir_all(&target_dir).is_ok() {
                     let target_path = target_dir.join("gate.js");
-                    if fs::write(&target_path, EMBEDDED_GATE_JS).is_ok() {
+                    let content = EMBEDDED_GATE_JS.as_bytes();
+                    let tmp = format!("{}.tmp.{}", target_path.display(), std::process::id());
+                    if std::fs::write(&tmp, content).is_ok()
+                        && std::fs::rename(&tmp, &target_path).is_ok()
+                    {
                         let pi_cmd = if pi_bin.exists() { pi_bin.to_str().unwrap_or("pi") } else { "pi" };
                         let status = Command::new(pi_cmd)
                             .args(["install", target_path.to_str().unwrap_or("/dev/null")])

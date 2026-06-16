@@ -10,8 +10,8 @@ fn respond(id: u64, result: serde_json::Value) {
         "result": result,
     });
     let mut out = io::stdout();
-    writeln!(out, "{}", serde_json::to_string(&response).unwrap_or_default()).ok();
-    out.flush().ok();
+    writeln!(out, "{}", serde_json::to_string(&response).unwrap_or_default()).unwrap_or_default();
+    out.flush().unwrap_or_default();
 }
 
 fn respond_error(id: u64, code: i32, message: &str) {
@@ -21,8 +21,8 @@ fn respond_error(id: u64, code: i32, message: &str) {
         "error": { "code": code, "message": message },
     });
     let mut out = io::stdout();
-    writeln!(out, "{}", serde_json::to_string(&response).unwrap_or_default()).ok();
-    out.flush().ok();
+    writeln!(out, "{}", serde_json::to_string(&response).unwrap_or_default()).unwrap_or_default();
+    out.flush().unwrap_or_default();
 }
 
 pub fn serve_stdio() {
