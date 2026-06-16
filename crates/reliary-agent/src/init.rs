@@ -279,45 +279,39 @@ fn inject_sse_mcp_server(cfg_path: &PathBuf, server_name: &str, port: u16) -> bo
 /// Reads Pi settings.json, finds API keys, writes proxy-routes.json.
 /// Returns the number of API keys discovered.
 fn install_pi_proxy_routes() -> usize {
+    let mut routes: HashMap<String, String> = HashMap::new();
+
+    // Check Pi settings.json if it exists
     let pi_settings = home_dir()
         .map(|h| h.join(".pi").join("agent").join("settings.json"))
         .unwrap_or_default();
 
-    if !pi_settings.exists() {
-        return 0;
-    }
+    if pi_settings.exists() {
+        if let Ok(content) = fs::read_to_string(&pi_settings) {
+            if let Ok(settings) = serde_json::from_str::<Value>(&content) {
+                // Check for provider configs in Pi settings
+                if let Some(providers) = settings.get("providers").and_then(|p| p.as_object()) {
+                    for (_name, config) in providers {
+                        let api_key = config.get("apiKey").and_then(|v| v.as_str()).unwrap_or("");
+                        let base_url = config.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("");
+                        if !api_key.is_empty() && !base_url.is_empty() {
+                            routes.insert(api_key.to_string(), base_url.to_string());
+                        }
+                    }
+                }
 
-    let content = match fs::read_to_string(&pi_settings) {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-    let settings: Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return 0,
-    };
-
-    let mut routes: HashMap<String, String> = HashMap::new();
-
-    // Check for provider configs in Pi settings
-    if let Some(providers) = settings.get("providers").and_then(|p| p.as_object()) {
-        for (_name, config) in providers {
-            let api_key = config.get("apiKey").and_then(|v| v.as_str()).unwrap_or("");
-            let base_url = config.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("");
-            if !api_key.is_empty() && !base_url.is_empty() {
-                routes.insert(api_key.to_string(), base_url.to_string());
+                // Check for explicit provider overrides in Pi settings
+                for (env_key, provider) in &[("DEEPSEEK_API_KEY", "https://api.deepseek.com"), ("ANTHROPIC_API_KEY", "https://api.anthropic.com"), ("OPENAI_API_KEY", "https://api.openai.com")] {
+                    let key = settings.get(*env_key).and_then(|v| v.as_str()).unwrap_or("");
+                    if !key.is_empty() {
+                        routes.insert(key.to_string(), provider.to_string());
+                    }
+                }
             }
         }
     }
 
-    // Check for explicit provider overrides (env var style)
-    for (env_key, provider) in &[("DEEPSEEK_API_KEY", "https://api.deepseek.com"), ("ANTHROPIC_API_KEY", "https://api.anthropic.com"), ("OPENAI_API_KEY", "https://api.openai.com")] {
-        let key = settings.get(*env_key).and_then(|v| v.as_str()).unwrap_or("");
-        if !key.is_empty() {
-            routes.insert(key.to_string(), provider.to_string());
-        }
-    }
-
-    // Also check env vars directly
+    // Always check env vars directly (even without Pi settings)
     for (env_key, provider) in &[("DEEPSEEK_API_KEY", "https://api.deepseek.com"), ("ANTHROPIC_API_KEY", "https://api.anthropic.com"), ("OPENAI_API_KEY", "https://api.openai.com")] {
         if let Ok(val) = std::env::var(env_key) {
             if !val.is_empty() && !routes.contains_key(&val) {
@@ -720,6 +714,169 @@ fn write_proxy_routes(routes: &HashMap<String, String>) -> bool {
     let content = serde_json::to_string_pretty(&serde_json::Value::Object(routes_json))
         .unwrap_or_default();
     atomic_write(&routes_path.to_string_lossy(), &content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_temp_home<F>(test: F)
+    where
+        F: FnOnce(PathBuf),
+    {
+        let dir = std::env::temp_dir().join(format!("reliary_init_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir.join(".reliary"));
+        let old_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", dir.to_str().unwrap());
+
+        // Clear RELIARY_* env vars to avoid interference
+        let old_pi_key = std::env::var("DEEPSEEK_API_KEY").ok();
+        let old_anthro_key = std::env::var("ANTHROPIC_API_KEY").ok();
+        std::env::remove_var("DEEPSEEK_API_KEY");
+        std::env::remove_var("ANTHROPIC_API_KEY");
+
+        test(dir.clone());
+
+        // Restore env
+        if let Some(h) = old_home { std::env::set_var("HOME", h); } else { std::env::remove_var("HOME"); }
+        if let Some(k) = old_pi_key { std::env::set_var("DEEPSEEK_API_KEY", k); }
+        if let Some(k) = old_anthro_key { std::env::set_var("ANTHROPIC_API_KEY", k); }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_install_pi_proxy_routes_empty() {
+        with_temp_home(|_home| {
+            let count = install_pi_proxy_routes();
+            assert_eq!(count, 0, "no Pi settings → 0 routes");
+        });
+    }
+
+    #[test]
+    fn test_install_pi_proxy_routes_from_env() {
+        with_temp_home(|home| {
+            std::env::set_var("DEEPSEEK_API_KEY", "sk-test-pi-key-12345");
+            let count = install_pi_proxy_routes();
+            assert_eq!(count, 1, "1 API key from env");
+
+            // Check proxy-routes.json was written
+            let routes_path = home.join(".reliary/proxy-routes.json");
+            assert!(routes_path.exists(), "proxy-routes.json should exist");
+            let content = std::fs::read_to_string(&routes_path).unwrap();
+            assert!(content.contains("sk-test-pi-key-12345"), "routes should contain the API key");
+            assert!(content.contains("api.deepseek.com"), "routes should contain upstream URL");
+        });
+    }
+
+    #[test]
+    fn test_install_pi_proxy_routes_from_settings() {
+        with_temp_home(|home| {
+            // Create mock Pi settings.json
+            let pi_dir = home.join(".pi/agent");
+            let _ = std::fs::create_dir_all(&pi_dir);
+            let settings = serde_json::json!({
+                "providers": {
+                    "deepseek": {
+                        "apiKey": "sk-pi-settings-key",
+                        "baseUrl": "https://api.deepseek.com"
+                    }
+                }
+            });
+            std::fs::write(pi_dir.join("settings.json"), serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+
+            let count = install_pi_proxy_routes();
+            assert_eq!(count, 1, "1 API key from Pi settings");
+
+            let routes_path = home.join(".reliary/proxy-routes.json");
+            assert!(routes_path.exists());
+            let content = std::fs::read_to_string(&routes_path).unwrap();
+            assert!(content.contains("sk-pi-settings-key"));
+        });
+    }
+
+    #[test]
+    fn test_install_pi_proxy_routes_multiple_keys() {
+        with_temp_home(|home| {
+            std::env::set_var("DEEPSEEK_API_KEY", "sk-deepseek-key");
+            std::env::set_var("ANTHROPIC_API_KEY", "sk-anthropic-key");
+
+            let count = install_pi_proxy_routes();
+            assert_eq!(count, 2, "2 API keys from env vars");
+
+            let routes_path = home.join(".reliary/proxy-routes.json");
+            let content = std::fs::read_to_string(&routes_path).unwrap();
+            assert!(content.contains("sk-deepseek-key"));
+            assert!(content.contains("sk-anthropic-key"));
+            assert!(content.contains("api.anthropic.com"));
+        });
+    }
+
+    #[test]
+    fn test_inject_mcp_server_stdio() {
+        with_temp_home(|home| {
+            let cfg_path = home.join("test_mcp_config.json");
+            std::fs::write(&cfg_path, r#"{}"#).unwrap();
+
+            let result = inject_mcp_server(&cfg_path, "reliary_test");
+            assert!(result, "should inject MCP server entry");
+
+            let content = std::fs::read_to_string(&cfg_path).unwrap();
+            let v: Value = serde_json::from_str(&content).unwrap();
+            let servers = v.get("mcpServers").and_then(|m| m.as_object()).unwrap();
+            assert!(servers.contains_key("reliary_test"));
+            let entry = servers.get("reliary_test").unwrap();
+            assert_eq!(entry.get("command").and_then(|c| c.as_str()).unwrap_or(""), std::env::current_exe().unwrap().to_str().unwrap());
+            assert_eq!(entry.get("args").and_then(|a| a.as_array()).map(|a| a[0].as_str().unwrap_or("")).unwrap_or(""), "mcp");
+        });
+    }
+
+    #[test]
+    fn test_inject_sse_mcp_server() {
+        with_temp_home(|home| {
+            let cfg_path = home.join("test_sse_config.json");
+            std::fs::write(&cfg_path, r#"{}"#).unwrap();
+
+            let result = inject_sse_mcp_server(&cfg_path, "reliary_sse", 9090);
+            assert!(result, "should inject SSE MCP server entry");
+
+            let content = std::fs::read_to_string(&cfg_path).unwrap();
+            let v: Value = serde_json::from_str(&content).unwrap();
+            let servers = v.get("mcpServers").and_then(|m| m.as_object()).unwrap();
+            assert!(servers.contains_key("reliary_sse"));
+            let entry = servers.get("reliary_sse").unwrap();
+            let url = entry.get("url").and_then(|u| u.as_str()).unwrap_or("");
+            assert_eq!(url, "http://127.0.0.1:9090/mcp/sse");
+        });
+    }
+
+    #[test]
+    fn test_remove_mcp_server() {
+        with_temp_home(|home| {
+            let cfg_path = home.join("test_remove_config.json");
+            std::fs::write(&cfg_path, r#"{"mcpServers":{"reliary_test":{"command":"/bin/reliary-agent","args":["mcp"]}}}"#).unwrap();
+
+            let result = remove_mcp_server(&cfg_path, "reliary_test");
+            assert!(result, "should remove MCP server entry");
+
+            let content = std::fs::read_to_string(&cfg_path).unwrap();
+            assert!(!content.contains("reliary_test"), "should no longer contain the server");
+        });
+    }
+
+    #[test]
+    fn test_inject_mcp_server_existing_servers() {
+        with_temp_home(|home| {
+            let cfg_path = home.join("test_existing_config.json");
+            std::fs::write(&cfg_path, r#"{"mcpServers":{"existing":{"command":"/bin/old"}}}"#).unwrap();
+
+            inject_mcp_server(&cfg_path, "reliary_new");
+            let content = std::fs::read_to_string(&cfg_path).unwrap();
+            let v: Value = serde_json::from_str(&content).unwrap();
+            let servers = v.get("mcpServers").and_then(|m| m.as_object()).unwrap();
+            assert!(servers.contains_key("existing"), "existing server should survive");
+            assert!(servers.contains_key("reliary_new"), "new server should be added");
+        });
+    }
 }
 
 /// Restore original OpenCode provider baseURLs from proxy-routes.json backup.
