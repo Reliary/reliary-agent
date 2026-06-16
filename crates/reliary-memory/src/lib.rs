@@ -58,6 +58,8 @@ pub struct ScoredMemory {
 /// Open or create a persistent SQLite-backed memory store
 pub fn open_persistent(path: &str) -> Result<MemoryStore, String> {
     let conn = rusqlite::Connection::open(path).map_err(|e| format!("DB: {}", e))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+        .map_err(|e| format!("PRAGMA: {}", e))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS cortex_memories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,6 +96,8 @@ pub fn open_persistent(path: &str) -> Result<MemoryStore, String> {
 /// Save all memories to SQLite
 pub fn save_persistent(store: &MemoryStore, path: &str) -> Result<(), String> {
     let conn = rusqlite::Connection::open(path).map_err(|e| format!("DB: {}", e))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+        .map_err(|e| format!("PRAGMA: {}", e))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS cortex_memories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
