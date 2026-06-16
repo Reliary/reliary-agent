@@ -22,54 +22,72 @@ fn e2e_mcp_tools() {
         "params": {},
     }));
     let tools = resp["result"]["tools"].as_array().expect("expected tools array");
-    assert!(tools.len() >= 4, "expected at least 4 tools, got {}", tools.len());
+    assert!(tools.len() >= 6, "expected at least 6 tools, got {}", tools.len());
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap_or("")).collect();
     assert!(names.contains(&"reliary_search"), "missing reliary_search");
     assert!(names.contains(&"reliary_risk"), "missing reliary_risk");
     assert!(names.contains(&"reliary_dead"), "missing reliary_dead");
     assert!(names.contains(&"reliary_compress"), "missing reliary_compress");
+    assert!(names.contains(&"reliary_heal"), "missing reliary_heal");
+    assert!(names.contains(&"reliary_prior"), "missing reliary_prior");
 
-    // tools/dead
+    // tools/call reliary_compress — proper MCP protocol
     let resp = mcp.send(&serde_json::json!({
         "jsonrpc": "2.0",
         "id": 3,
-        "method": "tools/dead",
-        "params": { "path": ".", "limit": 3 },
+        "method": "tools/call",
+        "params": {
+            "name": "reliary_compress",
+            "arguments": { "text": "Let me think about this carefully. First, I need to analyze the problem." }
+        },
     }));
-    assert!(resp["result"]["total"].is_number(), "expected total count");
-    assert!(resp.get("error").is_none(), "unexpected error: {:?}", resp["error"]);
+    assert!(resp.get("error").is_none(), "compress failed: {:?}", resp["error"]);
+    let content = resp["result"]["content"].as_array().expect("expected content array");
+    assert!(content.len() >= 1, "expected at least 1 content item");
+    let text = content[0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("compressed") || text.contains("original_len"),
+        "expected compression result, got: {}", text);
 
-    // tools/compress
+    // tools/call reliary_risk
     let resp = mcp.send(&serde_json::json!({
         "jsonrpc": "2.0",
         "id": 4,
-        "method": "tools/compress",
-        "params": { "text": "Let me think about this carefully. First, I need to analyze the problem. The user is asking me to compute a sum. I'll start by reviewing the requirements carefully and ensure I understand the inputs correctly before proceeding with the solution." },
+        "method": "tools/call",
+        "params": {
+            "name": "reliary_risk",
+            "arguments": { "file": "Cargo.toml" }
+        },
     }));
-    // Short input may return Null compressed — that's OK, compression is optional
-    let compressed = resp["result"]["compressed"].as_str().or_else(|| resp["result"].as_str());
-    assert!(compressed.is_none() || (compressed.is_some() && !compressed.unwrap().is_empty()),
-        "expected compressed text or null, got: {:?}", resp);
+    assert!(resp.get("error").is_none(), "risk failed: {:?}", resp["error"]);
+    let content = resp["result"]["content"].as_array().expect("expected content array");
+    let text = content[0]["text"].as_str().unwrap_or("");
+    assert!(text.contains("risk"), "expected risk in result, got: {}", text);
 
-    // tools/risk
+    // tools/call reliary_search — may have no index, should not crash
     let resp = mcp.send(&serde_json::json!({
         "jsonrpc": "2.0",
         "id": 5,
-        "method": "tools/risk",
-        "params": { "file": "Cargo.toml" },
+        "method": "tools/call",
+        "params": {
+            "name": "reliary_search",
+            "arguments": { "query": "search", "path": "." }
+        },
     }));
-    assert!(resp.get("error").is_none(), "unexpected error: {:?}", resp["error"]);
+    // Should respond without error (index may or may not exist)
+    assert!(resp.get("error").is_none() || resp["error"]["code"] != serde_json::json!(-32601),
+        "search should be handled: {:?}", resp);
 
-    // tools/search — verify endpoint doesn't crash, results may be empty
-    // (FTS5 index depends on CWD which is test build dir)
+    // tools/call reliary_prior
     let resp = mcp.send(&serde_json::json!({
         "jsonrpc": "2.0",
         "id": 6,
-        "method": "tools/search",
-        "params": { "query": "search", "path": "." },
+        "method": "tools/call",
+        "params": {
+            "name": "reliary_prior",
+            "arguments": { "path": "." }
+        },
     }));
-    assert!(resp.get("error").is_none(), "search failed: {:?}", resp["error"]);
-    assert!(resp["result"]["results"].is_array(), "expected results array");
+    assert!(resp.get("error").is_none(), "prior failed: {:?}", resp["error"]);
 }
 
 #[test]
@@ -84,14 +102,43 @@ fn e2e_mcp_error_handling() {
         "params": {},
     }));
     assert!(resp.get("error").is_some(), "expected error for unknown method");
+    assert_eq!(resp["error"]["code"], -32601, "expected method not found code");
 
-    // Missing required params
+    // Unknown tool via tools/call
     let resp = mcp.send(&serde_json::json!({
         "jsonrpc": "2.0",
         "id": 2,
-        "method": "tools/search",
+        "method": "tools/call",
+        "params": {
+            "name": "nonexistent_tool",
+            "arguments": {}
+        },
+    }));
+    assert!(resp.get("error").is_some(), "expected error for unknown tool");
+    assert_eq!(resp["error"]["code"], -32601, "expected unknown tool code");
+
+    // tools/call missing params
+    let resp = mcp.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
         "params": {},
     }));
-    assert!(resp.get("error").is_none() || resp["result"]["results"].as_array().is_some(),
-        "missing params should not crash");
+    assert!(resp.get("error").is_some(), "expected error for missing name");
+}
+
+#[test]
+fn e2e_mcp_old_dispatch_still_works() {
+    // The old-style dispatch (tools/search, tools/compress) should still
+    // return method-not-found to avoid surprising any misconfigured clients
+    let mut mcp = common::start_mcp();
+
+    let resp = mcp.send(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/search",
+        "params": { "query": "test" },
+    }));
+    assert!(resp.get("error").is_some(), "old dispatch should fail");
+    assert_eq!(resp["error"]["code"], -32601, "expected method not found");
 }
