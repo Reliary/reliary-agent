@@ -17,3 +17,7 @@ resolver = "2"
 [workspace.package]
 version = "0.4.1"
 edition = "2021"
+description = "Grammar-free code intelligence daemon, CLI, MCP server, and API proxy."
+repository = "https://github.com/Reliary/reliary-agent"
+homepage = "https://github.com/Reliary/reliary-agent"
+license = "MIT"
