@@ -36,6 +36,47 @@ jobs:
         run: |
           ok=$(grep -rn "fs::write" crates/ --include="*.rs" 2>/dev/null | grep -v ".tmp\|atomic_write\|\.ok()\|_ok\|test\|#\[" || true)
           if [ -n "$ok" ]; then echo "WARN: non-atomic fs::write calls:"; echo "$ok"; fi
+      - name: Integrity guard — SQLite connections set PRAGMA
+        run: |
+          bad=""
+          while IFS= read -r line; do
+            file=$(echo "$line" | cut -d: -f1)
+            lineno=$(echo "$line" | cut -d: -f2)
+            # Check next 5 lines for PRAGMA
+            block=$(sed -n "$((lineno+1)),$((lineno+5))p" "$file")
+            if ! echo "$block" | grep -q "PRAGMA"; then
+              bad="$bad  $file:$lineno\n"
+            fi
+          done < <(grep -rn "Connection::open\|Connection::open_with_flags" crates/ --include="*.rs" 2>/dev/null | grep -v "test\|#\[cfg(test)" || true)
+          if [ -n "$bad" ]; then echo "FAIL: Connection::open without PRAGMA in next 5 lines:"; printf "$bad"; exit 1; fi
+          echo "All SQLite connections set PRAGMA"
+      - name: Integrity guard — regex compiled via LazyLock/OnceLock
+        run: |
+          bad=$(grep -rn "Regex::new" crates/ --include="*.rs" 2>/dev/null | grep -v "LazyLock\|OnceLock\|test\|#\[cfg(test)" || true)
+          if [ -n "$bad" ]; then echo "WARN: Regex::new outside LazyLock (recompiles per invocation):"; echo "$bad"; fi
+      - name: Integrity guard — file reads have size guard
+        run: |
+          bad=""
+          while IFS= read -r line; do
+            file=$(echo "$line" | cut -d: -f1)
+            lineno=$(echo "$line" | cut -d: -f2)
+            block=$(sed -n "$((lineno>5 ? lineno-5 : 1)),$((lineno+2))p" "$file")
+            if ! echo "$block" | grep -q "meta\.len\|MAX_FILE_SIZE\|// GUARDED"; then
+              bad="$bad  $file:$lineno\n"
+            fi
+          done < <(grep -rn "read_to_string" crates/ --include="*.rs" 2>/dev/null | grep -v "test\|#\[cfg(test)\|\.is_ok\|\.unwrap\|eprintln" || true)
+          if [ -n "$bad" ]; then echo "WARN: read_to_string without metadata() or // GUARDED in preceding 5 lines:"; printf "$bad"; fi
+      - name: Integrity guard — CLI commands documented in README
+        run: |
+          cmds=$(grep -A50 "^pub const CLI_COMMANDS" crates/reliary-agent/src/main.rs 2>/dev/null | grep '"' | grep -oP '"[a-z][a-z-]+"' | tr -d '"' | sort -u || true)
+          missing=""
+          for cmd in $cmds; do
+            if ! grep -q "$cmd" README.md 2>/dev/null; then
+              missing="$missing  $cmd\n"
+            fi
+          done
+          if [ -n "$missing" ]; then echo "FAIL: CLI commands missing from README:"; printf "$missing"; exit 1; fi
+          echo "All CLI commands documented in README"
       - name: Check gitleaks config exists
         run: 'test -f .gitleaks.toml || { echo "FAIL: .gitleaks.toml missing"; exit 1; }'
       - name: Stale file detector
