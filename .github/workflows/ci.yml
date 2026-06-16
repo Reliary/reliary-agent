@@ -50,12 +50,13 @@ jobs:
           cargo tree -e normal --prefix none 2>/dev/null | sort > /tmp/deps_head.txt
           echo "(dependency diff requires upstream branch reference)"
       - name: cargo audit
-        run: cargo audit --deny-warnings 2>&1 | tail -5 || true
+        run: cargo audit --deny warnings 2>&1 | tail -5 || true
       - name: cargo deny
+        shell: bash
         run: 'cargo deny check bans 2>/dev/null || echo "WARN: deny found violations"'
       - name: Test count check
         run: |
-          count=$(cargo test --release --no-run 2>&1 | grep -c "running" || true)
+          count=$(cargo test 2>&1 | grep "^test result:" | grep -oP '\d+(?= passed)' | python3 -c "import sys; print(sum(int(l) for l in sys.stdin if l.strip()))")
           echo "Test count: $count"
           [ "$count" -ge 75 ] || echo "WARN: test count below 75 ($count)"
       - name: Binary size check
