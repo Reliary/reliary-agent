@@ -7,13 +7,11 @@ Grammar-free code intelligence daemon, CLI, MCP server, and API proxy.
 Save 16-84% on API tokens and eliminate debug spirals across any agent framework — Pi, Claude Code, Cline, OpenCode.
 
 - [Quickstart](#quickstart)
-- [Install](#install)
-- [Features](#features)
 - [Usage by Agent](#usage-by-agent)
-- [CLI](#cli)
-- [API Proxy](#api-proxy)
-- [Output Formats](#output-formats)
+- [Features](#features)
+- [CLI Reference](#cli-reference)
 - [Configuration](#configuration)
+- [Architecture](#architecture)
 - [Development](#development)
 
 ## Quickstart
@@ -25,107 +23,31 @@ cargo install reliary-agent
 reliary-agent init
 
 # Or start manually
-reliary-agent serve &              # daemon + proxy on :9090
-reliary-agent index ./project      # build FTS5 search index
+reliary-agent serve &              # starts daemon + API proxy on port 9090
+reliary-agent index ./project      # build local search index
 ```
 
 After `init`, your agents have access to the daemon's MCP tools (search, risk, heal).
-For proxy-based conversation compression, see [API Proxy](#api-proxy).
-
-## Install
-
-```bash
-cargo install reliary-agent
-```
-
-Or download a release tarball:
-
-```bash
-curl -sSfL https://github.com/Reliary/reliary-agent/releases/latest/download/reliary-$(uname -m)-unknown-linux-gnu.tar.gz | tar xz
-cd reliary-* && ./install.sh
-```
-
-## Features
-
-### Token Compression
-
-| Layer | Where | Savings | How |
-|---|---|---|---|
-| **First-appearance freeze** | Proxy (:9090) — all agents | 16-84% | Compress every message on first occurrence, freeze in cache, KV cache hits forever |
-| **Sift (structural collapse)** | Gate.js + proxy — all agents | 10-20% on tool output | Collapse repeated Compiling/ok/blank lines, preserve errors |
-| **Response cache** | Proxy | 0-100% | Repeated requests (same model, same messages) return cached results — zero cost on retries |
-
-```mermaid
-flowchart LR
-    A[Raw conversation] --> B[First-appearance freeze<br/>16-84% saved]
-    B --> C[Tool result sift<br/>10-20% on large outputs]
-    C --> D[Response cache<br/>0-100% on repeats]
-    D --> E[Billed tokens]
-```
-
-### Code Intelligence (MCP tools)
-
-```bash
-reliary-agent search "bm25_idf" ./project          # FTS5 search
-reliary-agent risk ./src/main.rs                    # Pre-edit risk analysis
-reliary-agent compress "Let me think..."            # Reasoning compression
-reliary-agent dead ./project                        # Dead code detection
-```
-
-Every tool also available through MCP — works with Claude Code, Cline, OpenCode.
-
-### Self-Healing Edits
-
-When the LLM edits a file, `reliary` shadow-applies the change, runs tests, and reverts if tests fail. The LLM never sees the failure spiral.
-
-```mermaid
-flowchart LR
-    A[LLM sends edit] --> B{Daemon intercepts}
-    B --> C[Shadow-apply to temp]
-    C --> D[Run cargo test]
-    D --> E{Tests pass?}
-    E -->|Yes| F[Write to real file]
-    E -->|No| G[Revert temp file]
-    G --> H[Return REVERTED to LLM]
-    F --> I[Return OK to LLM]
-```
-
-### Safety Features
-
-- **Guard (on by default):** Intercepts edit tool calls, checks new content against FTS5 index. If an edit would orphan cross-file references, a warning is injected before the edit reaches the LLM. Average -72% weighted cost on cross-file rename tasks by preventing debug spirals. Disable: `RELIARY_PROXY_GUARD_DISABLE=1`.
-- **Anti-decision (on by default):** Sticky identifier failure memory persisted to chronicle (SQLite). Tracks per-file, per-identifier edit outcomes across sessions. When the LLM re-encounters an identifier with 2+ past failures, injects a Markov-surprise ` -identifier` annotation into the tool result. Survives daemon restarts. Disable: `RELIARY_PROXY_ANTI_DISABLE=1`.
-- **Transparent strict mode:** Instead of blocking bash/write/grep with error messages, gate.js transparently redirects to sandbox tools (test/read/search/create/edit). The LLM never sees "blocked." 100% pass rate (was 71% with blocking errors). Auto-deescalates to reactive mode after 5 redirects.
-- **Self-healing edits:** Shadow-apply changes, run tests, revert on failure. The LLM never sees the failure spiral.
-- **Identifier veto:** Blocks edits that reference hallucinated API names.
-- **Risk gate:** Warns before editing files with high blast radius.
-
-```mermaid
-flowchart LR
-    A[LLM attempts bash] --> B{Strict mode?}
-    B -->|Yes| C[Redirect transparently<br/>test/read/search/edit]
-    B -->|No| D[Pass through with monitoring]
-    C --> E{5+ redirects?}
-    E -->|Yes| F[Auto-deescalate to reactive]
-    E -->|No| G[Continue sandbox]
+For conversation compression, configure your agent to route through the [API Proxy](#token-compression-api-proxy).
 
 ## Usage by Agent
 
-Every agent gets proxy-level compression (first-appearance freeze, guard) simply by routing through `:9090`. The agent-specific setup differs only in config file injection.
+Every agent gets proxy-level compression and safety simply by routing its API calls through `localhost:9090`.
 
 ### Pi (gate.js extension)
 
 ```bash
-reliary-agent init   # installs gate.js extension automatically
+reliary-agent init   # installs the gate.js extension automatically
 # Or skip init and just run:
 reliary-agent serve &
 pi --model deepseek-v4-flash --print "fix it"
 ```
 
 Pi gets the full stack:
-- ✅ Proxy compression + guard (via `:9090` — routed automatically by `init`)
-- ✅ Gate.js sift (tool result compression, all tools)
-- ✅ Transparent strict mode (bash/write/grep redirect to sandbox tools, auto-deescalate)
-- ✅ Self-healing edits + veto + heal-apply
+- ✅ Proxy compression + edit safety (via `:9090` — routed automatically)
+- ✅ Gate.js extension (compresses all tool outputs)
+- ✅ Transparent strict mode (bash/write/grep are safely redirected to sandbox tools without errors)
+- ✅ Self-healing edits (tests run before the LLM sees failures)
 - Default mode: **strict** (100% pass rate on benchmarks, ~70K WC median vs ~92K reactive)
 
 ### Claude Code
@@ -136,19 +58,19 @@ export ANTHROPIC_BASE_URL=http://localhost:9090/
 ```
 
 Claude Code gets:
-- ✅ Proxy compression + guard (via `:9090`, routed via env var)
+- ✅ Proxy compression + edit safety (via `:9090`, routed via env var)
 - ✅ MCP tools (search, risk, guard, dead) — auto-injected by `init`
-- ✅ Transparent redirect does not apply (Claude uses its own Bash tool handling)
+- ❌ Transparent redirect does not apply (Claude uses its own Bash tool)
 
 ### Cline / OpenCode
 
 ```bash
 reliary-agent serve &
-export DEEPSEEK_BASE_URL=http://localhost:9090/v1   # or your provider
+export DEEPSEEK_BASE_URL=http://localhost:9090/v1   # or your chosen provider
 ```
 
 Both get:
-- ✅ Proxy compression + guard (via `:9090`)
+- ✅ Proxy compression + edit safety (via `:9090`)
 - ✅ MCP tools — auto-injected by `init`
 - ❌ No gate.js (Pi-only extension)
 
@@ -161,62 +83,19 @@ Both get:
 | **Cline / OpenCode** | Proxy + guard + MCP | **16-60%** |
 | **Any agent** | Proxy only (passthrough) | **0%** (just routing) |
 
-> Savings vary by session length. Long multi-turn sessions (15+ turns) hit the upper end. Short 3-turn fixes hit the lower end. The guard eliminates catastrophic debug spirals (1.2M WC avoided on cross-file tasks).
+> *Note: Long multi-turn sessions (15+ turns) hit the highest savings. Short 3-turn fixes hit the lower end. The safety guards eliminate catastrophic debug spirals.*
 
-## CLI
+## Features
 
-```bash
-# Explore
-reliary-agent index ./project         # Build FTS5 search index
-reliary-agent search "query" ./path   # Search index
-reliary-agent risk ./src/file.rs      # Pre-edit risk analysis
-reliary-agent dead ./project          # Dead code detection
+### Token Compression (API Proxy)
 
-# Edit
-reliary-agent fix-dir ./project       # Apply stored fix patterns
-reliary-agent fix-file file old new   # Apply pattern to single file
+The `serve` command starts an OpenAI-compatible proxy on `localhost:9090`. Point your agent's API URL here to get instant conversation compression. The proxy automatically detects whether you are using OpenAI, Anthropic, or DeepSeek from your API key and routes accordingly.
 
-# Services
-reliary-agent serve                   # Daemon + proxy (:9090)
-reliary-agent mcp                     # MCP server (stdio, for Claude Code/Cline)
-reliary-agent init                    # Auto-configure agents
-reliary-agent uninstall               # Remove all integrations and daemon service
-reliary-agent doctor                  # System health check
-reliary-agent status                  # Project intelligence overview
-reliary-agent clean                   # Wipe project .reliary (--all for global too)
-reliary-agent logs                    # Tail daemon logs
-
-# Config
-reliary-agent config                  # Show current settings
-reliary-agent config mode strict      # Set safety level (fast/reactive/strict)
-
-# Utilities
-reliary-agent veto ./src/file.rs      # Check identifiers exist in FTS5 index
-reliary-agent apply-edit file body    # Apply edit with self-healing
-reliary-agent sift ./src/file.rs      # Compress large terminal output
-reliary-agent session-state           # Debug session state machine
-reliary-agent memory                  # HDC memory query (stub)
-```
-
-## API Proxy
-
-The `serve` command starts an OpenAI-compatible compression proxy on `localhost:9090`.
-Point any agent at it to get conversation compression without installing gate.js:
-
-```bash
-# Start proxy
-reliary-agent serve &
-
-# Point your agent to it (choose the right base URL for your provider)
-export DEEPSEEK_BASE_URL=http://localhost:9090/v1   # Pi, Cline, OpenCode
-export ANTHROPIC_BASE_URL=http://localhost:9090/      # Claude Code only
-pi --model deepseek/deepseek-v4-flash --print "fix bug"
-```
-
-> **Note:** `reliary-agent init` only configures MCP tools. To get proxy compression,
-> set the `BASE_URL` environment variable per the table above — or configure it
-> directly in your agent's config file (Pi, Cline, and OpenCode all support
-> `baseUrl` in their provider settings).
+| Mechanism | Savings | How it works |
+|---|---|---|
+| **First-appearance freeze** | 16-84% | Modern LLMs heavily discount repeated conversation history via prefix caching. We compress messages once and lock them. The provider never sees the bloated original, ensuring your cache discount stays intact. |
+| **Command Output Compression** | 10-20% | Collapses noisy terminal output (e.g., condensing 100 lines of `Compiling...` into a 1-line summary) while perfectly preserving actual compiler errors and stack traces. |
+| **Response cache** | 0-100% | Repeated identical requests return cached results instantly at zero API cost. |
 
 ```mermaid
 flowchart LR
@@ -229,44 +108,78 @@ flowchart LR
     G --> H[Cache response]
 ```
 
-**Provider-agnostic routing:** The proxy automatically detects the API provider
-from the `Authorization` header. OpenAI, Anthropic, and DeepSeek keys all route
-to the correct upstream without manual configuration.
+### Self-Healing Edits
 
-**True SSE streaming:** The proxy streams chunks back to the client in real-time,
-preserving the typewriter effect in your agent's UI.
+When the LLM edits a file, `reliary` shadow-applies the change, runs your test suite, and reverts the file if the tests fail. The LLM never sees the failure spiral.
 
-**First-appearance freeze compression:** Every message is compressed on its first
-occurrence and frozen in cache. The provider never sees the uncompressed version,
-so KV cache hits are preserved across turns. Two compressors are applied:
-- **Tool results** (sift): cargo/build output collapsed (~71-93% smaller)
-- **Assistant reasoning** (compress_reasoning): verbose prose stripped (~40-60%
-  smaller, only fires on messages >300 chars)
-- **Total savings: ~16% average, up to 84% on long multi-turn sessions**
+```mermaid
+flowchart LR
+    A[LLM sends edit] --> B{Daemon intercepts}
+    B --> C[Shadow-apply to temp]
+    C --> D[Run tests]
+    D --> E{Tests pass?}
+    E -->|Yes| F[Write to real file]
+    E -->|No| G[Revert temp file]
+    G --> H[Return REVERTED to LLM]
+    F --> I[Return OK to LLM]
+```
 
-**Guard (on by default):** The proxy intercepts edit tool calls in the assistant's
-response and checks new content against the FTS5 index. If an edit would orphan
-cross-file references (e.g., renaming a function without updating callers), a
-warning is injected before the edit reaches the LLM. Benchmark: -72% weighted
-cost on cross-file rename tasks by preventing debug spirals.
+### Safety & Guardrails
 
-## Output Formats
+- **Cross-File Edit Guard (on by default):** Intercepts edits and checks them against the local search index. If an edit would orphan cross-file references (e.g., renaming a function without updating the places that call it), a warning is injected *before* the edit reaches the LLM. 
+- **Anti-Decision Memory (on by default):** A cross-session learning system. If the LLM repeatedly tries and fails to use a specific identifier across multiple sessions, the proxy injects a subtle warning the next time it tries to use it, conditioning the LLM to stop repeating the mistake.
+- **Transparent Strict Mode (Pi only):** Instead of blocking risky commands (like blind `sed` replacements) with error messages that confuse the LLM, the agent transparently redirects them to safe sandbox tools.
+- **Identifier Veto:** Blocks edits that reference completely hallucinated function or variable names.
+- **Risk Gate:** Warns the agent before it edits files with a high blast radius.
+
+### Code Intelligence (MCP tools)
+
+Every underlying tool is available through standard MCP, working natively with Claude Code, Cline, and OpenCode.
 
 ```bash
-# Human (default)
-reliary-agent search "merge_sort" ./project
+reliary-agent search "bm25_idf" ./project           # Fast local search
+reliary-agent risk ./src/main.rs                    # Pre-edit risk analysis
+reliary-agent dead ./project                        # Dead code detection
+```
 
-# Agent (compact)
-reliary-agent -f compact search "merge_sort" ./project
-# → 4.2294 ./src/sort.rs
+## CLI Reference
 
-# CI (JSON)
-reliary-agent -f json dead ./project | jq '.[] | select(contains("HIGH"))'
+```bash
+# Explore
+reliary-agent index ./project         # Build search index
+reliary-agent search "query" ./path   # Search index
+reliary-agent risk ./src/file.rs      # Pre-edit risk analysis
+reliary-agent dead ./project          # Dead code detection
+
+# Edit
+reliary-agent fix-dir ./project       # Apply stored fix patterns
+reliary-agent fix-file file old new   # Apply pattern to single file
+
+# Services
+reliary-agent serve                   # Daemon + proxy (:9090)
+reliary-agent mcp                     # MCP server (stdio)
+reliary-agent init                    # Auto-configure agents
+reliary-agent uninstall               # Remove all integrations
+reliary-agent doctor                  # System health check
+reliary-agent status                  # Project intelligence overview
+reliary-agent clean                   # Wipe project .reliary
+reliary-agent logs                    # Tail daemon logs
+
+# Config
+reliary-agent config                  # Show current settings
+reliary-agent config mode strict      # Set safety level
+
+# Utilities
+reliary-agent veto ./src/file.rs      # Check identifiers exist in index
+reliary-agent apply-edit file body    # Apply edit with self-healing
+reliary-agent sift ./src/file.rs      # Compress large terminal output
+reliary-agent session-state           # Debug session state machine
+reliary-agent memory                  # Cross-session memory query (stub)
 ```
 
 ## Configuration
 
-See [CONFIG.md](./CONFIG.md) for the full documentation.
+See [CONFIG.md](./CONFIG.md) for full documentation on the cascading configuration system.
 
 ### Quick Reference
 
@@ -274,41 +187,39 @@ See [CONFIG.md](./CONFIG.md) for the full documentation.
 |---|---|
 | `RELIARY_MODE=fast` | Maximum compression (no safety rails) |
 | `RELIARY_MODE=reactive` | Safety escalates on unsafe behavior |
-| `RELIARY_MODE=strict` | Full sandbox — bash/write/grep transparently redirected to sandbox tools; auto-deescalates after 5 redirects (default) |
+| `RELIARY_MODE=strict` | Full sandbox — transparently redirects risky commands (default) |
 | `RELIARY_FEATURES=+editMerge,-taskTargets` | Toggle individual features |
-| `RELIARY_UPSTREAM_URL=https://api.openai.com/v1` | Set API upstream (default: auth-based routing) |
-| `RELIARY_PROXY_GUARD_DISABLE=1` | Disable guard (cross-file edit safety) — on by default |
-| `DEEPSEEK_BASE_URL=http://localhost:9090/v1` | Route Pi/Cline/OpenCode through proxy |
-| `ANTHROPIC_BASE_URL=http://localhost:9090/` | Route Claude Code through proxy |
+| `RELIARY_UPSTREAM_URL=https://api.openai.com/v1` | Override API upstream manually |
+| `RELIARY_PROXY_GUARD_DISABLE=1` | Disable cross-file edit safety (on by default) |
+| `RELIARY_PROXY_ANTI_DISABLE=1` | Disable Anti-decision memory (on by default) |
 
 ## Architecture
 
-This binary consolidates 9 crates — each ported from a standalone tool — into one
-binary. Shared tokenizer, shared session state, no IPC overhead.
+This binary consolidates 9 crates into one extremely fast executable with a shared tokenizer and session state (zero IPC overhead).
 
 ```mermaid
 graph TD
     A[CLI] --> D[Daemon Core]
     B[MCP Server] --> D
     C[API Proxy :9090] --> D
-    D --> E[(FTS5 Index)]
-    D --> F[(Chronicle)]
-    D --> G[(Co-occurrence)]
+    D --> E[(Search Index)]
+    D --> F[(Chronicle Database)]
+    D --> G[(Co-occurrence Matrix)]
 
-    C --> H[Upstream API<br/>DeepSeek / OpenAI / Anthropic]
-    I[Gate.js<br/>Pi Agent] --> C
+    C --> H[Upstream API]
+    I[Pi Agent] --> C
     J[Claude Code] --> C
     K[Cline] --> C
 ```
 
-- **search:** BM25 + FTS5, Porter stemming, phrase extraction
-- **compress:** IR reasoning compression
-- **sift:** Structural compression, entropy/diversity gates
-- **risk:** Pre-edit risk scores, blast radius
-- **memory:** HDC 10K-bit vectors, Hebbian learning
-- **fix:** Pattern extraction, content matching, signature matching
-- **dead:** Grammar-free dead code via occurrence counting
-- **agent:** Binary — daemon, proxy (axum + tokio), CLI, MCP
+- **search:** Fast local search using BM25 and stemming
+- **compress:** Reasoning compression
+- **sift:** Terminal output compression and noise reduction
+- **risk:** Pre-edit risk scoring and blast radius calculation
+- **memory:** Cross-session learning and recall
+- **fix:** Pattern extraction and forgiving signature matching
+- **dead:** Dead code detection via occurrence counting
+- **agent:** The core binary serving the daemon, proxy, CLI, and MCP
 
 ## Development
 

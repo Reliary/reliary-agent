@@ -53,8 +53,15 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
 | `RELIARY_PROXY_GUARD_DISABLE` | `1` | Disable guard (cross-file edit safety). On by default. |
 | `RELIARY_PROXY_ANTI_DISABLE` | `1` | Disable anti-decision (sticky identifier failure memory) in proxy. On by default. |
 | `RELIARY_PROXY_OUTPUT_COMPRESS` | `1` | Enable first-appearance freeze compression in proxy. On by default. |
-| `DEEPSEEK_BASE_URL` | URL (default: DeepInfra) | Route Pi/Cline/OpenCode through proxy: `http://localhost:9090/v1` |
-| `ANTHROPIC_BASE_URL` | URL (default: Anthropic) | Route Claude Code through proxy: `http://localhost:9090/` |
+
+## Agent Setup Examples (Proxy Routing)
+
+To route your agent's API traffic through the proxy for conversation compression, set these environment variables in your shell before launching your agent:
+
+| Agent | Environment Variable | Value |
+|---|---|---|
+| **Pi / Cline / OpenCode** | `DEEPSEEK_BASE_URL` (or your provider's URL var) | `http://localhost:9090/v1` |
+| **Claude Code** | `ANTHROPIC_BASE_URL` | `http://localhost:9090/` |
 
 ## Feature Toggle Syntax
 
