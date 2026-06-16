@@ -105,12 +105,14 @@ pub fn save_persistent(store: &MemoryStore, path: &str) -> Result<(), String> {
         );"
     ).map_err(|e| format!("schema: {}", e))?;
 
-    conn.execute("DELETE FROM cortex_memories", []).ok();
+    let _ = conn.execute("DELETE FROM cortex_memories", []);
     for m in &store.memories {
-        conn.execute(
-            "INSERT INTO cortex_memories (content, source, timestamp, tier, recall_count) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![m.content, m.source, m.timestamp, m.tier, m.recall_count],
-        ).ok();
+        if let Err(e) = conn.execute(
+                "INSERT INTO cortex_memories (content, source, timestamp, tier, recall_count) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![m.content, m.source, m.timestamp, m.tier, m.recall_count],
+            ) {
+                eprintln!("[memory] save: {}", e);
+            }
     }
     Ok(())
 }

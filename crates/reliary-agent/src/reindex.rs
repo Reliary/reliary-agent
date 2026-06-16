@@ -90,31 +90,46 @@ fn walkdir(dir: &str) -> Result<Vec<std::path::PathBuf>, String> {
 fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
     use rusqlite::params;
     let db = match rusqlite::Connection::open(db_path) {
-        Ok(d) => d,
-        Err(_) => return false,
+        Ok(d) => {
+            let _ = d.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
+            d
+        }
+        Err(e) => {
+            eprintln!("[reindex] open {}: {}", db_path, e);
+            return false;
+        }
     };
 
-    // Delete existing rows for this file
-    let _ = db.execute("DELETE FROM phrases WHERE file = ?1", params![file]);
+    if let Err(e) = db.execute("DELETE FROM phrases WHERE file = ?1", params![file]) {
+        eprintln!("[reindex] DELETE: {}", e);
+    }
 
-    let _ = db.execute_batch("BEGIN;");
+    if let Err(e) = db.execute_batch("BEGIN;") {
+        eprintln!("[reindex] BEGIN: {}", e);
+    } // intentional best-effort
 
     // Extract phrases and insert
     let phrases = reliary_search::tokenize(content);
     for phrase in &phrases {
         // Simple zone classification: count structural chars
         let zone = if content.contains("fn ") || content.contains("def ") | content.contains("class ") { 0 } else { 1 };
-        let _ = db.execute(
+        if let Err(e) = db.execute(
             "INSERT INTO phrases (file, line_from, line_to, zone, prefix_offset) VALUES (?1, 0, 0, ?2, 0)",
             params![file, zone],
-        );
+        ) {
+            eprintln!("[reindex] INSERT: {}", e);
+        }
         let id = db.last_insert_rowid();
-        let _ = db.execute(
+        if let Err(e) = db.execute(
             "INSERT INTO phrases_fts (rowid, phrase) VALUES (?1, ?2)",
             params![id, phrase],
-        );
+        ) {
+            eprintln!("[reindex] FTS INSERT: {}", e);
+        }
     }
 
-    let _ = db.execute_batch("COMMIT;");
+    if let Err(e) = db.execute_batch("COMMIT;") {
+        eprintln!("[reindex] COMMIT: {}", e);
+    } // intentional best-effort
     true
 }
