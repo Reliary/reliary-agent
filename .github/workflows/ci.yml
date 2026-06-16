@@ -25,7 +25,7 @@ jobs:
       - name: Build
         run: cargo build --release
       - name: cargo test
-        run: cargo test --release
+        run: cargo test --release -- --test-threads=1
       - name: clippy (deny warnings) — lib only
         run: cargo clippy --release --lib 2>&1 | head -20
       - name: Integrity guard — no silent .ok() on writes
