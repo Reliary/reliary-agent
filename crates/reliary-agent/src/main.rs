@@ -68,6 +68,17 @@ struct Cli {
     format: String,
 }
 
+/// Reference list of all CLI subcommand names. CI guardrail verifies each
+/// appears in README.md. Add new subcommands here and in the doc.
+pub const CLI_COMMANDS: &[&str] = &[
+    "search", "index", "compress", "risk",
+    "fix-dir", "fix-file", "serve", "mcp",
+    "init", "uninstall", "doctor", "status",
+    "clean", "logs", "config", "veto",
+    "apply-edit", "sift", "session-state", "memory",
+    "dead",
+];
+
 #[derive(Subcommand)]
 enum Commands {
     /// BM25 search against FTS5 index (from stria)
