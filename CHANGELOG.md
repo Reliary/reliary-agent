@@ -19,13 +19,13 @@
 
 ### Crates
 
-- **reliary-search** (port of stria) — BM25 + FTS5, Porter stemming, grammar-free phrase extraction
-- **reliary-compress** (port of gate.js) — inline reasoning compression, dict-based symbol shortening
-- **reliary-sift** (port of sift + maxwell) — zone truncation, entropy gate, structural compression
-- **reliary-risk** (port of quale) — pre-edit risk scores, blast radius, chronicle failure tracking
-- **reliary-memory** (port of cortex-rs) — HDC 10K-bit vectors, Hebbian learning, cross-session recall
-- **reliary-fix** (port of cortex-rs + relay) — pattern extraction, content matching, forgiving signature matching
-- **reliary-dead** (port of carrion) — grammar-free dead code via occurrence counting
+- **reliary-search** — BM25 + FTS5, Porter stemming, grammar-free phrase extraction
+- **reliary-compress** — IR reasoning compression, format coercion
+- **reliary-sift** — zone truncation, entropy gate, structural compression
+- **reliary-risk** — pre-edit risk scores, blast radius, chronicle failure tracking
+- **reliary-memory** — HDC 10K-bit vectors, Hebbian learning, cross-session recall
+- **reliary-fix** — pattern extraction, content matching, forgiving signature matching
+- **reliary-dead** — grammar-free dead code via occurrence counting
 
 ### Safety
 

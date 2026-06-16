@@ -33,14 +33,14 @@ Three output formats for three audiences:
 - `--format compact`: bare score+path lines, no labels (agent-friendly)
 - `--format json`: valid JSON array (CI/script-friendly)
 
-## Ports and Attribution
+## Crate Structure
 
-| Crate | Origin | License | Lines |
-|---|---|---|---|
-| search | stria | MIT | ~600 |
-| compress | gate.js (context-engine) | MIT | ~300 |
-| sift | sift CLI + maxwell | MIT | ~300 |
-| risk | quale | MIT | ~400 |
-| memory | cortex-rs | MIT | ~700 |
-| fix | cortex-rs fix.rs + relay edit.rs | MIT | ~250 |
-| dead | carrion | MIT | ~300 |
+| Crate | Core Capabilities | Lines |
+|---|---|---|
+| search | BM25 + FTS5, Porter stemming, phrase extraction | ~600 |
+| compress | IR reasoning compression, format coercion | ~300 |
+| sift | Zone truncation, entropy gate, structural compression | ~300 |
+| risk | Pre-edit risk scores, blast radius | ~400 |
+| memory | HDC 10K-bit vectors, Hebbian learning | ~700 |
+| fix | Pattern extraction, content matching, forgiving signature matching | ~250 |
+| dead | Grammar-free dead code via occurrence counting | ~300 |

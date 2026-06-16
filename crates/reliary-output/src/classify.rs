@@ -1,5 +1,4 @@
 /// Command-output line classification + skeleton normalization.
-/// Ported from sift src/classify.rs (grammar-free structural compression).
 
 use regex::Regex;
 

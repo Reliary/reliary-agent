@@ -1,4 +1,4 @@
-/// Pre-edit risk analysis. Ported from quale.
+/// Pre-edit risk analysis.
 /// Grammar-free: uses structural heuristics, not AST parsing.
 
 /// Risk categories a file or edit operation can fall into.
