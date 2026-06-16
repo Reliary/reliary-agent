@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.2
+
+### Distribution
+- **NPM Package:** Added `@reliary/agent` wrapper to NPM. Installs pre-compiled binaries via `npx @reliary/agent init`.
+- **Crates.io:** Added workspace metadata for automated crates.io publishing.
+- **Homebrew:** Added generator script for macOS Homebrew tap.
+
 ## v0.4.1
 
 ### Polish & Stability

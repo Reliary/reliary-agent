@@ -1,6 +1,6 @@
 {
   "name": "@reliary/agent",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Grammar-free code intelligence daemon, CLI, MCP server, and API proxy.",
   "bin": {
     "reliary-agent": "bin.js",
