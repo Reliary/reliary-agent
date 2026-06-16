@@ -13,8 +13,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, LazyLock};
 use serde_json::Value;
 
- // Alias to avoid name conflict
-
 static RESPONSE_CACHE: LazyLock<Mutex<HashMap<u64, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -703,7 +701,9 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
         .route("/check-diff", get(check_diff_handler))
         .route("/read-validated", get(read_validated_handler))
         .route("/v1/chat/completions", post(proxy_post))
-        .route("/v1/messages", post(proxy_post));  // Anthropic/Claude Code compatibility
+        .route("/v1/messages", post(proxy_post))  // Anthropic/Claude Code compatibility
+        .route("/mcp/sse", get(crate::mcp_sse::sse_handler))
+        .route("/mcp/messages", post(crate::mcp_sse::messages_handler));
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await

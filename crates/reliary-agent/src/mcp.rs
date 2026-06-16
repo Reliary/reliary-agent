@@ -22,7 +22,8 @@ fn respond_error(id: u64, code: i32, message: &str) {
     out.flush().unwrap_or_default();
 }
 
-fn tool_definitions() -> Vec<serde_json::Value> {
+/// Public tool definitions for MCP tools/list — shared by stdio and SSE.
+pub fn tool_definitions() -> Vec<serde_json::Value> {
     vec![
         serde_json::json!({ "name": "reliary_search", "description": "BM25 grammar-free code search", "inputSchema": { "type": "object", "properties": { "query": {"type": "string"}, "path": {"type": "string"} }, "required": ["query"] } }),
         serde_json::json!({ "name": "reliary_compress", "description": "IR reasoning compression", "inputSchema": { "type": "object", "properties": { "text": {"type": "string"} }, "required": ["text"] } }),
@@ -34,10 +35,14 @@ fn tool_definitions() -> Vec<serde_json::Value> {
     ]
 }
 
-fn handle_tool_call(id: u64, params: &serde_json::Value) {
-    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    let args = params.get("arguments").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+/// Pure dispatch result — returned by dispatch_tool_call for shared use by stdio and SSE.
+pub enum DispatchResult {
+    Success(serde_json::Value),
+    Error(i32, String),
+}
 
+/// Pure dispatch: maps tool name + args → result or error. No I/O.
+pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json::Value>) -> DispatchResult {
     match name {
         "reliary_search" => {
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
@@ -48,17 +53,17 @@ fn handle_tool_call(id: u64, params: &serde_json::Value) {
                     let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
                     if reliary_search::schema::open_existing_db(&db).is_ok() {
                         let results = reliary_search::search::search_fts5(&db, query, 10);
-                        respond(id, serde_json::json!({
+                        DispatchResult::Success(serde_json::json!({
                             "content": [{ "type": "text", "text": serde_json::to_string(&results.iter().map(|r| serde_json::json!({"file": r.file, "score": r.score})).collect::<Vec<_>>()).unwrap_or_default() }]
-                        }));
+                        }))
                     } else {
                         let tokens = reliary_search::tokenize(query);
-                        respond(id, serde_json::json!({
+                        DispatchResult::Success(serde_json::json!({
                             "content": [{ "type": "text", "text": serde_json::json!({"results": [], "note": "no index — run index first", "stemmed": tokens.iter().map(|t| reliary_search::porter_stem(t)).collect::<Vec<_>>()}).to_string() }]
-                        }));
+                        }))
                     }
                 }
-                Err(e) => respond_error(id, -1, &format!("cannot open index: {}", e)),
+                Err(e) => DispatchResult::Error(-1, format!("cannot open index: {}", e)),
             }
         }
         "reliary_compress" => {
@@ -69,26 +74,25 @@ fn handle_tool_call(id: u64, params: &serde_json::Value) {
                 "original_len": text.len(),
                 "compressed_len": compressed.as_ref().map(|c| c.len()).unwrap_or(0),
             });
-            respond(id, serde_json::json!({
+            DispatchResult::Success(serde_json::json!({
                 "content": [{ "type": "text", "text": serde_json::to_string(&result).unwrap_or_default() }]
-            }));
+            }))
         }
         "reliary_risk" => {
             let file = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
             if let Ok(meta) = std::fs::metadata(file) {
                 if meta.len() > 10_000_000 {
-                    respond_error(id, -1, "file too large");
-                    return;
+                    return DispatchResult::Error(-1, "file too large".into());
                 }
             }
             match std::fs::read_to_string(file) {
                 Ok(content) => {
                     let risk = reliary_risk::compute_file_risk(file, &content);
-                    respond(id, serde_json::json!({
+                    DispatchResult::Success(serde_json::json!({
                         "content": [{ "type": "text", "text": serde_json::json!({"file": risk.file, "risk": format!("{:?}", risk.risk), "reason": risk.reason}).to_string() }]
-                    }));
+                    }))
                 }
-                Err(e) => respond_error(id, -1, &format!("cannot read {}: {}", file, e)),
+                Err(e) => DispatchResult::Error(-1, format!("cannot read {}: {}", file, e)),
             }
         }
         "reliary_fix" => {
@@ -97,8 +101,7 @@ fn handle_tool_call(id: u64, params: &serde_json::Value) {
             let new = args.get("new").and_then(|v| v.as_str()).unwrap_or("");
             if let Ok(meta) = std::fs::metadata(file) {
                 if meta.len() > 10_000_000 {
-                    respond_error(id, -1, "file too large");
-                    return;
+                    return DispatchResult::Error(-1, "file too large".into());
                 }
             }
             match std::fs::read_to_string(file) {
@@ -108,17 +111,17 @@ fn handle_tool_call(id: u64, params: &serde_json::Value) {
                     if count > 0 {
                         let tmp = format!("{}.tmp.{}", file, std::process::id());
                         if std::fs::write(&tmp, &modified).is_ok() && std::fs::rename(&tmp, file).is_ok() {
-                            respond(id, serde_json::json!({
+                            DispatchResult::Success(serde_json::json!({
                                 "content": [{ "type": "text", "text": serde_json::json!({"success": true, "replacements": count, "file": file}).to_string() }]
-                            }));
+                            }))
                         } else {
-                            respond_error(id, -1, &format!("cannot write: {}", std::io::Error::last_os_error()));
+                            DispatchResult::Error(-1, format!("cannot write: {}", std::io::Error::last_os_error()))
                         }
                     } else {
-                        respond_error(id, -1, "no matches found");
+                        DispatchResult::Error(-1, "no matches found".into())
                     }
                 }
-                Err(e) => respond_error(id, -1, &format!("cannot read {}: {}", file, e)),
+                Err(e) => DispatchResult::Error(-1, format!("cannot read {}: {}", file, e)),
             }
         }
         "reliary_dead" => {
@@ -169,9 +172,9 @@ fn handle_tool_call(id: u64, params: &serde_json::Value) {
                 obj.insert("truncated".to_string(), serde_json::json!(true));
                 obj.insert("limit".to_string(), serde_json::json!(limit));
             }
-            respond(id, serde_json::json!({
+            DispatchResult::Success(serde_json::json!({
                 "content": [{ "type": "text", "text": serde_json::to_string(&response_obj).unwrap_or_default() }]
-            }));
+            }))
         }
         "reliary_heal" => {
             let file = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
@@ -179,10 +182,10 @@ fn handle_tool_call(id: u64, params: &serde_json::Value) {
             let new = args.get("new").and_then(|v| v.as_str()).unwrap_or("");
             let workdir = args.get("workdir").and_then(|v| v.as_str()).unwrap_or(".");
             match crate::heal::heal_fix(file, old, new, workdir) {
-                Ok(msg) => respond(id, serde_json::json!({
+                Ok(msg) => DispatchResult::Success(serde_json::json!({
                     "content": [{ "type": "text", "text": serde_json::json!({"success": true, "message": msg}).to_string() }]
                 })),
-                Err(e) => respond_error(id, -1, &e),
+                Err(e) => DispatchResult::Error(-1, e),
             }
         }
         "reliary_prior" => {
@@ -191,11 +194,23 @@ fn handle_tool_call(id: u64, params: &serde_json::Value) {
                 Ok(p) => p.trim().to_string(),
                 Err(_) => String::new(),
             };
-            respond(id, serde_json::json!({
+            DispatchResult::Success(serde_json::json!({
                 "content": [{ "type": "text", "text": serde_json::json!({"prior": prior}).to_string() }]
-            }));
+            }))
         }
-        _ => respond_error(id, -32601, &format!("unknown tool: {}", name)),
+        _ => DispatchResult::Error(-32601, format!("unknown tool: {}", name)),
+    }
+}
+
+// ── Stdio transport (fallback, always available) ──
+
+fn handle_tool_call_stdio(id: u64, params: &serde_json::Value) {
+    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let args = params.get("arguments").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+
+    match dispatch_tool_call(name, &args) {
+        DispatchResult::Success(result) => respond(id, result),
+        DispatchResult::Error(code, message) => respond_error(id, code, &message),
     }
 }
 
@@ -233,7 +248,7 @@ pub fn serve_stdio() {
                     Some(p) => p,
                     None => { respond_error(id, -32602, "missing params"); continue; }
                 };
-                handle_tool_call(id, params);
+                handle_tool_call_stdio(id, params);
             }
             _ => {
                 if !method.starts_with("notifications/") {
@@ -277,7 +292,7 @@ mod tests {
             "name": "nonexistent_tool",
             "arguments": {}
         });
-        handle_tool_call(1, &params); // Should not panic
+        handle_tool_call_stdio(1, &params); // Should not panic
     }
 
     #[test]
@@ -286,7 +301,7 @@ mod tests {
             "name": "reliary_search",
             "arguments": {}
         });
-        handle_tool_call(1, &params); // Should not panic
+        handle_tool_call_stdio(1, &params); // Should not panic
     }
 
     #[test]
@@ -295,6 +310,21 @@ mod tests {
             "name": "reliary_compress",
             "arguments": { "text": "hello world" }
         });
-        handle_tool_call(1, &params); // Should not panic
+        handle_tool_call_stdio(1, &params); // Should not panic
+    }
+
+    #[test]
+    fn test_dispatch_tool_call_pure() {
+        // Test pure dispatch without I/O
+        let result = dispatch_tool_call("reliary_compress", &Default::default());
+        match result {
+            DispatchResult::Success(_) => {},
+            DispatchResult::Error(_, _) => panic!("expected success"),
+        }
+        let result = dispatch_tool_call("nonexistent", &Default::default());
+        match result {
+            DispatchResult::Success(_) => panic!("expected error"),
+            DispatchResult::Error(code, _) => assert_eq!(code, -32601),
+        }
     }
 }
