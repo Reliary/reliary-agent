@@ -4,6 +4,7 @@
 use rustc_hash::FxHashMap;
 use std::sync::{atomic::AtomicBool, Mutex};
 use std::time::{Duration, Instant};
+use tracing::warn;
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -27,7 +28,7 @@ impl SessionState {
         let base = std::path::PathBuf::from(workdir).join(".reliary");
         let chronicle_path = base.join("chronicle.sqlite");
         if let Err(e) = std::fs::create_dir_all(&base) {
-            eprintln!("[session] create_dir_all: {}", e);
+            warn!("session_dir create_dir_all: {}", e);
         }
         Self {
             scavenger_muzzled: AtomicBool::new(false),

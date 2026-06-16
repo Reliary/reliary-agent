@@ -24,12 +24,13 @@ fn e2e_heal_apply_via_mcp() {
     let mut mcp = common::start_mcp();
 
     // First initialize
-    mcp.send(&serde_json::json!({
+    let init_resp = mcp.send(&serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
         "params": { "protocolVersion": "2024-11-05" },
     }));
+    eprintln!("init response: {}", serde_json::to_string_pretty(&init_resp).unwrap());
 
     // Check fix schema exists
     let list = mcp.send(&serde_json::json!({
@@ -42,12 +43,12 @@ fn e2e_heal_apply_via_mcp() {
         .iter().map(|t| t["name"].as_str().unwrap_or("")).collect();
     assert!(names.contains(&"reliary_fix"), "expected reliary_fix tool");
 
-    // Apply fix via tools/fix
+    // Apply fix via tools/call with reliary_fix
     let resp = mcp.send(&serde_json::json!({
         "jsonrpc": "2.0",
         "id": 3,
-        "method": "tools/fix",
-        "params": { "file": path, "old": "return a - b", "new": "return a + b" },
+        "method": "tools/call",
+        "params": { "name": "reliary_fix", "arguments": { "file": path, "old": "return a - b", "new": "return a + b" } },
     }));
 
     eprintln!("fix response: {}", serde_json::to_string_pretty(&resp).unwrap());
@@ -59,8 +60,10 @@ fn e2e_heal_apply_via_mcp() {
         assert!(!msg.is_empty(), "expected non-empty error message");
         eprintln!("fix returned error (acceptable): {}", msg);
     } else {
-        assert!(resp["result"]["success"].as_bool().unwrap_or(false),
-            "expected success=true");
+        let content = resp["result"]["content"][0]["text"].as_str().unwrap_or("");
+        let inner: serde_json::Value = serde_json::from_str(content).unwrap_or(serde_json::json!({}));
+        assert!(inner["success"].as_bool().unwrap_or(false),
+            "expected success=true, got content: {}", content);
         // Verify the file was actually fixed by reading it back
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(!content.contains("return a - b"), "file was not updated");

@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tracing::{info, warn, error};
 use std::sync::{Arc, LazyLock};
 use crate::session_state::SessionState;
 
@@ -135,7 +136,7 @@ fn open_index_db(path: &str) -> Option<rusqlite::Connection> {
             return Some(db);
         }
         drop(db);
-        eprintln!("[daemon] search index corrupted — rebuilding...");
+        warn!("search index corrupted — rebuilding...");
         let _ = std::fs::remove_file(path);
         if let Some(parent) = std::path::Path::new(path).parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -372,7 +373,7 @@ fn append_chronicle(file: &str, event: &str, detail: &str, outcome: &str) {
         let path = format!("{}/.reliary/chronicle.sqlite", root);
         if let Ok(db) = rusqlite::Connection::open(&path) {
             if let Err(e) = db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;") {
-                eprintln!("[daemon] chronicle PRAGMA: {}", e);
+                warn!("chronicle PRAGMA: {}", e);
             }
             crate::chronicle::append(&db, event, file, detail, outcome);
         }
@@ -394,14 +395,14 @@ pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
         .name("scavenger".into())
         .spawn(move || crate::scavenger::scavenger_loop(scavenger_state))
     {
-        eprintln!("[daemon] scavenger thread: {}", e);
+        error!("scavenger thread: {}", e);
     }
 
     let connections = Arc::new(AtomicUsize::new(0));
 
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr)?;
-    eprintln!("[reliary] daemon listening on {} (workdir: {}, max connections: {})", addr, workdir, MAX_CONCURRENT);
+    info!("daemon listening on {} (workdir: {}, max connections: {})", addr, workdir, MAX_CONCURRENT);
 
     for stream in listener.incoming() {
         match stream {
@@ -410,7 +411,7 @@ pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
                 let prev = conns.fetch_add(1, Ordering::Relaxed);
                 if prev >= MAX_CONCURRENT {
                     conns.fetch_sub(1, Ordering::Relaxed);
-                    eprintln!("[reliary] max connections ({}) reached, rejecting", MAX_CONCURRENT);
+                    warn!("max connections ({}) reached, rejecting", MAX_CONCURRENT);
                     continue;
                 }
                 let state = Arc::clone(&state);
@@ -418,10 +419,10 @@ pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
                     .name("handler".into())
                     .spawn(move || { daemon_handle(s, state); conns.fetch_sub(1, Ordering::Relaxed); })
                 {
-                    eprintln!("[daemon] handler thread: {}", e);
+                    error!("handler thread: {}", e);
                 }
             }
-            Err(e) => eprintln!("[reliary] accept error: {}", e),
+            Err(e) => error!("accept error: {}", e),
         }
     }
     Ok(())

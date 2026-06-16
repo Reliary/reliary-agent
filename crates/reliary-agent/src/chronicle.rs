@@ -2,12 +2,13 @@
 /// Every daemon action is recorded. Queried by risk thresholds and scavenger backoff.
 
 use rusqlite::Connection;
+use tracing::{warn, error};
 /// Initialize chronicle table (idempotent) with schema versioning
 pub fn init(db_path: &str) -> Result<Connection, String> {
     let db = Connection::open(db_path).map_err(|e| format!("chronicle open: {}", e))?;
     // Set WAL mode for crash recovery + concurrent reads
     if let Err(e) = db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;") {
-        eprintln!("[chronicle] PRAGMA: {}", e);
+        warn!("chronicle PRAGMA: {}", e);
     }
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS chronicle (
@@ -38,7 +39,7 @@ pub fn append(db: &Connection, event: &str, file: &str, detail: &str, outcome: &
         "INSERT INTO chronicle (t, event, file, detail, outcome) VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![t, event, file, detail, outcome],
     ) {
-        eprintln!("[chronicle] append: {}", e);
+        error!("chronicle append: {}", e);
     }
 }
 
