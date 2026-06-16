@@ -178,14 +178,24 @@ reliary-agent fix-file file old new   # Apply pattern to single file
 
 # Services
 reliary-agent serve                   # Daemon + proxy (:9090)
+reliary-agent mcp                     # MCP server (stdio, for Claude Code/Cline)
 reliary-agent init                    # Auto-configure agents
+reliary-agent uninstall               # Remove all integrations and daemon service
 reliary-agent doctor                  # System health check
 reliary-agent status                  # Project intelligence overview
+reliary-agent clean                   # Wipe project .reliary (--all for global too)
 reliary-agent logs                    # Tail daemon logs
 
 # Config
 reliary-agent config                  # Show current settings
 reliary-agent config mode strict      # Set safety level (fast/reactive/strict)
+
+# Utilities
+reliary-agent veto ./src/file.rs      # Check identifiers exist in FTS5 index
+reliary-agent apply-edit file body    # Apply edit with self-healing
+reliary-agent sift ./src/file.rs      # Compress large terminal output
+reliary-agent session-state           # Debug session state machine
+reliary-agent memory                  # HDC memory query (stub)
 ```
 
 ## API Proxy

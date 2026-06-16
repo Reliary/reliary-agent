@@ -21,6 +21,8 @@ pub fn init(db_path: &str) -> Result<Connection, String> {
         CREATE INDEX IF NOT EXISTS idx_chronicle_file ON chronicle(file);
         CREATE INDEX IF NOT EXISTS idx_chronicle_event ON chronicle(event);
         CREATE INDEX IF NOT EXISTS idx_chronicle_t ON chronicle(t);
+        CREATE INDEX IF NOT EXISTS idx_chronicle_event_t ON chronicle(event, t);
+        CREATE INDEX IF NOT EXISTS idx_chronicle_file_t ON chronicle(file, t);
         PRAGMA user_version = 1;"
     ).map_err(|e| format!("chronicle schema: {}", e))?;
     Ok(db)
