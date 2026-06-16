@@ -1,11 +1,23 @@
 # Changelog
 
-## v0.4.2
+## v0.5.0
 
-### Distribution
-- **NPM Package:** Added `@reliary/agent` wrapper to NPM. Installs pre-compiled binaries via `npx @reliary/agent init`.
-- **Crates.io:** Added workspace metadata for automated crates.io publishing.
-- **Homebrew:** Added generator script for macOS Homebrew tap.
+### Pi Readiness & Transport (June 2026)
+- **SSE MCP Transport:** MCP server now available via SSE on the same port as the proxy (:9090). No subprocess per agent — tools share memory with the proxy for anti-decision, session hashes, and response cache. Stdio fallback remains for agents without SSE support.
+- **Structured Logging:** New `log.rs` module with `tracing` + `tracing-subscriber`. `RELIARY_LOG` env var controls verbosity (error/warn/info/debug/trace). `logs --tail` and `logs --level` for live log watching. `RELIARY_LOG_FILE` for persistent file logging with 10MB rotation.
+- **Gate.js Log Levels:** RELEASE_LOG env var filters gate.js output. Default `info` — quiet until something breaks. `debug` shows compression ratios, tool redirects, heal events.
+- **Binary Discovery:** Gate.js now checks `RELIARY_BIN_PATH` → `which reliary-agent` → hardcoded fallbacks. No more silent degradation on PATH-only installs.
+- **Pi Proxy Routing:** `init` prompts to configure proxy routing after gate.js install. Scans Pi settings.json + env vars for API keys, writes proxy-routes.json automatically.
+- **Daemon Service Verification:** After systemctl/launchctl install, verifies the service is actually active. Prints manual recovery command on silent failure.
+
+### Testing
+- **ISTQB Tests:** 10 new Rust unit tests (log rotation, boundary conditions, Pi proxy routing from env/settings, MCP config injection, SSE config, removal). 20 gate.js JavaScript tests (log levels, binary discovery priority, feature flag parsing, syntax validation).
+- **CI:** Gate.js test suite added to CI workflow. Test count threshold raised to 96.
+- **MCP Dispatch Fix:** `e2e_heal` test corrected from non-standard `tools/fix` to standard `tools/call` dispatch. Full MCP round-trip verified.
+
+### Internal
+- All operational `eprintln!` replaced with `tracing::{info, warn, error, debug}` macros. Tracing writes to stderr (never stdout) — MCP JSON protocol on stdout stays clean.
+- 966 lines changed across 17 files.
 
 ## v0.4.1
 
