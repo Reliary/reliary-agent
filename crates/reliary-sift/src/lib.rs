@@ -1,5 +1,4 @@
 /// Structural output compression + Maxwell information-theoretic gate.
-/// Ported from sift CLI (stdin/stdout structural compression) and maxwell.
 
 /// Zone truncation: keep first N lines, omit middle, keep last M
 pub fn zone_truncate(text: &str, head: usize, tail: usize) -> String {
