@@ -1,36 +1,142 @@
-/// Grammar-free anti-decision tracker.
-///
-/// Observes tool call outcomes flowing through the proxy, records per-identifier
-/// success/failure counts, and injects ` -identifier` annotations into tool results
-/// that contain file content, via Markov surprise (identical to engfield design).
-///
-/// Grammar-free: everything operates on (file, identifier, operation, success) tuples.
-/// No AST, no regex, no language detection. Identifiers are extracted via simple
-/// [A-Za-z_][A-Za-z0-9_]{2,} scanning, split on non-alphanumeric boundaries.
-///
-/// Key parts:
-///   - `record(workdir, file, identifier, operation, success)`: log one action outcome
-///   - `query_anti_decisions(workdir, file) -> Vec<String>`: identifiers with ≥2
-///     failures and >50% failure rate
-///   - `annotate_tool_result(raw_text, workdir, file_name) -> String`: append
-///     anti-decision annotations to file-referencing tool result text
-///   - Gating: only annotate when the file name appears in the text (the LLM is
-///     already attending to it — adjacency coupling via RoPE/ALiBi)
-///   - Built-in weak priors for `unwrap`, `legacy`, `hack`, `todo`, `TODO`, `FIXME`,
-///     `debug_`, `temp`, `old_text`, `clone` (1 failure each — Beta(1,1) prior,
-///     so a single actual observation overrides them)
+// Grammar-free anti-decision tracker.
+//
+// Observes tool call outcomes flowing through the proxy, records per-identifier
+// success/failure counts, and injects ` -identifier` annotations into tool results
+// that contain file content, via Markov surprise (identical to engfield design).
+//
+// Grammar-free: everything operates on (file, identifier, operation, success) tuples.
+// No AST, no regex, no language detection. Identifiers are extracted via simple
+// [A-Za-z_][A-Za-z0-9_]{2,} scanning, split on non-alphanumeric boundaries.
+//
+// Persistence: recorded events are stored in the project chronicle (SQLite),
+// surviving daemon restarts. On first query for a workdir, in-memory state
+// is loaded from chronicle (72h window). In-memory lookups are instant.
+//
+// Key parts:
+//   - `record(workdir, file, identifier, operation, success)`: log + persist
+//   - `query_anti_decisions(workdir, file)`: return identifiers with >=2 failures
+//   - `extract_tool_call(msg)`: extract file, identifier, tool, success from a tool result message
+//   - `annotate_tool_result()`: append anti-decision annotations (called by proxy inline)
+//   - Gating: only annotate when the file name appears in the text
+//   - Built-in weak priors for `unwrap`, `legacy`, `hack`, `todo`, `TODO`, `FIXME`,
+//     `debug_`, `temp`, `old_text`, `clone` (1 failure each)
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use std::collections::HashMap;
 
-/// Per-workdir counters: identifier → (successes, failures)
+use serde_json::Value;
+
 type CounterMap = HashMap<String, (usize, usize)>;
 
 pub static ANTI_DB: once_cell::sync::Lazy<Mutex<HashMap<String, CounterMap>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// Record one action outcome.
-pub fn record(workdir: &str, file: &str, identifier: &str, _operation: &str, success: bool) {
+static LOADED_WORKDIRS: once_cell::sync::Lazy<Mutex<HashSet<String>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashSet::new()));
+
+const BUILTIN_PRIORS: &[&str] = &[
+    "unwrap", "legacy", "hack", "todo", "TODO", "FIXME",
+    "debug_", "temp", "old_text", "clone",
+];
+
+fn builtin_prior_count(identifier: &str) -> usize {
+    if BUILTIN_PRIORS.contains(&identifier) { 1 } else { 0 }
+}
+
+fn extract_file_path(text: &str) -> Option<String> {
+    for word in text.split_whitespace() {
+        let w = word.trim_matches(|c: char| {
+            c == '"' || c == '\'' || c == '`' || c == '(' || c == ')' || c == ',' || c == ':' || c == ';'
+        });
+        if (w.contains('/') || w.contains('\\')) && w.len() >= 3 {
+            let cleaned = w.trim_end_matches(|c: char| {
+                c == '.' || c == ',' || c == ':' || c == ';' || c.is_ascii_digit()
+            });
+            if cleaned.len() >= 3 {
+                return Some(cleaned.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_primary_identifier(text: &str, file: &str) -> String {
+    let file_stem = std::path::Path::new(file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let identifiers: Vec<&str> = text.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| s.len() >= 3 && s.len() <= 40)
+        .filter(|s| s.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_'))
+        .filter(|s| *s != "edit" && *s != "apply" && *s != "write" && *s != "bash"
+                    && *s != "file" && *s != "sed" && *s != "old" && *s != "new"
+                    && *s != "text" && *s != "content" && *s != "from" && *s != "with"
+                    && *s != "replaced" && *s != "applied" && *s != "successfully"
+                    && *s != "wrote" && *s != "bytes" && *s != "error" && *s != "failed"
+                    && *s != "result" && *s != "stdout" && *s != "stderr" && *s != "exit"
+                    && *s != file_stem)
+        .collect();
+    if let Some(id) = identifiers.iter().find(|id| {
+        id.chars().any(|c| c.is_uppercase()) || id.contains('_')
+    }) {
+        return id.to_string();
+    }
+    identifiers.first().map(|s| s.to_string()).unwrap_or_else(|| "unknown".to_string())
+}
+
+#[allow(dead_code)]
+fn is_interesting_ident(s: &str) -> bool {
+    if s.len() < 3 || s.len() > 40 { return false; }
+    if !s.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_') { return false; }
+    true
+}
+
+fn extract_sed_target(content: &str) -> Option<(String, String)> {
+    // Grammar-free sed pattern extraction: look for "sed -i 's/pattern/replacement/' filepath"
+    let content_lower = content.to_lowercase();
+    if !content_lower.contains("sed") { return None; }
+
+    let file = content.split_whitespace()
+        .filter(|w| !w.starts_with('-') && !w.starts_with('\'') && !w.starts_with('"'))
+        .filter(|w| w.contains('.') || w.contains('/') || w.contains('\\'))
+        .map(|w| w.trim_matches(|c: char| c == '\'' || c == '"' || c == ';').to_string())
+        .find(|w| !w.is_empty())?;
+
+    if file.is_empty() { return None; }
+
+    let success = !content_lower.contains("error")
+        && !content_lower.contains("fail");
+    Some((file, if success { "success".to_string() } else { "fail".to_string() }))
+}
+
+pub fn extract_tool_call(msg: &Value) -> Option<(String, String, String, bool)> {
+    let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+    if role != "tool" && role != "toolResult" { return None; }
+
+    let content = msg.get("content").and_then(|c| c.as_str())?;
+    let tool_name = msg.get("name")
+        .or_else(|| msg.get("toolName"))
+        .and_then(|n| n.as_str()).unwrap_or("");
+
+    match tool_name {
+        "edit" | "apply-edit" | "write" => {
+            let file = extract_file_path(content)?;
+            let identifier = extract_primary_identifier(content, &file);
+            let success = !content.to_lowercase().contains("error")
+                && !content.to_lowercase().contains("fail")
+                && !content.to_lowercase().contains("revert");
+            Some((file, identifier, tool_name.to_string(), success))
+        }
+        "bash" | "run" => {
+            let (file, outcome) = extract_sed_target(content)?;
+            let success = outcome == "success";
+            Some((file, "sed".to_string(), "bash".to_string(), success))
+        }
+        _ => None,
+    }
+}
+
+pub fn record(workdir: &str, file: &str, identifier: &str, operation: &str, success: bool) {
     let key = format!("{}::{}::{}", workdir, file, identifier);
     if let Ok(mut db) = ANTI_DB.lock() {
         let counters = db.entry(workdir.to_string()).or_insert_with(HashMap::new);
@@ -41,23 +147,60 @@ pub fn record(workdir: &str, file: &str, identifier: &str, _operation: &str, suc
             entry.1 += 1;
         }
     }
+    let db_path = format!("{}/.reliary/chronicle.sqlite", workdir.trim_end_matches('/'));
+    let _ = std::fs::create_dir_all(std::path::Path::new(&db_path).parent().unwrap_or(std::path::Path::new(".")));
+    if let Ok(conn) = crate::chronicle::init(&db_path) {
+        let detail = format!("{}::{}::{}", file, identifier, if success { "success" } else { "fail" });
+        crate::chronicle::append(&conn, "antidecision", file, &detail, operation);
+    }
 }
 
-/// Query anti-decisions for a workdir+file: identifiers with ≥2 failures
-pub fn query_anti_decisions(workdir: &str, file: &str) -> Vec<(String, f64, usize, usize)> {
-    let prefix = format!("{}::{}::", workdir, file);
+pub fn load_persisted(workdir: &str) {
+    let db_path = format!("{}/.reliary/chronicle.sqlite", workdir.trim_end_matches('/'));
+    let events = match crate::chronicle::init(&db_path) {
+        Ok(db) => crate::chronicle::recent_events_by_type(&db, "antidecision", 72),
+        Err(_) => return,
+    };
+    if events.is_empty() { return; }
+    if let Ok(mut db) = ANTI_DB.lock() {
+        let counters = db.entry(workdir.to_string()).or_insert_with(HashMap::new);
+        for event in &events {
+            let parts: Vec<&str> = event.detail.splitn(3, "::").collect();
+            if parts.len() != 3 { continue; }
+            let key = format!("{}::{}::{}", workdir, parts[0], parts[1]);
+            let entry = counters.entry(key).or_insert((0, 0));
+            if parts[2] == "success" {
+                entry.0 += 1;
+            } else {
+                entry.1 += 1;
+            }
+        }
+    }
+}
 
+pub fn query_anti_decisions(workdir: &str, file: &str) -> Vec<(String, f64, usize, usize)> {
+    {
+        if let Ok(mut loaded) = LOADED_WORKDIRS.lock() {
+            if !loaded.contains(workdir) {
+                loaded.insert(workdir.to_string());
+                drop(loaded);
+                load_persisted(workdir);
+            }
+        }
+    }
+    let prefix = format!("{}::{}::", workdir, file);
     if let Ok(db) = ANTI_DB.lock() {
         if let Some(counters) = db.get(workdir) {
             let mut results: Vec<(String, f64, usize, usize)> = counters.iter()
                 .filter(|(k, _)| k.starts_with(&prefix))
-                .filter(|(_, &(_, f))| f >= 2)
                 .map(|(k, &(s, f))| {
                     let id = k[prefix.len()..].to_string();
-                    let total = (s + f) as f64;
-                    let risk = f as f64 / total;
-                    (id, risk, f, s)
+                    let total_fails = f + builtin_prior_count(&id);
+                    let total = (s + total_fails) as f64;
+                    let risk = total_fails as f64 / total.max(1.0);
+                    (id, risk, total_fails, s)
                 })
+                .filter(|(_, _, f, _)| *f >= 2)
                 .collect();
             results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             return results;
@@ -66,7 +209,6 @@ pub fn query_anti_decisions(workdir: &str, file: &str) -> Vec<(String, f64, usiz
     Vec::new()
 }
 
-/// Format an anti-decision annotation line from a list of high-risk identifiers.
 #[allow(dead_code)]
 pub fn format_annotation(identifiers: &[(String, f64, usize, usize)], max_tokens: usize) -> String {
     if identifiers.is_empty() { return String::new(); }
@@ -80,26 +222,18 @@ pub fn format_annotation(identifiers: &[(String, f64, usize, usize)], max_tokens
     else { parts.join(" ") }
 }
 
-/// Check if a tool result text contains an identifier from known anti-decisions.
-/// Returns the anti-decision annotation string if any match.
 #[allow(dead_code)]
 pub fn annotate_tool_result(text: &str, workdir: &str, file_name: &str) -> Option<String> {
     let bad = query_anti_decisions(workdir, file_name);
     if bad.is_empty() { return None; }
-
-    // Gating: only annotate if the text actually mentions the anti-pattern identifier
     let annotation = format_annotation(&bad, 3);
     if annotation.is_empty() { return None; }
-
-    // Check if text contains any of the failing identifiers (gating)
     let has_match = bad.iter().any(|(id, _, _, _)| text.contains(id));
     if !has_match { return None; }
-
     Some(annotation)
 }
 
-/// Parse identifiers from a text string — grammar-free: split on non-alphanumeric,
-/// take tokens of length ≥2 matching [A-Za-z_][A-Za-z0-9_]+
+#[allow(dead_code)]
 fn extract_identifiers(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|s| s.len() >= 2 && s.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_'))
@@ -107,76 +241,41 @@ fn extract_identifiers(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Extract tool call info from a raw tool result string.
-/// Returns (file, identifier, operation, success)
-pub fn extract_tool_call(tool_result: &str, tool_name: &str) -> Option<(String, String, String, bool)> {
-    match tool_name {
-        "edit" | "apply-edit" => {
-            // Extract file path from the edit tool result
-            if let Some(file) = tool_result.lines()
-                .find(|l| l.contains("edit") || l.contains("file"))
-                .and_then(|l| {
-                    extract_identifiers(l).into_iter()
-                        .find(|id| id.contains("."))
-                })
-            {
-                // Find identifier from the context entry
-                let all_ids = extract_identifiers(tool_result);
-                let identifier = all_ids.iter()
-                    .find(|id| !id.contains(".") && id.len() >= 3 && *id != "edit" && *id != "apply")
-                    .cloned()
-                    .unwrap_or_else(|| "unknown".to_string());
-                let success = !tool_result.to_lowercase().contains("error")
-                    && !tool_result.to_lowercase().contains("fail");
-                Some((file, identifier, "edit".to_string(), success))
-            } else {
-                None
-            }
-        }
-        "write" => {
-            let all_ids = extract_identifiers(tool_result);
-            let file = all_ids.iter()
-                .find(|id| id.contains("."))
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
-            let identifier = all_ids.iter()
-                .find(|id| !id.contains(".") && id.len() >= 3 && id != &"write")
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
-            let success = !tool_result.to_lowercase().contains("error");
-            Some((file, identifier, "write".to_string(), success))
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn clean_test_wd() -> String {
+        let wd = "/tmp/antidecision_test".to_string();
+        let _ = std::fs::remove_dir_all(format!("{}/.reliary", wd));
+        wd
+    }
+
     #[test]
     fn test_record_and_query() {
-        record("/tmp/test", "src/auth.rs", "unwrap", "edit", false);
-        record("/tmp/test", "src/auth.rs", "unwrap", "edit", false);
-        record("/tmp/test", "src/auth.rs", "unwrap", "edit", false);
-        record("/tmp/test", "src/auth.rs", "question_mark", "edit", true);
-        record("/tmp/test", "src/auth.rs", "question_mark", "edit", true);
+        let wd = clean_test_wd();
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
+        record(&wd, "src/auth.rs", "question_mark", "edit", true);
+        record(&wd, "src/auth.rs", "question_mark", "edit", true);
 
-        let anti = query_anti_decisions("/tmp/test", "src/auth.rs");
+        let anti = query_anti_decisions(&wd, "src/auth.rs");
         assert!(!anti.is_empty(), "should find anti-decisions");
         assert_eq!(anti[0].0, "unwrap");
-        assert!(anti[0].1 > 0.5);  // risk > 50%
-        assert!(anti[0].2 >= 2);   // ≥2 failures
+        assert!(anti[0].1 > 0.5);
+        assert!(anti[0].2 >= 2);
     }
 
     #[test]
     fn test_annotation_basic() {
-        record("/tmp/test", "src/auth.rs", "unwrap", "edit", false);
-        record("/tmp/test", "src/auth.rs", "unwrap", "edit", false);
-        record("/tmp/test", "src/auth.rs", "unwrap", "edit", false);
+        let wd = clean_test_wd();
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
 
         let annotation = annotate_tool_result(
-            "File src/auth.rs uses unwrap extensively", "/tmp/test", "src/auth.rs"
+            "File src/auth.rs uses unwrap extensively", &wd, "src/auth.rs"
         );
         assert!(annotation.is_some());
         assert!(annotation.unwrap().contains("-unwrap"));
@@ -184,20 +283,18 @@ mod tests {
 
     #[test]
     fn test_gating() {
-        let wd = "/tmp/test_gating";
-        record(wd, "src/auth.rs", "unwrap", "edit", false);
-        record(wd, "src/auth.rs", "unwrap", "edit", false);
+        let wd = clean_test_wd();
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
 
-        // Text does NOT mention "unwrap" — annotation should be suppressed
         let annotation = annotate_tool_result(
-            "File src/auth.rs uses question_mark everywhere", wd, "src/auth.rs"
+            "File src/auth.rs uses question_mark everywhere", &wd, "src/auth.rs"
         );
         assert!(annotation.is_none(), "should gate when identifier not mentioned: {:?}", annotation);
     }
 
     #[test]
     fn test_builtin_priors() {
-        // Without any records, empty query should yield no results
         let anti = query_anti_decisions("/tmp/nonexistent", "src/unknown.rs");
         assert!(anti.is_empty());
     }
@@ -221,21 +318,78 @@ mod tests {
     }
 
     #[test]
-    fn test_prior_bayesian_risk_disambiguation() {
-        // Two identifiers with different outcomes should have different risks
-        record("/tmp/test", "src/auth.rs", "unwrap", "edit", false);
-        record("/tmp/test", "src/auth.rs", "unwrap", "edit", false);
-        record("/tmp/test", "src/auth.rs", "question_mark", "edit", true);
-        record("/tmp/test", "src/auth.rs", "question_mark", "edit", true);
+    fn test_extract_file_path() {
+        assert_eq!(extract_file_path("Edit applied to src/auth.rs:42"), Some("src/auth.rs".to_string()));
+        assert_eq!(extract_file_path("Wrote 1234 bytes to lib/parser.py"), Some("lib/parser.py".to_string()));
+        assert_eq!(extract_file_path("no path here"), None);
+    }
 
-        let anti = query_anti_decisions("/tmp/test", "src/auth.rs");
-        // unwrap should have 2 failures → f=2, s=0 → risk = 2/2 = 1.0
+    #[test]
+    fn test_extract_tool_call_edit() {
+        let msg = serde_json::json!({
+            "role": "tool",
+            "name": "edit",
+            "content": "Edit applied successfully to src/auth.rs:42"
+        });
+        let result = extract_tool_call(&msg);
+        assert!(result.is_some());
+        let (file, _id, tool, success) = result.unwrap();
+        assert_eq!(file, "src/auth.rs");
+        assert_eq!(tool, "edit");
+        assert!(success);
+    }
+
+    #[test]
+    fn test_extract_tool_call_sed() {
+        let msg = serde_json::json!({
+            "role": "tool",
+            "name": "bash",
+            "content": "Running: sed -i 's/old_func/new_func/' src/parser.rs"
+        });
+        let result = extract_tool_call(&msg);
+        assert!(result.is_some());
+        let (file, id, tool, _success) = result.unwrap();
+        assert_eq!(file, "src/parser.rs");
+        assert_eq!(id, "sed");
+        assert_eq!(tool, "bash");
+    }
+
+    #[test]
+    fn test_persistence_and_load() {
+        let wd = clean_test_wd();
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
+
+        // Clear in-memory state
+        if let Ok(mut db) = ANTI_DB.lock() {
+            db.clear();
+        }
+        if let Ok(mut loaded) = LOADED_WORKDIRS.lock() {
+            loaded.clear();
+        }
+
+        // Query should reload from chronicle
+        let anti = query_anti_decisions(&wd, "src/auth.rs");
+        assert!(!anti.is_empty(), "should reload from chronicle after cache clear");
+        assert_eq!(anti[0].0, "unwrap");
+        assert!(anti[0].2 >= 2);
+    }
+
+    #[test]
+    fn test_prior_bayesian_risk_disambiguation() {
+        let wd = clean_test_wd();
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
+        record(&wd, "src/auth.rs", "unwrap", "edit", false);
+        record(&wd, "src/auth.rs", "question_mark", "edit", true);
+        record(&wd, "src/auth.rs", "question_mark", "edit", true);
+
+        let anti = query_anti_decisions(&wd, "src/auth.rs");
         let unwrap_risk = anti.iter().find(|(id, _, _, _)| id == "unwrap").map(|(_, r, _, _)| *r);
-        // question_mark should not appear (0 failures, <2 threshold)
         let qm_present = anti.iter().any(|(id, _, _, _)| id == "question_mark");
 
         assert!(unwrap_risk.is_some(), "unwrap should be in anti-decisions");
-        assert!((unwrap_risk.unwrap() - 1.0).abs() < 0.01, "unwrap should have risk 1.0 (2/2 failures)");
+        assert!((unwrap_risk.unwrap() - 1.0).abs() < 0.01, "unwrap should have risk 1.0 (3/3 failures incl built-in prior)");
         assert!(!qm_present, "question_mark should NOT be in anti-decisions (0 failures)");
     }
 }
