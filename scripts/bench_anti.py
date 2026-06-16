@@ -28,10 +28,10 @@ FAILING_IDENTIFIERS = [
 ]
 
 P = [
-    "Read src/zone.rs. Understand the line_zone function and how it classifies prose vs code lines.",
-    "Run 'cargo test --bin stria -- zone --quiet 2>&1' and list all failures.",
-    "Fix the line_zone function in src/zone.rs so all zone tests pass. There is a bug in the prose classification logic — the thresholds are inverted.",
-    "Run 'cargo test --bin stria -- zone --quiet 2>&1' to verify all tests pass.",
+    "Read src/zone.rs. Explain how the line_zone function determines prose vs code classification. Pay attention to the 'idents' variable and how it's used in the comparison logic.",
+    "Run 'cargo test --bin stria -- zone --quiet 2>&1' and list all failures. Note: you must use bash for this — pi does not support a dedicated test tool.",
+    "Fix src/zone.rs — the prose classification bug is in how 'idents' is compared to threshold values in line_zone. The logic is inverted: pure-code lines are being classified as prose and vice versa.",
+    "Run 'cargo test --bin stria -- zone --quiet 2>&1' to verify all zone tests now pass.",
 ]
 
 
