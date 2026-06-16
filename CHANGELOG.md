@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.4.1
+
+### Polish & Stability
+- **Massive Integrity Pass:** Fixed 131 internal issues across the codebase.
+- **SQL Hardening:** Added `PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL` to all 15+ SQLite connections.
+- **I/O Safety:** Switched to atomic file writes (tmp + fsync + rename) for config and service files. Replaced 20+ silent `.ok()` error swallows with proper logging.
+- **Regex Performance:** Compiled all hot-path regexes once using `LazyLock` (16 instances).
+- **Security:** Added 10MB file size guard to proxy/MCP endpoints to prevent memory exhaustion attacks.
+- **Documentation Overhaul:** Rewrote documentation to improve flow, remove legacy academic jargon, and clearly explain agent configuration setups.
+- **CI Guardrails:** Added rigorous CI checks for silent error swallows, SQL PRAGMAs, regex compilation, atomic writes, and CLI documentation coverage.
+
+## v0.4.0
+
+### Safety & Guardrails
+- **Anti-Decision Memory:** Added a cross-session learning system using chronicle (SQLite). The LLM is subtly warned when reusing identifiers that failed repeatedly in the past.
+- **Transparent Strict Mode:** Pi Agent's strict mode now transparently redirects blocked commands (`bash`, `write`, `grep`) to safe sandbox tools without returning confusing error messages. 100% pass rate on benchmarks.
+- **Guard on by default:** The proxy intercepts edits to check against the search index, warning the LLM if an edit orphans cross-file references.
+
+### Compression
+- **First-appearance freeze:** Proxy compresses messages on first occurrence and freezes them in cache.
+- **Sift Everywhere:** Sift (structural terminal output collapse) now compresses all tool results over 300 characters, not just `bash`.
+
 ## v0.2.0 (unreleased)
 
 ### Major Features
