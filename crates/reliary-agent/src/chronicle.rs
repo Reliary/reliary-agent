@@ -6,7 +6,9 @@ use rusqlite::Connection;
 pub fn init(db_path: &str) -> Result<Connection, String> {
     let db = Connection::open(db_path).map_err(|e| format!("chronicle open: {}", e))?;
     // Set WAL mode for crash recovery + concurrent reads
-    db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;").ok();
+    if let Err(e) = db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;") {
+        eprintln!("[chronicle] PRAGMA: {}", e);
+    }
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS chronicle (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -19,6 +21,8 @@ pub fn init(db_path: &str) -> Result<Connection, String> {
         CREATE INDEX IF NOT EXISTS idx_chronicle_file ON chronicle(file);
         CREATE INDEX IF NOT EXISTS idx_chronicle_event ON chronicle(event);
         CREATE INDEX IF NOT EXISTS idx_chronicle_t ON chronicle(t);
+        CREATE INDEX IF NOT EXISTS idx_chronicle_event_t ON chronicle(event, t);
+        CREATE INDEX IF NOT EXISTS idx_chronicle_file_t ON chronicle(file, t);
         PRAGMA user_version = 1;"
     ).map_err(|e| format!("chronicle schema: {}", e))?;
     Ok(db)
@@ -30,10 +34,12 @@ pub fn append(db: &Connection, event: &str, file: &str, detail: &str, outcome: &
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    db.execute(
+    if let Err(e) = db.execute(
         "INSERT INTO chronicle (t, event, file, detail, outcome) VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![t, event, file, detail, outcome],
-    ).ok();
+    ) {
+        eprintln!("[chronicle] append: {}", e);
+    }
 }
 
 /// Query events for a file in the last N hours

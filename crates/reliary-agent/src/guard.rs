@@ -37,7 +37,10 @@ fn is_interesting_ident(s: &str) -> bool {
 /// - Orphaned references (removed identifier still referenced elsewhere)
 pub fn check_diff(index_path: &str, file_path: &str, new_content: &str) -> Value {
     let db = match Connection::open(index_path) {
-        Ok(d) => d,
+        Ok(d) => {
+            let _ = d.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -8000;");
+            d
+        }
         Err(e) => return json!({"error": format!("cannot open db: {}", e)}),
     };
     if reliary_search::schema::open_existing_db(&db).is_err() {
@@ -186,7 +189,10 @@ pub fn check_diff(index_path: &str, file_path: &str, new_content: &str) -> Value
 /// are referenced elsewhere (warns about deletion/rename risk).
 pub fn read_validated(index_path: &str, file_path: &str, content: &str) -> Value {
     let db = match Connection::open(index_path) {
-        Ok(d) => d,
+        Ok(d) => {
+            let _ = d.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
+            d
+        }
         Err(_) => return json!({"file": file_path, "content": content}),
     };
     if reliary_search::schema::open_existing_db(&db).is_err() {
