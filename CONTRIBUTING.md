@@ -25,7 +25,8 @@ cargo test --release
 
 - Grammar-free over everything — zero AST, zero tree-sitter, zero language detection
 - 4-space indentation in Rust, 2-space in JavaScript
-- No `.unwrap()` in production code (use `?` or `.ok()`)
+- No `.unwrap()` in production code (use `?` or proper error handling)
+- Avoid silent `.ok()` calls for I/O or critical operations (they hide partial failures)
 - Error messages should be actionable: "ERROR: cannot read file" not "Error 5"
 - Dead code is deleted, not commented out
 

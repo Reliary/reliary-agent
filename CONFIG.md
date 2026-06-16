@@ -28,8 +28,8 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
 | Mode | Bash/write/grep | Safety escalation | Best for |
 |------|----------------|-------------------|----------|
 | `fast` | Pass through | None | Efficient models (Qwen, Nemotron) |
-| `reactive` (default) | Pass through until trigger | Escalates on unsafe behavior | Most users |
-| `strict` | Blocked | Always on | High-variance models (DeepSeek) |
+| `reactive` | Pass through until trigger | Escalates on unsafe behavior | Lower-variance models |
+| `strict` (default) | Transparent redirect | Redirects to sandbox tools (auto-deescalates) | High-variance models (DeepSeek) |
 
 ## Features
 
@@ -38,9 +38,9 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
 | `compress` | true | IR reasoning compression (~40% token savings, zero daemon needed) |
 | `convWindow` | true | Drop old verbose tool results from conversation at 10+ messages |
 | `readEnrichment` | true | Compress non-target file reads with zone truncation |
-| `editMerge` | false | Combine sequential edits to same file into one operation |
-| `taskTargets` | false | Preserve full content of task-targeted files (skip compression) |
-| `priorInjection` | false | Inject chronicle edit history into system prompt |
+| `editMerge` | false | Combine sequential edits to same file into one operation (regresses on high-variance models) |
+| `taskTargets` | false | Preserve full content of task-targeted files |
+| `priorInjection` | false | Inject chronicle edit history into system prompt (adds prompt overhead) |
 
 ## Environment Variables
 
