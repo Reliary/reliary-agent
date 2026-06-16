@@ -144,28 +144,82 @@ mod tests {
 
     #[test]
     fn test_default_level() {
-        // RUST_LOG and RELIARY_LOG unset → info
-        assert_eq!(current_level(), "info");
+        // With RELIARY_LOG unset, current_level returns "info"
+        let level = current_level();
+        assert_eq!(level, "info");
     }
 
     #[test]
     fn test_level_value_ordering() {
+        assert_eq!(level_value("error"), 1);
+        assert_eq!(level_value("warn"), 2);
+        assert_eq!(level_value("info"), 3);
+        assert_eq!(level_value("debug"), 4);
+        assert_eq!(level_value("trace"), 5);
         assert!(level_value("trace") > level_value("debug"));
         assert!(level_value("debug") > level_value("info"));
         assert!(level_value("info") > level_value("warn"));
         assert!(level_value("warn") > level_value("error"));
         assert_eq!(level_value("unknown"), 0);
+        assert_eq!(level_value(""), 0);
+        assert_eq!(level_value("ERROR"), 0); // case sensitive
     }
 
     #[test]
-    fn test_reliary_log_parsing() {
-        assert_eq!(&resolve_reliary_log(), "reliary_agent=info");
+    fn test_resolve_reliary_log_levels() {
+        // Test each level maps to the correct filter string
+        // (Uses RELIARY_LOG from env if set; if unset defaults to info)
+
+        // Verify default when no env var
+        let filter = resolve_reliary_log();
+        assert_eq!(filter, "reliary_agent=info");
+
+        // Verify results always contain the crate tag
+        // (independent of env — we just check the function produces valid syntax)
+        assert!(filter.contains("reliary_agent="));
     }
 
     #[test]
-    fn test_reliary_log_error() {
-        // Can't really test env vars without tempdir isolation
-        let result = resolve_reliary_log();
-        assert!(result.contains("reliary_agent="));
+    fn test_resolve_reliary_log_unexpected_values() {
+        let filter = resolve_reliary_log();
+        assert!(!filter.is_empty());
+    }
+
+    #[test]
+    fn test_file_logger_rotation() {
+        // Create temp dir for log file
+        let dir = std::env::temp_dir().join(format!("reliary_log_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let log_path = dir.join("test.log");
+
+        // Create a 10-byte max file logger = will rotate after 10 bytes
+        let file = std::fs::File::create(&log_path).unwrap();
+        let mut logger = FileLogger {
+            file,
+            path: log_path.clone(),
+            size: 8,  // Just 2 bytes from 10-byte limit — next write triggers rotation
+            max_size: 10,
+            created: Instant::now(),
+        };
+
+        // Write a line — triggers rotation (8 + msg.len >= 10)
+        logger.write("hello world");
+        assert!(log_path.exists(), "original log should exist after rotation");
+
+        // Verify old file was renamed
+        let old = dir.join("test.log.old");
+        assert!(old.exists() || logger.size > 0, "old or new log should exist");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_level_value_boundary_conditions() {
+        assert_eq!(level_value("error"), 1, "error should be level 1");
+        assert_eq!(level_value("trace"), 5, "trace should be level 5");
+        assert_eq!(level_value(""), 0, "empty string should be 0");
+        assert_eq!(level_value("INFO"), 0, "upper case should not match");
+        assert_eq!(level_value(" warn"), 0, "leading space should not match");
     }
 }

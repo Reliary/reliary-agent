@@ -26,6 +26,8 @@ jobs:
         run: cargo build --release
       - name: cargo test
         run: cargo test --release -- --test-threads=1
+      - name: gate.js ISTQB tests (log levels, binary discovery)
+        run: node scripts/test_gate_levels.js
       - name: clippy (deny warnings) — lib only
         run: cargo clippy --release --lib 2>&1 | head -20
       - name: Integrity guard — no silent .ok() on writes
@@ -99,7 +101,7 @@ jobs:
         run: |
           count=$(cargo test 2>&1 | grep "^test result:" | grep -oP '\d+(?= passed)' | python3 -c "import sys; print(sum(int(l) for l in sys.stdin if l.strip()))")
           echo "Test count: $count"
-          [ "$count" -ge 75 ] || echo "WARN: test count below 75 ($count)"
+          [ "$count" -ge 96 ] || echo "WARN: test count below 96 ($count)"
       - name: Binary size check
         run: |
           ls -lh target/release/reliary-agent 2>/dev/null || echo "Binary not built"
