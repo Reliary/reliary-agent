@@ -17,7 +17,10 @@ Save 16-84% on API tokens and eliminate debug spirals across any agent framework
 ## Quickstart
 
 ```bash
-cargo install reliary-agent
+# Install via NPM (Recommended)
+npx @reliary/agent init
+# Or install globally
+npm install -g @reliary/agent
 
 # Auto-detect and configure your agents (Pi, Claude, Cline, OpenCode)
 reliary-agent init
