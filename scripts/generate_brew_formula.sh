@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-VERSION="${1:-0.4.1}"
+VERSION="${1:-0.4.2}"
 TARBALL_URL="https://github.com/Reliary/reliary-agent/releases/download/v${VERSION}/reliary-v${VERSION}-x86_64-apple-darwin.tar.gz"
 
 echo "Downloading ${TARBALL_URL} to compute SHA256..."
