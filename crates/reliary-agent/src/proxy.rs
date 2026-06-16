@@ -16,14 +16,6 @@ use std::time::Instant;
 
 // ── Token counting (lightweight heuristic) ──
 
-fn estimate_tokens(text: &str) -> usize {
-    if text.is_empty() { return 0; }
-    let whitespace = text.split_whitespace().count();
-    let avg_len = text.len().saturating_sub(whitespace.saturating_sub(1)) / whitespace.max(1);
-    // Common heuristic: ~1.3 tokens per word for code, ~1.5 for prose
-    let tokens_per_word = if avg_len > 5 { 1.3 } else { 1.5 };
-    (whitespace as f64 * tokens_per_word).round() as usize
-}
 
  // Alias to avoid name conflict
 
@@ -425,7 +417,6 @@ async fn proxy_post(
     }
 
     let hdr_history_saved = history_saved.to_string();
-    let hdr_aggr = String::new();
 
     match req_builder.send().await {
         Ok(upstream_resp) => {
