@@ -4,6 +4,7 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod mcp;
+mod mcp_sse;
 mod daemon;
 mod heal;
 mod session_state;

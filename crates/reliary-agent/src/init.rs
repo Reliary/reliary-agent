@@ -124,11 +124,16 @@ pub fn run() {
             Some(home.join(".config/opencode/opencode.json"))
         };
 
-                if let Some(cfg_path) = opencode_cfg {
+        if let Some(cfg_path) = opencode_cfg {
             if cfg_path.exists() {
-                if ask_yes_no("Found OpenCode config. Add Reliary MCP server?", true) {
-                    if inject_mcp_server(&cfg_path, "reliary") {
-                        ok("Updated opencode.json");
+                // Offer SSE MCP URL if daemon will be installed
+                let use_sse = ask_yes_no("Found OpenCode config. Add Reliary MCP server via SSE? (single port, shared state)", true);
+                if use_sse {
+                    if inject_sse_mcp_server(&cfg_path, "reliary", 9090) {
+                        ok("Updated opencode.json (SSE MCP)");
+                        configured_agents += 1;
+                    } else if inject_mcp_server(&cfg_path, "reliary") {
+                        ok("Updated opencode.json (stdio fallback)");
                         configured_agents += 1;
                     } else {
                         println!("  {} Failed to update opencode.json\n", "\x1b[31m✗\x1b[0m");
@@ -221,6 +226,31 @@ fn inject_mcp_server(cfg_path: &PathBuf, server_name: &str) -> bool {
                 "args": ["mcp"]
             }));
             
+            if let Ok(new_content) = serde_json::to_string_pretty(&v) {
+                return atomic_write(&cfg_path.to_string_lossy(), &new_content);
+            }
+        }
+    }
+    false
+}
+
+/// Inject SSE MCP server entry into config JSON (url-based, no subprocess).
+fn inject_sse_mcp_server(cfg_path: &PathBuf, server_name: &str, port: u16) -> bool {
+    let content = match fs::read_to_string(cfg_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let mut v: Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    if let Some(obj) = v.as_object_mut() {
+        let mcp_servers = obj.entry("mcpServers").or_insert(serde_json::json!({}));
+        if let Some(servers) = mcp_servers.as_object_mut() {
+            servers.insert(server_name.to_string(), serde_json::json!({
+                "url": format!("http://127.0.0.1:{}/mcp/sse", port),
+            }));
             if let Ok(new_content) = serde_json::to_string_pretty(&v) {
                 return atomic_write(&cfg_path.to_string_lossy(), &new_content);
             }
