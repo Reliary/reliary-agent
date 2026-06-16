@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::fs;
+use std::collections::HashMap;
 use std::process::Command;
 use serde_json::Value;
 
@@ -123,7 +124,7 @@ pub fn run() {
             Some(home.join(".config/opencode/opencode.json"))
         };
 
-        if let Some(cfg_path) = opencode_cfg {
+                if let Some(cfg_path) = opencode_cfg {
             if cfg_path.exists() {
                 if ask_yes_no("Found OpenCode config. Add Reliary MCP server?", true) {
                     if inject_mcp_server(&cfg_path, "reliary") {
@@ -131,6 +132,21 @@ pub fn run() {
                         configured_agents += 1;
                     } else {
                         println!("  {} Failed to update opencode.json\n", "\x1b[31m✗\x1b[0m");
+                    }
+                } else {
+                    println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
+                }
+
+                // Proxy routing — after MCP injection, ask to mutate provider baseURLs
+                if ask_yes_no("\nRoute all OpenCode providers through Reliary proxy?\n(Your provider baseURLs will be updated to point at localhost:9090\nand proxy-routes.json will be generated automatically)", true) {
+                    let (count, routes) = inject_opencode_proxy_routes(&cfg_path);
+                    if count > 0 {
+                        ok(&format!("Updated {} OpenCode provider baseURLs", count));
+                        if write_proxy_routes(&routes) {
+                            ok("Generated ~/.reliary/proxy-routes.json");
+                        }
+                    } else {
+                        println!("  {} No providers found to update\n", "\x1b[33m-\x1b[0m");
                     }
                 } else {
                     println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
@@ -360,9 +376,15 @@ pub fn uninstall() {
         };
 
         if let Some(cfg_path) = opencode_cfg {
-            if cfg_path.exists() && remove_mcp_server(&cfg_path, "reliary") {
-                ok("Removed Reliary from OpenCode");
-                removed_agents += 1;
+            if cfg_path.exists() {
+                if remove_mcp_server(&cfg_path, "reliary") {
+                    ok("Removed Reliary from OpenCode");
+                    removed_agents += 1;
+                }
+                // Restore original provider baseURLs
+                if restore_opencode_proxy_routes() {
+                    ok("Restored OpenCode provider baseURLs");
+                }
             }
         }
     }
@@ -484,4 +506,153 @@ fn uninstall_daemon() -> bool {
     }
     
     removed
+}
+
+/// Inject proxy baseURLs for all OpenCode providers.
+/// Returns (count_of_updated_providers, routes_map).
+fn inject_opencode_proxy_routes(cfg_path: &PathBuf) -> (usize, HashMap<String, String>) {
+    let content = match std::fs::read_to_string(cfg_path) {
+        Ok(c) => c,
+        Err(_) => return (0, HashMap::new()),
+    };
+    let mut v: Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return (0, HashMap::new()),
+    };
+
+    let mut routes: HashMap<String, String> = HashMap::new();
+    let mut backups: HashMap<String, String> = HashMap::new();
+    let mut count = 0;
+
+    if let Some(obj) = v.as_object_mut() {
+        if let Some(providers) = obj.get_mut("provider").and_then(|p| p.as_object_mut()) {
+            for (name, provider) in providers.iter_mut() {
+                if let Some(options) = provider.get_mut("options").and_then(|o| o.as_object_mut()) {
+                    let original_url = match options.get("baseURL").and_then(|v| v.as_str()) {
+                        Some(u) => u.to_string(),
+                        None => continue,
+                    };
+                    // Skip if already pointing at proxy
+                    if original_url.contains("127.0.0.1:9090") || original_url.contains("localhost:9090") {
+                        continue;
+                    }
+                    let api_key = match options.get("apiKey").and_then(|v| v.as_str()) {
+                        Some(k) => k.to_string(),
+                        None => continue,
+                    };
+                    // Update baseURL to proxy
+                    options.insert("baseURL".to_string(), Value::String("http://127.0.0.1:9090/v1".to_string()));
+                    routes.insert(api_key, original_url.clone());
+                    backups.insert(name.clone(), original_url);
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    // Write updated opencode.json
+    if count > 0 {
+        // Add backup metadata to the routes map
+        let mut routes_with_backups = routes.clone();
+        if !backups.is_empty() {
+            routes_with_backups.insert("__backups".to_string(), serde_json::to_string(&backups).unwrap_or_default());
+        }
+
+        if let Ok(new_content) = serde_json::to_string_pretty(&v) {
+            atomic_write(&cfg_path.to_string_lossy(), &new_content);
+        }
+        (count, routes)
+    } else {
+        (0, routes)
+    }
+}
+
+/// Write proxy-routes.json to ~/.reliary/
+fn write_proxy_routes(routes: &HashMap<String, String>) -> bool {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return false,
+    };
+    let config_dir = home.join(".reliary");
+    let _ = std::fs::create_dir_all(&config_dir);
+
+    // Build routes JSON from api_key -> upstream_url
+    let mut routes_json = serde_json::Map::new();
+    for (key, value) in routes {
+        routes_json.insert(key.clone(), Value::String(value.clone()));
+    }
+
+    let routes_path = config_dir.join("proxy-routes.json");
+    let content = serde_json::to_string_pretty(&serde_json::Value::Object(routes_json))
+        .unwrap_or_default();
+    atomic_write(&routes_path.to_string_lossy(), &content)
+}
+
+/// Restore original OpenCode provider baseURLs from proxy-routes.json backup.
+pub fn restore_opencode_proxy_routes() -> bool {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return false,
+    };
+    let cfg_path = if cfg!(target_os = "windows") {
+        std::env::var("APPDATA").ok()
+            .map(|d| PathBuf::from(d).join("opencode").join("opencode.json"))
+    } else if cfg!(target_os = "macos") {
+        Some(home.join("Library/Application Support/opencode/opencode.json"))
+    } else {
+        Some(home.join(".config/opencode/opencode.json"))
+    };
+    let cfg_path = match cfg_path {
+        Some(p) => p,
+        None => return false,
+    };
+    if !cfg_path.exists() { return false; }
+
+    let routes_path = home.join(".reliary/proxy-routes.json");
+    let routes_content = match std::fs::read_to_string(&routes_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let routes: Value = match serde_json::from_str(&routes_content) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let backups = match routes.get("__backups").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return false,
+    };
+    let backups: HashMap<String, String> = match serde_json::from_str(backups) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+
+    let content = match std::fs::read_to_string(&cfg_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let mut v: Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    let mut restored = 0;
+    if let Some(obj) = v.as_object_mut() {
+        if let Some(providers) = obj.get_mut("provider").and_then(|p| p.as_object_mut()) {
+            for (name, provider) in providers.iter_mut() {
+                if let Some(original_url) = backups.get(name) {
+                    if let Some(options) = provider.get_mut("options").and_then(|o| o.as_object_mut()) {
+                        options.insert("baseURL".to_string(), Value::String(original_url.clone()));
+                        restored += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if restored > 0 {
+        if let Ok(new_content) = serde_json::to_string_pretty(&v) {
+            atomic_write(&cfg_path.to_string_lossy(), &new_content);
+        }
+    }
+    restored > 0
 }
