@@ -17,12 +17,13 @@ jobs:
           cargo install cargo-audit cargo-deny 2>/dev/null
       - name: Validate workflow YAML syntax
         run: |
+          pip install pyyaml -q 2>/dev/null || true
           for f in .github/workflows/*.yml; do
             python3 -c "import yaml; yaml.safe_load(open('$f'))" || { echo "FAIL: $f has invalid YAML"; exit 1; }
             echo "  OK: $f"
           done
-      - name: Build check
-        run: cargo check --release
+      - name: Build
+        run: cargo build --release
       - name: cargo test
         run: cargo test --release
       - name: clippy (deny warnings) — lib only
@@ -47,11 +48,7 @@ jobs:
       - name: Dependency graph diff (against master)
         run: |
           cargo tree -e normal --prefix none 2>/dev/null | sort > /tmp/deps_head.txt
-          if git cat-file -e origin/master:Cargo.lock 2>/dev/null; then
-            git show origin/master:Cargo.lock 2>/dev/null > /tmp/master.lock
-            echo "Dependency diff (master vs HEAD):"
-            diff /tmp/deps_master.txt /tmp/deps_head.txt 2>/dev/null | head -20 || true
-          fi
+          echo "(dependency diff requires upstream branch reference)"
       - name: cargo audit
         run: cargo audit --deny-warnings 2>&1 | tail -5 || true
       - name: cargo deny
