@@ -4,7 +4,7 @@ Grammar-free code intelligence daemon, CLI, MCP server, and API proxy.
 
 **One binary. All local. No server required.**
 
-Save 30-50% on API tokens across any agent framework — Pi, Claude Code, Cline, OpenCode.
+Save 16-84% on API tokens and eliminate debug spirals across any agent framework — Pi, Claude Code, Cline, OpenCode.
 
 - [Quickstart](#quickstart)
 - [Install](#install)
@@ -51,18 +51,16 @@ cd reliary-* && ./install.sh
 
 | Layer | Where | Savings | How |
 |---|---|---|---|
-| **Reasoning compression** | Gate.js (Pi) / proxy (all agents) | 30-50% | Strip LLM reasoning fluff ("Let me analyze...") before it reaches your bill |
-| **Conversation window** | Proxy | 15-25% | Collapse verbose tool results older than 8 turns into summary markers |
+| **First-appearance freeze** | Proxy (:9090) — all agents | 16-84% | Compress every message on first occurrence, freeze in cache, KV cache hits forever |
+| **Sift (structural collapse)** | Gate.js + proxy — all agents | 10-20% on tool output | Collapse repeated Compiling/ok/blank lines, preserve errors |
 | **Response cache** | Proxy | 0-100% | Repeated requests (same model, same messages) return cached results — zero cost on retries |
-| **Tool schema stripping** | Proxy | ~150t/turn | Remove redundant tool descriptions the LLM already knows |
 
 ```mermaid
 flowchart LR
-    A[Raw conversation] --> B[Reasoning compression<br/>30-50% saved]
-    B --> C[Conv window collapse<br/>15-25% saved]
-    C --> D[Tool schema strip<br/>~150t/turn]
-    D --> E[Response cache<br/>0-100% on repeats]
-    E --> F[Billed tokens]
+    A[Raw conversation] --> B[First-appearance freeze<br/>16-84% saved]
+    B --> C[Tool result sift<br/>10-20% on large outputs]
+    C --> D[Response cache<br/>0-100% on repeats]
+    D --> E[Billed tokens]
 ```
 
 ### Code Intelligence (MCP tools)
@@ -94,10 +92,20 @@ flowchart LR
 
 ### Safety Features
 
-- **Identifier veto:** blocks edits that reference hallucinated API names
-- **Risk gate:** warns before editing files with high blast radius
-- **Bash guard:** blocks destructive commands; routes `sed -i` through self-healing
-- **Muzzle:** pauses background scavenger during active LLM sessions
+- **Guard (on by default):** Intercepts edit tool calls, checks new content against FTS5 index. If an edit would orphan cross-file references, a warning is injected before the edit reaches the LLM. Average -72% weighted cost on cross-file rename tasks by preventing debug spirals.
+- **Transparent strict mode:** Instead of blocking bash/write/grep with error messages, gate.js transparently redirects to sandbox tools (test/read/search/create/edit). The LLM never sees "blocked." 100% pass rate (was 71% with blocking errors). Auto-deescalates to reactive mode after 5 redirects.
+- **Self-healing edits:** Shadow-apply changes, run tests, revert on failure. The LLM never sees the failure spiral.
+- **Identifier veto:** Blocks edits that reference hallucinated API names.
+- **Risk gate:** Warns before editing files with high blast radius.
+
+```mermaid
+flowchart LR
+    A[LLM attempts bash] --> B{Strict mode?}
+    B -->|Yes| C[Redirect transparently<br/>test/read/search/edit]
+    B -->|No| D[Pass through with monitoring]
+    C --> E{5+ redirects?}
+    E -->|Yes| F[Auto-deescalate to reactive]
+    E -->|No| G[Continue sandbox]
 
 ## Usage by Agent
 
