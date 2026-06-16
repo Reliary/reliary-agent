@@ -1,6 +1,6 @@
 name: Hardening
 
-on:
+"on":
   push:
     branches: [master]
   pull_request:

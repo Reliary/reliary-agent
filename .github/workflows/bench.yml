@@ -1,5 +1,5 @@
 name: Regression Benchmark
-on:
+"on":
   schedule:
     - cron: '0 6 * * 1'  # Mondays 6am
   workflow_dispatch:
