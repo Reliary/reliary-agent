@@ -3,6 +3,7 @@ use std::fs;
 use std::net::TcpStream;
 use std::time::Duration;
 use serde_json::Value;
+use std::process::Command;
 
 fn home_dir() -> Option<PathBuf> {
     dirs::home_dir()
@@ -153,19 +154,55 @@ pub fn clean(global: bool, all: bool) {
     }
 }
 
-pub fn logs() {
+pub fn logs(tail: bool, level: Option<String>) {
+    // If RELIARY_LOG_FILE is set, tail or dump the log file
+    if let Ok(log_path_str) = std::env::var("RELIARY_LOG_FILE") {
+        let log_path = std::path::Path::new(&log_path_str);
+        if log_path.exists() {
+            if tail {
+                println!("Tailing {}...", log_path_str);
+                let status = Command::new("tail")
+                    .arg("-f")
+                    .arg(&log_path_str)
+                    .status();
+                if status.is_err() {
+                    // tail not available, fall back to dump
+                    if let Ok(content) = std::fs::read_to_string(log_path) {
+                        println!("{}", content);
+                    }
+                }
+            } else {
+                if let Some(lvl) = level {
+                    if let Ok(content) = std::fs::read_to_string(log_path) {
+                        for line in content.lines() {
+                            if line.contains(&format!("[{}]", lvl)) {
+                                println!("{}", line);
+                            }
+                        }
+                    }
+                } else {
+                    if let Ok(content) = std::fs::read_to_string(log_path) {
+                        println!("{}", content);
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    // Fallback: show OS-specific log management
     println!("Daemon logs are managed by your OS service manager.");
     #[cfg(target_os = "linux")]
-    {
-        println!("Run: journalctl --user -u reliary-daemon.service -f");
-    }
+    { println!("Run: journalctl --user -u reliary-daemon.service -f"); }
     #[cfg(target_os = "macos")]
-    {
-        println!("Check standard output/error files configured for com.reliary.daemon, or use Console.app.");
-    }
+    { println!("Check standard output/error files configured for com.reliary.daemon, or use Console.app."); }
     #[cfg(target_os = "windows")]
-    {
-        println!("Daemon runs silently via VBScript on Windows. Custom logging is not currently implemented.");
+    { println!("Daemon runs silently via VBScript on Windows. Custom logging is not currently implemented."); }
+
+    if !tail {
+        println!("");
+        println!("Set RELIARY_LOG_FILE=/path/to/daemon.log to enable file logging.");
+        println!("Set RELIARY_LOG=debug|trace for verbose output.");
     }
 }
 

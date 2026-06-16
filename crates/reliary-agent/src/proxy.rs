@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, LazyLock};
 use serde_json::Value;
+use tracing::{info, warn, error};
 
 static RESPONSE_CACHE: LazyLock<Mutex<HashMap<u64, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -670,7 +671,7 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
                 if let Err(e) = std::panic::catch_unwind(|| {
                     crate::scavenger::scavenger_loop(sc);
                 }) {
-                    eprintln!("[reliary] scavenger crashed: {:?}", e);
+                    error!("scavenger crashed: {:?}", e);
                 }
                 std::thread::sleep(std::time::Duration::from_secs(120));
             }
@@ -680,7 +681,7 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
     #[cfg(unix)] {
         if let Ok(limit) = rlimit::getrlimit(rlimit::Resource::NOFILE) {
             if limit.0 < 1024 {
-                eprintln!("[reliary] WARNING: file descriptor limit is {} (recommended >= 1024)", limit.0);
+                warn!("file descriptor limit is {} (recommended >= 1024)", limit.0);
             }
         }
     }
@@ -709,9 +710,8 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
         .await
         .map_err(|e| format!("bind: {}", e))?;
 
-    eprintln!("\x1b[1m\x1b[34m  reliary-agent v{} ready\x1b[0m", env!("CARGO_PKG_VERSION"));
-    eprintln!("  \x1b[2mDaemon + proxy on \x1b[1m:{}", port);
-    eprintln!("  \x1b[2mRoutes: /health /ping /search /risk /compress /veto /muzzle /prior\x1b[0m");
+    info!(target: "reliary", "v{} ready — daemon + proxy on :{}", env!("CARGO_PKG_VERSION"), port);
+    info!(target: "reliary", "Routes: /health /ping /search /risk /compress /veto /muzzle /prior");
 
     axum::serve(listener, app)
         .await
