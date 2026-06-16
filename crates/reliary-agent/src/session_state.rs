@@ -26,7 +26,9 @@ impl SessionState {
     pub fn new(workdir: &str) -> Self {
         let base = std::path::PathBuf::from(workdir).join(".reliary");
         let chronicle_path = base.join("chronicle.sqlite");
-        std::fs::create_dir_all(&base).ok();
+        if let Err(e) = std::fs::create_dir_all(&base) {
+            eprintln!("[session] create_dir_all: {}", e);
+        }
         Self {
             scavenger_muzzled: AtomicBool::new(false),
             muzzle_time: Mutex::new(Instant::now()),

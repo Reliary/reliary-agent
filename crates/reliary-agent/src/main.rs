@@ -209,9 +209,9 @@ fn main() {
         Commands::Index { path } => {
             let db_path_str = index_db_path(path);
             if let Some(parent) = std::path::Path::new(&db_path_str).parent() {
-                std::fs::create_dir_all(parent).ok();
+                let _ = std::fs::create_dir_all(parent);
             }
-            std::fs::remove_file(&db_path_str).ok();
+            let _ = std::fs::remove_file(&db_path_str);
             match rusqlite::Connection::open(&db_path_str) {
                 Ok(db) => {
                     if reliary_search::schema::create_new_db(&db).is_err() {
@@ -232,7 +232,7 @@ fn main() {
                 Some(ref t) if !t.is_empty() && t != "---stdin---" => t.clone(),
                 _ => {
                     let mut buf = String::new();
-                    std::io::stdin().read_to_string(&mut buf).ok();
+                    let _ = std::io::stdin().read_to_string(&mut buf);
                     buf
                 }
             };
