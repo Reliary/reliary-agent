@@ -95,6 +95,7 @@ pub fn status() {
     }
 
     if let Ok(db) = rusqlite::Connection::open(&index_path) {
+        let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
         let mut file_count = 0;
         if let Ok(mut stmt) = db.prepare("SELECT COUNT(DISTINCT file_id) FROM file_phrases") {
             if let Ok(mut rows) = stmt.query([]) {

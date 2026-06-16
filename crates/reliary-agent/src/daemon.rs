@@ -60,7 +60,8 @@ fn identifier_veto(new_text: &str, file_path: &str) -> Result<(), String> {
     let libs = &LIBS;
     let mut project_ids = std::collections::HashSet::new();
     if let Ok(db) = rusqlite::Connection::open(&index_path) {
-        if reliary_search::schema::open_existing_db(&db).is_ok() {
+            let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+            if reliary_search::schema::open_existing_db(&db).is_ok() {
             for id in &identifiers {
                 let results = reliary_search::search::search_fts5(&db, id, 1);
                 if !results.is_empty() {

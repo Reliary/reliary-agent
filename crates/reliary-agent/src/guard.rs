@@ -286,7 +286,10 @@ mod tests {
             let p = proj_root.join(dir);
             if p.exists() {
                 let count: i64 = rusqlite::Connection::open(&p)
-                    .and_then(|db| db.query_row("SELECT COUNT(*) FROM file_map", [], |r| r.get(0)))
+                    .and_then(|db| {
+                        let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+                        db.query_row("SELECT COUNT(*) FROM file_map", [], |r| r.get(0))
+                    })
                     .unwrap_or(0);
                 if count > 0 {
                     return Some(p.to_string_lossy().to_string());
@@ -298,7 +301,8 @@ mod tests {
         let _ = std::fs::create_dir_all(proj_root.join(".reliary"));
         if let Ok(db) = rusqlite::Connection::open(&idx_path) {
             let _ = db.execute_batch(
-                "CREATE TABLE IF NOT EXISTS file_map (file TEXT PRIMARY KEY);
+                "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
+                 CREATE TABLE IF NOT EXISTS file_map (file TEXT PRIMARY KEY);
                  CREATE TABLE IF NOT EXISTS content_fts5(file TEXT, content TEXT);
                  DELETE FROM file_map;
                  DELETE FROM content_fts5;"
