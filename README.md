@@ -1,11 +1,17 @@
 # reliary-agent
 
+[![Crates.io](https://img.shields.io/crates/v/reliary-agent.svg)](https://crates.io/crates/reliary-agent)
+[![NPM Version](https://img.shields.io/npm/v/@reliary/agent.svg)](https://www.npmjs.com/package/@reliary/agent)
+[![CI (guardrails)](https://github.com/Reliary/reliary-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Reliary/reliary-agent/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Grammar-free code intelligence daemon, CLI, MCP server, and API proxy.
 
 **One binary. All local. No server required.**
 
 Save 16-84% on API tokens and eliminate debug spirals across any agent framework — Pi, Claude Code, Cline, OpenCode.
 
+- [Installation](#installation)
 - [Quickstart](#quickstart)
 - [Usage by Agent](#usage-by-agent)
 - [Features](#features)
@@ -14,14 +20,24 @@ Save 16-84% on API tokens and eliminate debug spirals across any agent framework
 - [Architecture](#architecture)
 - [Development](#development)
 
+## Installation
+
+Choose your preferred package manager to install `reliary-agent`:
+
+```bash
+# NPM (Recommended for Node.js developers)
+npm install -g @reliary/agent
+
+# Cargo (Recommended for Rust developers)
+cargo install reliary-agent
+
+# Homebrew (macOS / Linux)
+brew install Reliary/tap/reliary-agent
+```
+
 ## Quickstart
 
 ```bash
-# Install via NPM (Recommended)
-npx @reliary/agent init
-# Or install globally
-npm install -g @reliary/agent
-
 # Auto-detect and configure your agents (Pi, Claude, Cline, OpenCode)
 reliary-agent init
 
