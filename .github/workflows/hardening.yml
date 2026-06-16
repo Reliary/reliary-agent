@@ -35,11 +35,9 @@ jobs:
         run: cargo install cargo-audit --locked 2>/dev/null || true
       - name: cargo audit
         continue-on-error: true
-        run: cargo audit --deny warnings 2>/dev/null || echo "WARN: audit found issues"
+        run: 'cargo audit --deny warnings 2>/dev/null || echo "WARN: audit found issues"'
       - name: cargo deny
-        run: |
-          cargo install cargo-deny --locked 2>/dev/null || true
-          cargo deny check bans 2>&1 || echo "WARN: deny check failed"
+        run: 'cargo install cargo-deny --locked 2>/dev/null || true && cargo deny check bans 2>&1 || echo "WARN: deny check failed"'
 
   cargo_outdated:
     runs-on: ubuntu-latest
