@@ -379,6 +379,53 @@ async fn proxy_post(
         }
     }
 
+    // ── Anti-decision: record outcomes from tool results and annotate (on by default) ──
+    let workdir = get_state().workdir.to_string_lossy().to_string();
+    let anti_activated = !std::env::var("RELIARY_PROXY_ANTI_DISABLE").is_ok_and(|v| v == "1");
+    if anti_activated {
+        if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+            for msg in messages.iter() {
+                if let Some((file, identifier, operation, success)) =
+                    crate::antidecision::extract_tool_call(msg)
+                {
+                    crate::antidecision::record(&workdir, &file, &identifier, &operation, success);
+                }
+            }
+            for msg in messages.iter_mut() {
+                let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                let content = match msg.get("content").and_then(|c| c.as_str()).map(|s| s.to_string()) { Some(s) => s, None => continue };
+                if role != "user" && role != "tool" && role != "toolResult" { continue; }
+                let known_anti: Vec<(String, String, String)> = {
+                    let mut list = Vec::new();
+                    if let Ok(db) = crate::antidecision::ANTI_DB.lock() {
+                        if let Some(counters) = db.get(&workdir) {
+                            for key in counters.keys() {
+                                if let Some(rest) = key.strip_prefix(&format!("{}::", workdir)) {
+                                    if let Some((file, rest2)) = rest.split_once("::") {
+                                        let identifier = rest2.to_string();
+                                        if content.contains(file) && content.contains(&identifier) {
+                                            let ann = format!(" -{}", identifier);
+                                            list.push((file.to_string(), ann, identifier));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    list
+                };
+                for (file, ann, _identifier) in &known_anti {
+                    let new_ref = format!("{} /*{}/**/", file, ann);
+                    let annotated = content.replacen(file.as_str(), &new_ref, 1);
+                    if annotated != content {
+                        msg["content"] = Value::String(annotated);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     // First-appearance freeze: compress every message on first occurrence
     let (history_saved, _aggressiveness) = {
         let mut guard = get_or_create_state(&auth_key);
