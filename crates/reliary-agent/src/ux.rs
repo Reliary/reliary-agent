@@ -26,6 +26,8 @@ pub fn doctor() {
     print!("{}  Proxy Status: ", "\x1b[34m•\x1b[0m");
     if TcpStream::connect_timeout(&"127.0.0.1:9090".parse().expect("invalid port"), Duration::from_millis(500)).is_ok() {
         println!("{} Active (auth-based routing)", "\x1b[32m✓\x1b[0m");
+    } else {
+        println!("{} Inactive", "\x1b[31m✗\x1b[0m");
     }
 
     // 3. Pi Agent
@@ -83,12 +85,12 @@ pub fn doctor() {
 }
 
 pub fn status() {
-    println!("\nProject Intelligence Overview");
-    println!("---------------------------\n");
+    println!("\n{} Project Intelligence Overview {}\n", "\x1b[1m\x1b[34m", "\x1b[0m");
 
     let index_path = PathBuf::from(".reliary/index.sqlite");
     if !index_path.exists() {
-        println!("No index found in current directory. Run 'reliary-agent index .'");
+        println!("{} No index found in current directory.", "\x1b[33m-\x1b[0m");
+        println!("     {} Run 'reliary-agent index .' to build it", "\x1b[2m→\x1b[0m");
         return;
     }
 
@@ -101,7 +103,7 @@ pub fn status() {
                 }
             }
         }
-        println!("Index: {} files indexed", file_count);
+        println!("{} Index: {} files indexed", "\x1b[34m•\x1b[0m", file_count);
 
         let mut event_count = 0;
         if let Ok(mut stmt) = db.prepare("SELECT COUNT(*) FROM chronicle") {
@@ -111,9 +113,9 @@ pub fn status() {
                 }
             }
         }
-        println!("Chronicle: {} events recorded", event_count);
+        println!("{} Chronicle: {} events recorded", "\x1b[34m•\x1b[0m", event_count);
     } else {
-        println!("Failed to open index.");
+        println!("{} Failed to open index.", "\x1b[31m✗\x1b[0m");
     }
 }
 

@@ -60,25 +60,29 @@ pub fn run() {
                         let pi_cmd = if pi_bin.exists() { pi_bin.to_str().unwrap_or("pi") } else { "pi" };
                         let status = Command::new(pi_cmd)
                             .args(["install", target_path.to_str().unwrap_or("/dev/null")])
-                            .status();
+                            .output();
                         
-                        if status.is_ok() && status.unwrap_or_default().success() {
-                            ok("Installed gate.js");
-                            configured_agents += 1;
+                        if let Ok(output) = status {
+                            if output.status.success() {
+                                ok("Installed gate.js");
+                                configured_agents += 1;
+                            } else {
+                                println!("  {} Failed to run `pi install`\n", "\x1b[31m✗\x1b[0m");
+                            }
                         } else {
-                            println!("✗ Failed to run `pi install`\n");
+                            println!("  {} Failed to run `pi install`\n", "\x1b[31m✗\x1b[0m");
                         }
                     } else {
-                        println!("✗ Failed to write gate.js\n");
+                        println!("  {} Failed to write gate.js\n", "\x1b[31m✗\x1b[0m");
                     }
                 } else {
-                    println!("✗ Failed to create directory {:?}\n", target_dir);
+                    println!("  {} Failed to create directory {:?}\n", "\x1b[31m✗\x1b[0m", target_dir);
                 }
             } else {
-                println!("✗ Could not determine data directory\n");
+                println!("  {} Could not determine data directory\n", "\x1b[31m✗\x1b[0m");
             }
         } else {
-            println!("- Skipped\n");
+            println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
         }
     }
 
@@ -87,14 +91,14 @@ pub fn run() {
         let claude_cfg = home.join(".claude.json");
         if claude_cfg.exists() {
             if ask_yes_no("Found Claude Code config. Add Reliary MCP server?", true) {
-                if inject_mcp_server(&claude_cfg, "reliary") {
-                    ok("Updated ~/.claude.json");
-                    configured_agents += 1;
-                } else {
-                    println!("✗ Failed to update ~/.claude.json\n");
-                }
+                    if inject_mcp_server(&claude_cfg, "reliary") {
+                        ok("Updated ~/.claude.json");
+                        configured_agents += 1;
+                    } else {
+                        println!("  {} Failed to update ~/.claude.json\n", "\x1b[31m✗\x1b[0m");
+                    }
             } else {
-                println!("- Skipped\n");
+                println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
             }
         }
     }
@@ -116,10 +120,10 @@ pub fn run() {
                         ok("Updated opencode.json");
                         configured_agents += 1;
                     } else {
-                        println!("✗ Failed to update opencode.json\n");
+                        println!("  {} Failed to update opencode.json\n", "\x1b[31m✗\x1b[0m");
                     }
                 } else {
-                    println!("- Skipped\n");
+                    println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
                 }
             }
         }
@@ -142,10 +146,10 @@ pub fn run() {
                         ok("Updated cline MCP settings");
                         configured_agents += 1;
                     } else {
-                        println!("✗ Failed to update cline_mcp_settings.json\n");
+                        println!("  {} Failed to update cline_mcp_settings.json\n", "\x1b[31m✗\x1b[0m");
                     }
                 } else {
-                    println!("- Skipped\n");
+                    println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
                 }
             }
         }
@@ -160,13 +164,13 @@ pub fn run() {
         if install_daemon() {
             ok("Daemon installed and started");
         } else {
-            println!("✗ Failed to install daemon\n");
+            println!("  {} Failed to install daemon\n", "\x1b[31m✗\x1b[0m");
         }
     } else {
-        println!("- Skipped\n");
+        println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
     }
 
-    println!("Setup complete! Your agents are now connected.");
+    println!("\n  {} Setup complete! Your agents are now connected.", "\x1b[32m✓\x1b[0m");
 }
 
 fn inject_mcp_server(cfg_path: &PathBuf, server_name: &str) -> bool {

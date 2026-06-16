@@ -17,6 +17,7 @@ mod ux;
 mod proxy;
 mod routes;
 mod guard;
+mod antidecision;
 
 use clap::{Parser, Subcommand};
 use std::io::Read;
@@ -74,8 +75,6 @@ enum Commands {
     /// Build FTS5 index from directory
     Index { path: String },
     /// IR reasoning compression (from gate)
-    /// IR reasoning compression (from gate)
-    /// Use --gentle for assistant messages (preserves code context)
     Compress {
         text: Option<String>,
         /// Gentle mode: preserve code context, only strip reasoning fluff
@@ -136,9 +135,7 @@ enum Commands {
     },
     /// Tail daemon logs
     Logs,
-    /// Sift: pipe command output through reliary-output compression (tool-agnostic)
-    /// Usage: reliary-agent sift <command> [args...]
-    /// Example: reliary-agent sift cargo test, reliary-agent sift ls -la
+    /// Pipe command output through reliary-output compression
     Sift {
         /// Command and arguments to execute and compress
         #[arg(required = true, trailing_var_arg = true)]
@@ -221,9 +218,10 @@ fn main() {
                         eprintln!("Error creating database schema");
                         return;
                     }
+                    println!("Building index for {}...", path);
                     match reliary_search::ingest::index_directory(&db, path) {
-                        Ok(count) => println!("Indexed {} files in {}", count, path),
-                        Err(e) => eprintln!("Error: {}", e),
+                        Ok(count) => println!("✓ Indexed {} files", count),
+                        Err(e) => eprintln!("✗ Error indexing: {}", e),
                     }
                 }
                 Err(e) => eprintln!("Error creating database: {}", e),
