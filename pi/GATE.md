@@ -42,8 +42,8 @@ Test commands (`cargo test`, `pytest`) pass through.
 | Mode | Bash/write | Safety escalation | Best for |
 |---|---|---|---|
 | `fast` | Pass through | None | Efficient models, trusted envs |
-| `reactive` (default) | Monitor, escalate | Escalates on unsafe patterns | Most users |
-| `strict` | Blocked | Always on | High-variance models |
+| `reactive` | Monitor, escalate | Escalates on unsafe patterns | Lower-variance models |
+| `strict` (default) | Transparent redirect | Redirects to sandbox tools (auto-deescalates) | High-variance models |
 
 Set via `RELIARY_MODE=fast` or `reliary-agent config mode fast`.
 
