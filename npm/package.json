@@ -1,0 +1,26 @@
+{
+  "name": "@reliary/agent",
+  "version": "0.4.1",
+  "description": "Grammar-free code intelligence daemon, CLI, MCP server, and API proxy.",
+  "bin": {
+    "reliary-agent": "bin.js",
+    "rel": "bin.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Reliary/reliary-agent.git"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "mcp",
+    "proxy",
+    "llm",
+    "cli"
+  ],
+  "author": "Reliary",
+  "license": "MIT"
+}
