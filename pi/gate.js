@@ -3,26 +3,52 @@ const { existsSync, readFileSync, readdirSync, statSync, unlinkSync } = require(
 const { createHash } = require("crypto");
 
 const GATE_VERSION = "2.6.0";
+
+// ── Log levels (matching RELIARY_LOG convention) ──
+const LOG_LEVELS = { error: 1, warn: 2, info: 3, debug: 4, trace: 5 };
+let LOG_LEVEL = 3; // default: info
+try {
+  if (process.env.RELIARY_LOG && LOG_LEVELS[process.env.RELIARY_LOG] !== undefined) {
+    LOG_LEVEL = LOG_LEVELS[process.env.RELIARY_LOG];
+  } else if (process.env.RUST_LOG) {
+    const rl = process.env.RUST_LOG;
+    if (rl.includes("trace")) LOG_LEVEL = 5;
+    else if (rl.includes("debug")) LOG_LEVEL = 4;
+    else if (rl.includes("warn")) LOG_LEVEL = 2;
+    else if (rl.includes("error")) LOG_LEVEL = 1;
+  }
+} catch {}
+
 let lastLogTime = Date.now();
 
 function gateLog(level, msg) {
+  const lv = LOG_LEVELS[level];
+  if (lv === undefined || lv > LOG_LEVEL) return;
   const now = Date.now();
   const dt = ((now - lastLogTime) / 1000).toFixed(1);
   lastLogTime = now;
-  const sym = { i: "•", ok: "✓", save: "↓", block: "⛔", warn: "⚠" }[level] || "•";
+  const sym = { error: "⛔", warn: "⚠", info: "•", debug: "↓", trace: "·" }[level] || "•";
   console.error(`[gate] ${sym} ${msg} (${dt}s)`);
 }
 
-// ── Binary discovery ──
-let RELIARY_BIN = null;
-for (const c of [
-  "$HOME/src/reliary-agent/target/release/reliary-agent",
-  "$HOME/.local/bin/reliary-agent",
-  "/usr/local/bin/reliary-agent",
-  "/usr/bin/reliary-agent",
-]) { if (existsSync(c)) { RELIARY_BIN = c; break; } }
+// ── Binary discovery (env var → PATH → hardcoded paths) ──
+let RELIARY_BIN = process.env.RELIARY_BIN_PATH || null;
+if (!RELIARY_BIN) {
+  // Check PATH first
+  try {
+    const which = execFileSync("which", ["reliary-agent"], { encoding: "utf-8", timeout: 2000 });
+    if (which) RELIARY_BIN = which.trim();
+  } catch {}
+}
+if (!RELIARY_BIN) {
+  // Check hardcoded paths as fallback
+  for (const c of [
+    "/usr/local/bin/reliary-agent",
+    "/usr/bin/reliary-agent",
+  ]) { if (existsSync(c)) { RELIARY_BIN = c; break; } }
+}
 
-  console.error(`[gate] ✓ v${GATE_VERSION} — reliary: ${!!RELIARY_BIN}${RELIARY_BIN ? ` (${RELIARY_BIN.split("/").pop()})` : " none"}`);
+gateLog("info", `v${GATE_VERSION} — reliary: ${!!RELIARY_BIN}${RELIARY_BIN ? ` (${RELIARY_BIN.split("/").pop()})` : " none"}`);
 
 const CODE_EXTS = new Set([
   ".py", ".rs", ".js", ".ts", ".tsx", ".jsx",
@@ -183,7 +209,7 @@ let strictRedirects = 0;
 function redirectBash(cmd, workdir) {
   // cargo test / pytest → test tool
   if (/cargo\s+test|pytest|npm\s+test|python3?\s+-m\s+pytest/.test(cmd)) {
-    gateLog("save", "redirect bash(test)→test");
+    gateLog("debug", "redirect bash(test)→test");
     const result = runTest(workdir || process.cwd());
     const sifted = siftOutput(result);
     return { block: true, response: sifted !== result ? sifted : result };
@@ -193,7 +219,7 @@ function redirectBash(cmd, workdir) {
   const readMatch = cmd.match(/\b(?:cat|head|tail)\s+(.+)/);
   if (readMatch) {
     const file = readMatch[1].trim();
-    gateLog("save", "redirect bash(cat)→read");
+    gateLog("debug", "redirect bash(cat)→read");
     try {
       const content = readFileSync(file, "utf-8");
       const lines = content.split("\n");
@@ -212,7 +238,7 @@ function redirectBash(cmd, workdir) {
   // grep / rg → search tool
   if (/grep|rg\b|ripgrep/.test(cmd)) {
     const query = cmd.replace(/.*\bgrep\b\s*/, "").replace(/^['"]|['"]$/g, "").trim();
-    gateLog("save", "redirect bash(grep)→search");
+    gateLog("debug", "redirect bash(grep)→search");
     const result = daemonCmd(`search ${query}`) || "no results";
     return { block: true, response: `[redirected to search]\n${result}` };
   }
@@ -220,7 +246,7 @@ function redirectBash(cmd, workdir) {
   // ls / find → directory listing
   if (/^ls\b/.test(cmd)) {
     const target = cmd.replace(/^ls\s*/, "").trim() || ".";
-    gateLog("save", "redirect bash(ls)→read");
+    gateLog("debug", "redirect bash(ls)→read");
     try {
       const entries = readdirSync(target);
       const lines = entries.slice(0, 40).join("\n");
@@ -233,12 +259,12 @@ function redirectBash(cmd, workdir) {
   // sed → edit via file healing
   const sedEdit = cmd.match(/sed\s+-i\s+['"]?s\/([^/]+)\/([^/]*)\/['"]?\s*(.+)/);
   if (sedEdit) {
-    gateLog("save", "redirect bash(sed)→edit");
+    gateLog("debug", "redirect bash(sed)→edit");
     return { block: true, response: `[redirected to edit] Use the edit tool to modify ${sedEdit[3].trim()}` };
   }
 
   // Fall back to runTest (most commands are test runners)
-  gateLog("save", "redirect bash→test");
+  gateLog("debug", "redirect bash→test");
   const result = runTest(workdir || process.cwd());
   const sifted = siftOutput(result);
   return { block: true, response: sifted !== result ? sifted : result };
@@ -303,7 +329,7 @@ function handleToolResult(event) {
     try {
       const hash = createHash("sha256").update(text).digest("hex").slice(0, 16);
       if (readCache[pathHint] === hash) {
-        gateLog("save", `dedup: ${pathHint} (${text.length}c)`);
+        gateLog("debug", `dedup: ${pathHint} (${text.length}c)`);
         return { content: [{ type: "text", text: `[reliary: ${hash.slice(0,8)}] ${pathHint} — unchanged (${text.length} chars)` }] };
       }
       readCache[pathHint] = hash;
@@ -317,14 +343,14 @@ function handleToolResult(event) {
     if (text.length > 5000 && !input.offset && !input.limit) {
       const sifted = siftOutput(text);
       if (sifted !== text) {
-        gateLog("save", `read: ${(pathHint || name).split("/").pop()} ${text.length}→${sifted.length}c (${Math.round((1-sifted.length/text.length)*100)}%)`);
+        gateLog("debug", `read: ${(pathHint || name).split("/").pop()} ${text.length}→${sifted.length}c (${Math.round((1-sifted.length/text.length)*100)}%)`);
         return { content: [{ type: "text", text: sifted }] };
       }
     }
     // Medium files: structured summary (signatures + callers)
     const enriched = buildStructuredSummary(text, pathHint || name);
     if (enriched && enriched.length < text.length * 0.8) {
-      gateLog("save", `read: ${(pathHint || name).split("/").pop()} ${text.length}→${enriched.length}c (${Math.round((1-enriched.length/text.length)*100)}%)`);
+      gateLog("debug", `read: ${(pathHint || name).split("/").pop()} ${text.length}→${enriched.length}c (${Math.round((1-enriched.length/text.length)*100)}%)`);
       return { content: [{ type: "text", text: enriched }] };
     }
   }
@@ -333,7 +359,7 @@ function handleToolResult(event) {
   if (text.length > 300) {
     const compressed = siftOutput(text);
     if (compressed !== text) {
-      gateLog("save", `sift: ${name} ${text.length}→${compressed.length}c (${Math.round((1-compressed.length/text.length)*100)}%)`);
+      gateLog("debug", `sift: ${name} ${text.length}→${compressed.length}c (${Math.round((1-compressed.length/text.length)*100)}%)`);
       return { content: [{ type: "text", text: compressed }] };
     }
   }
@@ -384,7 +410,7 @@ function handleToolCall(event) {
   // Test tool: run grammar-free test runner via daemon
   if (name === "test") {
     const workdir = input.workdir || input.path || process.cwd();
-    gateLog("ok", `test: ${workdir}`);
+    gateLog("info", `test: ${workdir}`);
     const result = runTest(workdir);
     const sifted = siftOutput(result);
     return { block: true, response: sifted !== result ? sifted : result };
@@ -406,7 +432,7 @@ function handleToolCall(event) {
       let result = `[${file.split("/").pop()}] L${lineNo || "?"}: ${target?.line || func}\n`;
       if (sigs.found > 0) result += `defs: ${sigs.names.slice(0, 5).map(n => n.name).join(", ")}${sigs.found > 5 ? " (+" + (sigs.found - 5) + ")" : ""}\n`;
       result += `risk: ${daemonCmd(`risk ${file}`) || "unknown"}`;
-      gateLog("save", `explain: ${file} → ${func}`);
+      gateLog("debug", `explain: ${file} → ${func}`);
       return { block: true, response: result };
     } catch (e) {
       return { block: true, response: `ERROR: ${e.message}` };
@@ -422,7 +448,7 @@ function handleToolCall(event) {
     try {
       if (existsSync(file)) return { block: true, response: `ERROR: ${file} already exists (use edit to modify)` };
       writeFileSync(file, content, "utf-8");
-      gateLog("save", `create: ${file} (${content.length}c)`);
+      gateLog("debug", `create: ${file} (${content.length}c)`);
       return { block: true, response: `Created ${file} (${content.length} chars). Run 'test <workdir>' to verify.` };
     } catch (e) {
       return { block: true, response: `ERROR: ${e.message}` };
@@ -453,7 +479,7 @@ function handleToolCall(event) {
         const oldText = sedMatch[1];
         const newText = sedMatch[2];
         const filePath = sedMatch[3].trim();
-        gateLog("save", `heal-sed: ${filePath} "${oldText}" → "${newText}"`);
+        gateLog("debug", `heal-sed: ${filePath} "${oldText}" → "${newText}"`);
         const result = daemonCmd(`sed-apply ${filePath} ${oldText} ${newText} ${getRepoRoot() || "."}`);
         return { block: true, response: `Edit applied via healing: ${result || "no match"}` };
       }
@@ -482,7 +508,7 @@ function handleToolCall(event) {
       }
     }
     if (FEATURES.healEdit && filePath && content && existsSync(filePath)) {
-      gateLog("save", `heal-write: ${filePath}`);
+      gateLog("debug", `heal-write: ${filePath}`);
       const tmpFile = `/tmp/gate-heal-write-${Date.now()}.tmp`;
       try { writeFileSync(tmpFile, content, "utf-8"); } catch {
         return { block: true, response: `ERROR: could not write temp file` };
@@ -505,7 +531,7 @@ function handleToolCall(event) {
         safetyLevel = 1;
       } else {
         const query = (input.command || input.pattern || "").replace(/^.*?\b(\w+).*$/, "$1");
-        gateLog("save", "grep→search: " + query);
+        gateLog("debug", "grep→search: " + query);
         return { block: true, response: `[redirected to search] ` + (daemonCmd(`search ${query}`) || "no results") };
       }
     }
@@ -641,7 +667,7 @@ function applyConversationWindow(msgs) {
     .filter(Boolean)
     .join(" | ");
   if (!summary) return msgs;
-  gateLog("save", `conv-window: collapsed ${middle.length} msgs → ${summary.length}c`);
+  gateLog("debug", `conv-window: collapsed ${middle.length} msgs → ${summary.length}c`);
   return [...msgs.slice(0, keepFirst),
     { role: "system", content: `[collapsed ${middle.length} prior msgs: ${summary.slice(0, 300)}]` },
     ...msgs.slice(n - keepLast)];
@@ -656,14 +682,14 @@ function handleBeforeProviderRequest(event) {
   let turnCount = 0;
   for (const m of msgs) { if (m.role === "user") turnCount++; }
   if (turnCount > sessionTurns) {
-    gateLog("i", `turn ${turnCount} (prev: ${sessionTurns})`);
+    gateLog("info", `turn ${turnCount} (prev: ${sessionTurns})`);
     sessionTurns = turnCount;
   }
 
   // Reactive safety expiry: if expired, drop back to fast mode
   if (safetyLevel > 0 && safetyExpiresAt <= sessionTurns) {
     safetyLevel = 0;
-    gateLog("i", "safety expired — back to fast mode");
+    gateLog("info", "safety expired — back to fast mode");
   }
 
   // Turn 1: inject chronicled prior (Phase 2)
@@ -677,7 +703,7 @@ function handleBeforeProviderRequest(event) {
         const priorBlock = r.trim();
         if (priorBlock) {
           msgs.splice(1, 0, { role: "system", content: priorBlock });
-          gateLog("save", `prior: ${priorBlock.substring(0, 80)}`);
+          gateLog("debug", `prior: ${priorBlock.substring(0, 80)}`);
         }
       } catch {}
     }
@@ -685,7 +711,7 @@ function handleBeforeProviderRequest(event) {
 
   // Compress reasoning in all prior assistant messages
   const compCount = applyReasoningCompression(msgs);
-  if (compCount > 0) gateLog("save", `compressed ${compCount} blocks`);
+  if (compCount > 0) gateLog("debug", `compressed ${compCount} blocks`);
 
   msgs = applyConversationWindow(msgs);
   msgs = compressEditCalls(msgs);

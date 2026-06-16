@@ -3,6 +3,7 @@
 
 use std::path::Path;
 use rayon::prelude::*;
+use tracing::warn;
 
 /// Re-index files that have been modified since the last index build.
 /// Returns the number of files re-indexed.
@@ -95,17 +96,17 @@ fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
             d
         }
         Err(e) => {
-            eprintln!("[reindex] open {}: {}", db_path, e);
+            warn!("reindex open {}: {}", db_path, e);
             return false;
         }
     };
 
     if let Err(e) = db.execute("DELETE FROM phrases WHERE file = ?1", params![file]) {
-        eprintln!("[reindex] DELETE: {}", e);
+        warn!("reindex DELETE: {}", e);
     }
 
     if let Err(e) = db.execute_batch("BEGIN;") {
-        eprintln!("[reindex] BEGIN: {}", e);
+        warn!("reindex BEGIN: {}", e);
     } // intentional best-effort
 
     // Extract phrases and insert
@@ -117,19 +118,19 @@ fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
             "INSERT INTO phrases (file, line_from, line_to, zone, prefix_offset) VALUES (?1, 0, 0, ?2, 0)",
             params![file, zone],
         ) {
-            eprintln!("[reindex] INSERT: {}", e);
+            warn!("reindex INSERT: {}", e);
         }
         let id = db.last_insert_rowid();
         if let Err(e) = db.execute(
             "INSERT INTO phrases_fts (rowid, phrase) VALUES (?1, ?2)",
             params![id, phrase],
         ) {
-            eprintln!("[reindex] FTS INSERT: {}", e);
+            warn!("reindex FTS INSERT: {}", e);
         }
     }
 
     if let Err(e) = db.execute_batch("COMMIT;") {
-        eprintln!("[reindex] COMMIT: {}", e);
+        warn!("reindex COMMIT: {}", e);
     } // intentional best-effort
     true
 }

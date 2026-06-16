@@ -316,7 +316,7 @@ mod tests {
                 return Some(idx_path.to_string_lossy().to_string());
             }
         }
-        eprintln!("WARNING: no FTS5 index available — skipping guard tests that require one");
+        tracing::warn!("no FTS5 index available — skipping guard tests that require one");
         None
     }
 

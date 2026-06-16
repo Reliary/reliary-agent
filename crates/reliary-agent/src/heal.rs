@@ -4,6 +4,7 @@
 use std::path::Path;
 use std::fs::{self, File};
 use std::io::Write;
+use tracing::error;
 use std::process::Command;
 
 /// Atomic file write: write to tmp, sync, rename. Prevents partial write corruption.
@@ -39,7 +40,7 @@ pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), Str
     } else {
         // Revert — also atomic; log if revert fails
         if let Err(e) = atomic_write(file, &original) {
-            eprintln!("[reliary] REVERT FAILED for {}: {} — FILE MAY BE CORRUPTED", file, e);
+            error!("heal revert FAILED for {}: {} — FILE MAY BE CORRUPTED", file, e);
         }
         // Extract first test failure
         let stderr = String::from_utf8_lossy(&output.stderr);
