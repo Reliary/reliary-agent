@@ -92,7 +92,8 @@ flowchart LR
 
 ### Safety Features
 
-- **Guard (on by default):** Intercepts edit tool calls, checks new content against FTS5 index. If an edit would orphan cross-file references, a warning is injected before the edit reaches the LLM. Average -72% weighted cost on cross-file rename tasks by preventing debug spirals.
+- **Guard (on by default):** Intercepts edit tool calls, checks new content against FTS5 index. If an edit would orphan cross-file references, a warning is injected before the edit reaches the LLM. Average -72% weighted cost on cross-file rename tasks by preventing debug spirals. Disable: `RELIARY_PROXY_GUARD_DISABLE=1`.
+- **Anti-decision (on by default):** Sticky identifier failure memory persisted to chronicle (SQLite). Tracks per-file, per-identifier edit outcomes across sessions. When the LLM re-encounters an identifier with 2+ past failures, injects a Markov-surprise ` -identifier` annotation into the tool result. Survives daemon restarts. Disable: `RELIARY_PROXY_ANTI_DISABLE=1`.
 - **Transparent strict mode:** Instead of blocking bash/write/grep with error messages, gate.js transparently redirects to sandbox tools (test/read/search/create/edit). The LLM never sees "blocked." 100% pass rate (was 71% with blocking errors). Auto-deescalates to reactive mode after 5 redirects.
 - **Self-healing edits:** Shadow-apply changes, run tests, revert on failure. The LLM never sees the failure spiral.
 - **Identifier veto:** Blocks edits that reference hallucinated API names.
