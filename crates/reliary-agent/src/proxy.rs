@@ -630,7 +630,14 @@ async fn read_validated_handler(Query(params): Query<HashMap<String, String>>) -
         let full_path = std::path::Path::new(&root).join(rel_path);
         let mut content = String::new();
         if let Ok(mut f) = std::fs::File::open(&full_path) {
-            let _ = f.read_to_string(&mut content);
+            if let Ok(meta) = f.metadata() {
+                if meta.len() > 10_000_000 {
+                    return serde_json::json!({"error": "file too large"}).to_string();
+                }
+            }
+            if f.read_to_string(&mut content).is_err() {
+                return serde_json::json!({"error": "cannot read file"}).to_string();
+            }
         }
         // Try each path form
         for rp in &rel_paths {
