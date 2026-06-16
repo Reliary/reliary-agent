@@ -7,6 +7,12 @@ use serde_json::Value;
 fn ok(msg: &str) { println!("  {} {}", "\x1b[32m✓\x1b[0m", msg); }
 
 // Embed gate.js at compile time
+
+/// Atomic write: write to tmp, sync, rename. Prevents partial write corruption.
+fn atomic_write(path: &str, content: &str) -> bool {
+    let tmp = format!("{}.tmp.{}", path, std::process::id());
+    std::fs::write(&tmp, content).is_ok() && std::fs::rename(&tmp, path).is_ok()
+}
 const EMBEDDED_GATE_JS: &str = include_str!("../../../pi/gate.js");
 
 fn ask_yes_no(prompt: &str, default: bool) -> bool {
@@ -56,7 +62,11 @@ pub fn run() {
                 let target_dir = data_dir.join("reliary");
                 if fs::create_dir_all(&target_dir).is_ok() {
                     let target_path = target_dir.join("gate.js");
-                    if fs::write(&target_path, EMBEDDED_GATE_JS).is_ok() {
+                    let content = EMBEDDED_GATE_JS.as_bytes();
+                    let tmp = format!("{}.tmp.{}", target_path.display(), std::process::id());
+                    if std::fs::write(&tmp, content).is_ok()
+                        && std::fs::rename(&tmp, &target_path).is_ok()
+                    {
                         let pi_cmd = if pi_bin.exists() { pi_bin.to_str().unwrap_or("pi") } else { "pi" };
                         let status = Command::new(pi_cmd)
                             .args(["install", target_path.to_str().unwrap_or("/dev/null")])
@@ -196,7 +206,7 @@ fn inject_mcp_server(cfg_path: &PathBuf, server_name: &str) -> bool {
             }));
             
             if let Ok(new_content) = serde_json::to_string_pretty(&v) {
-                return fs::write(cfg_path, new_content).is_ok();
+                return atomic_write(&cfg_path.to_string_lossy(), &new_content);
             }
         }
     }
@@ -219,7 +229,7 @@ fn install_daemon() -> bool {
                 exe_str
             );
             
-            if fs::write(&service_path, service_content).is_err() { return false; }
+            if !atomic_write(&service_path.to_string_lossy(), &service_content) { return false; }
             
             let _ = Command::new("systemctl").args(["--user", "daemon-reload"]).status();
             let enable = Command::new("systemctl").args(["--user", "enable", "--now", "reliary-daemon.service"]).status();
@@ -255,7 +265,7 @@ fn install_daemon() -> bool {
 "#, exe_str
             );
             
-            if fs::write(&plist_path, plist_content).is_err() { return false; }
+            if !atomic_write(&plist_path.to_string_lossy(), &plist_content) { return false; }
             
             let _ = Command::new("launchctl").args(["unload", "-w", plist_path.to_str().unwrap_or("")]).status();
             let load = Command::new("launchctl").args(["load", "-w", plist_path.to_str().unwrap_or("")]).status();
@@ -275,7 +285,7 @@ fn install_daemon() -> bool {
                 exe_str
             );
             
-            if fs::write(&vbs_path, vbs_content).is_ok() {
+            if atomic_write(&vbs_path.to_string_lossy(), &vbs_content) {
                 // Try to start it right now too
                 let _ = Command::new("wscript").arg(vbs_path.to_str().unwrap_or("")).status();
                 return true;
@@ -424,7 +434,7 @@ fn remove_mcp_server(cfg_path: &PathBuf, server_name: &str) -> bool {
         if let Some(mcp_servers) = obj.get_mut("mcpServers").and_then(|m| m.as_object_mut()) {
             if mcp_servers.remove(server_name).is_some() {
                 if let Ok(new_content) = serde_json::to_string_pretty(&v) {
-                    return fs::write(cfg_path, new_content).is_ok();
+                    return atomic_write(&cfg_path.to_string_lossy(), &new_content);
                 }
             }
         }

@@ -91,12 +91,16 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
             let first_line = locations.first().map(|(l, _)| *l as u32).unwrap_or(0);
             let line_nos = pack_line_nos(first_line);
 
-            db.execute(
+            if let Err(e) = db.execute(
                 "INSERT OR REPLACE INTO phrase_occ (phrase_id, file_id, flags, line_nos) VALUES (?1, ?2, ?3, ?4)",
                 params![phrase_id, file_id, &flags[..], &line_nos[..]],
-            ).ok();
+            ) {
+                eprintln!("[ingest] phrase_occ: {}", e);
+            }
 
-            db.execute("INSERT OR IGNORE INTO phrases_fts(rowid, phrase) VALUES (?1, ?2)", params![phrase_id, phrase]).ok();
+            if let Err(e) = db.execute("INSERT OR IGNORE INTO phrases_fts(rowid, phrase) VALUES (?1, ?2)", params![phrase_id, phrase]) {
+                eprintln!("[ingest] phrases_fts: {}", e);
+            }
         }
 
         let token_len = res.phrase_locations.len() as i64;

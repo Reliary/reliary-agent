@@ -10,8 +10,8 @@ fn respond(id: u64, result: serde_json::Value) {
         "result": result,
     });
     let mut out = io::stdout();
-    writeln!(out, "{}", serde_json::to_string(&response).unwrap_or_default()).ok();
-    out.flush().ok();
+    writeln!(out, "{}", serde_json::to_string(&response).unwrap_or_default()).unwrap_or_default();
+    out.flush().unwrap_or_default();
 }
 
 fn respond_error(id: u64, code: i32, message: &str) {
@@ -21,8 +21,8 @@ fn respond_error(id: u64, code: i32, message: &str) {
         "error": { "code": code, "message": message },
     });
     let mut out = io::stdout();
-    writeln!(out, "{}", serde_json::to_string(&response).unwrap_or_default()).ok();
-    out.flush().ok();
+    writeln!(out, "{}", serde_json::to_string(&response).unwrap_or_default()).unwrap_or_default();
+    out.flush().unwrap_or_default();
 }
 
 pub fn serve_stdio() {
@@ -105,6 +105,12 @@ pub fn serve_stdio() {
             "tools/risk" => {
                 let params = msg.get("params").and_then(|v| v.as_object()).cloned().unwrap_or_default();
                 let file = params.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                if let Ok(meta) = std::fs::metadata(file) {
+                    if meta.len() > 10_000_000 {
+                        respond_error(id, -1, "file too large");
+                        return;
+                    }
+                }
                 match std::fs::read_to_string(file) {
                     Ok(content) => {
                         let risk = reliary_risk::compute_file_risk(file, &content);
@@ -118,15 +124,22 @@ pub fn serve_stdio() {
                 let file = params.get("file").and_then(|v| v.as_str()).unwrap_or("");
                 let old = params.get("old").and_then(|v| v.as_str()).unwrap_or("");
                 let new = params.get("new").and_then(|v| v.as_str()).unwrap_or("");
+                if let Ok(meta) = std::fs::metadata(file) {
+                    if meta.len() > 10_000_000 {
+                        respond_error(id, -1, "file too large");
+                        return;
+                    }
+                }
                 match std::fs::read_to_string(file) {
                     Ok(content) => {
                         let fixes = vec![(old.to_string(), new.to_string())];
                         let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
                         if count > 0 {
-                            if let Err(e) = std::fs::write(file, &modified) {
-                                respond_error(id, -1, &format!("cannot write {}: {}", file, e));
-                            } else {
+                            let tmp = format!("{}.tmp.{}", file, std::process::id());
+                            if std::fs::write(&tmp, &modified).is_ok() && std::fs::rename(&tmp, file).is_ok() {
                                 respond(id, serde_json::json!({ "success": true, "replacements": count, "file": file }));
+                            } else {
+                                respond_error(id, -1, &format!("cannot write {}: {}", file, std::io::Error::last_os_error()));
                             }
                         } else {
                             respond_error(id, -1, "no matches found");
