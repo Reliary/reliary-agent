@@ -212,6 +212,31 @@ reliary-agent --format compact search "query" .  # Minimal output for agents
 reliary-agent --format default search "query" .  # Human-readable (default)
 ```
 
+### Utilities
+
+```bash
+reliary-agent completions bash                   # Generate bash completions
+reliary-agent completions zsh                    # Generate zsh completions
+reliary-agent completions fish                   # Generate fish completions
+reliary-agent completions powershell             # Generate PowerShell completions
+reliary-agent completions elvish                 # Generate elvish completions
+reliary-agent completions bash --outdir ./dir    # Write completions to directory
+reliary-agent man                                # Generate man page (stdout)
+reliary-agent man --outdir ./man/man1            # Write man page to directory
+reliary-agent trust .                            # Quick project setup (create .reliary + index)
+reliary-agent update --check                     # Check for updates without installing
+reliary-agent update                             # Download and install latest release
+```
+
+### Verbosity & Color
+
+```bash
+reliary-agent -v search "query" .                # Verbose output
+reliary-agent -vv search "query" .               # Very verbose
+reliary-agent -q search "query" .                # Quiet (errors only)
+NO_COLOR=1 reliary-agent status                  # Disable colored output
+```
+
 ## Configuration
 
 See [CONFIG.md](./CONFIG.md) for full documentation on the cascading configuration system.
