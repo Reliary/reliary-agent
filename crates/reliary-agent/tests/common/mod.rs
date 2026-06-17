@@ -131,6 +131,15 @@ impl McpGuard {
         self.reader.read_line(&mut resp).unwrap();
         serde_json::from_str(&resp).unwrap()
     }
+
+    /// Send a raw JSON string without waiting for a response.
+    /// Used for notifications where no response is expected.
+    pub fn send_raw(&mut self, json: &str) {
+        let mut line = json.to_string();
+        if !line.ends_with('\n') { line.push('\n'); }
+        self.stdin.write_all(line.as_bytes()).unwrap();
+        self.stdin.flush().unwrap();
+    }
 }
 
 impl Drop for McpGuard {

@@ -1,0 +1,28 @@
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y nodejs ca-certificates curl && rm -rf /var/lib/apt/lists/*
+
+COPY target/release/reliary-agent /usr/local/bin/reliary-agent
+COPY scripts/test_gate_levels.js /tmp/test_gate_levels.js
+COPY scripts/e2e_daemon_test.sh /tmp/e2e_daemon_test.sh
+COPY scripts/e2e_init_test.sh /tmp/e2e_init_test.sh
+COPY pi/gate.js /tmp/gate.js
+ENV GATE_JS_PATH=/tmp/gate.js
+
+RUN chmod +x /usr/local/bin/reliary-agent /tmp/e2e_daemon_test.sh /tmp/e2e_init_test.sh
+
+RUN reliary-agent --help | grep -q "Grammar-free" && echo "✓ --help"
+RUN node /tmp/test_gate_levels.js && echo "✓ gate.js tests"
+
+RUN printf '{"jsonrpc":"2.0","id":1,"method":"initialize"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | \
+    timeout 5 reliary-agent mcp 2>/dev/null | grep -q "reliary_search" && echo "✓ MCP tools/list"
+
+RUN printf '{"jsonrpc":"2.0","id":1,"method":"initialize"}\n{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"reliary_search","arguments":{"query":"test"}}}' | \
+    timeout 5 reliary-agent mcp 2>/dev/null | grep -q "jsonrpc" && echo "✓ MCP tools/call"
+
+RUN /tmp/e2e_init_test.sh
+
+RUN reliary-agent logs --help | grep -q "tail\|level" && echo "✓ logs --help"
+RUN reliary-agent doctor 2>&1 | grep -q "Daemon\|Status" && echo "✓ doctor"
+
+CMD ["/tmp/e2e_daemon_test.sh"]
