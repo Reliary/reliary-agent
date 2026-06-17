@@ -80,4 +80,20 @@ if [ -n "$stale" ]; then
     exit 1
 fi
 
+# 9. shellcheck (lint shell scripts)
+if command -v shellcheck >/dev/null 2>&1; then
+    shellcheck scripts/*.sh 2>/dev/null || {
+        echo "WARN: shellcheck found script issues"
+    }
+    echo "  shellcheck: done"
+fi
+
+# 10. actionlint (validate workflow files)
+if command -v actionlint >/dev/null 2>&1; then
+    actionlint .github/workflows/*.yml 2>/dev/null || {
+        echo "WARN: actionlint found workflow issues"
+    }
+    echo "  actionlint: done"
+fi
+
 echo "[guard] All checks passed."
