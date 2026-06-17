@@ -59,7 +59,7 @@ Every agent gets proxy-level compression and safety simply by routing its API ca
 reliary-agent init   # installs the gate.js extension automatically
 # Or skip init and just run:
 reliary-agent serve &
-pi --model deepseek-v4-flash --print "fix it"
+pi --model gpt-4o --print "fix it"
 ```
 
 Pi gets the full stack:
@@ -85,7 +85,7 @@ Claude Code gets:
 
 ```bash
 reliary-agent serve &
-export DEEPSEEK_BASE_URL=http://localhost:9090/v1   # or your chosen provider
+export OPENAI_BASE_URL=http://localhost:9090/v1   # match your provider's *_BASE_URL convention
 ```
 
 Both get:
