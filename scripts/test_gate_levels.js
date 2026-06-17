@@ -133,7 +133,8 @@ console.log("\n4. Gate.js module loading");
 try {
   // Can't actually load gate.js as a module (requires Pi hooks)
   // But verify it's valid JavaScript by parsing it
-  const gateJs = require("fs").readFileSync(require("path").join(__dirname, "../pi/gate.js"), "utf-8");
+  const gateJsPath = process.env.GATE_JS_PATH || require("path").join(__dirname, "../pi/gate.js");
+  const gateJs = require("fs").readFileSync(gateJsPath, "utf-8");
   // Just check it doesn't crash on syntax parsing
   new (require("vm").Script)(gateJs);
   assert("gate.js is valid JavaScript", true, "");

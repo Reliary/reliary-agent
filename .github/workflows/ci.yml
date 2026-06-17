@@ -101,7 +101,7 @@ jobs:
         run: |
           count=$(cargo test 2>&1 | grep "^test result:" | grep -oP '\d+(?= passed)' | python3 -c "import sys; print(sum(int(l) for l in sys.stdin if l.strip()))")
           echo "Test count: $count"
-          [ "$count" -ge 96 ] || echo "WARN: test count below 96 ($count)"
+          [ "$count" -ge 120 ] || echo "WARN: test count below 120 ($count)"
       - name: Binary size check
         run: |
           ls -lh target/release/reliary-agent 2>/dev/null || echo "Binary not built"
