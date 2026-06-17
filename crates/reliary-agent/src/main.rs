@@ -311,7 +311,8 @@ fn main() {
             let _ = open_index_or_prompt(".");
             let content = std::fs::read_to_string(file).unwrap_or_default();
             let risk_result = reliary_risk::compute_file_risk(file, &content);
-            println!("{:?}", risk_result);
+            let risk_fmt = match fmt { reliary_core::OutputFormat::Json => "json", _ => "default" };
+            ux::format_risk(file, &format!("{:?}", risk_result), risk_fmt);
         }
         Commands::Start => {
             #[cfg(unix)]
@@ -376,10 +377,10 @@ fn main() {
                 .unwrap_or_else(|e| error!("Server error: {}", e));
         }
         Commands::Doctor { fix } => {
-            ux::doctor(*fix);
+            ux::doctor(*fix, match fmt { reliary_core::OutputFormat::Json => "json", _ => "default" });
         }
         Commands::Status => {
-            ux::status();
+            ux::status(match fmt { reliary_core::OutputFormat::Json => "json", _ => "default" });
         }
         Commands::Clean { global, all } => {
             if !*global && !*all {
@@ -463,7 +464,37 @@ fn main() {
             init::uninstall();
         }
         Commands::Dead { path } => {
-            println!("Dead code analysis for: {}", path);
+            let dead_fmt = match fmt { reliary_core::OutputFormat::Json => "json", _ => "default" };
+            let config = reliary_dead::DeadConfig::default();
+            let mut files = Vec::new();
+            let path_buf = std::path::PathBuf::from(path);
+            if path_buf.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&path_buf) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if p.is_file() {
+                            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                            if matches!(ext, "rs" | "py" | "js" | "ts" | "go" | "java" | "rb" | "c" | "cpp" | "h" | "hpp" | "sh" | "toml" | "yaml" | "yml" | "json" | "md") {
+                                if let Ok(content) = std::fs::read_to_string(&p) {
+                                    let display = p.strip_prefix(std::env::current_dir().unwrap_or_default()).unwrap_or(&p);
+                                    files.push((display.to_string_lossy().to_string(), content));
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if path_buf.is_file() {
+                if let Ok(content) = std::fs::read_to_string(&path_buf) {
+                    let display = path_buf.strip_prefix(std::env::current_dir().unwrap_or_default()).unwrap_or(&path_buf);
+                    files.push((display.to_string_lossy().to_string(), content));
+                }
+            }
+            let candidates = reliary_dead::analyze_files(&files, &config);
+            let entries: Vec<String> = candidates.iter().map(|c| {
+                let conf = match c.confidence { reliary_dead::Confidence::High => "HIGH", reliary_dead::Confidence::Medium => "MED", reliary_dead::Confidence::Low => "LOW" };
+                format!("{}:{} [{}] {}", c.file, c.line, conf, c.reason)
+            }).collect();
+            ux::format_dead(path, &entries, dead_fmt);
         }
         Commands::Veto { file } => {
             let mut buf = String::new();

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::fs;
 use std::net::TcpStream;
 use std::time::Duration;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::process::Command;
 
 fn home_dir() -> Option<PathBuf> {
@@ -21,7 +21,6 @@ fn daemon_alive() -> bool {
 }
 
 fn has_upstream() -> bool {
-    // Check proxy-routes.json
     if let Some(home) = home_dir() {
         let routes_file = home.join(".reliary/proxy-routes.json");
         if routes_file.exists() {
@@ -32,7 +31,6 @@ fn has_upstream() -> bool {
             }
         }
     }
-    // Check RELIARY_UPSTREAM_URL
     if let Ok(upstream) = std::env::var("RELIARY_UPSTREAM_URL") {
         if !upstream.is_empty() {
             return true;
@@ -55,56 +53,32 @@ fn proxy_routes_count() -> usize {
     0
 }
 
-pub fn doctor(fix: bool) {
-    println!("\n{}| Reliary Doctor |{}\n", color(), reset());
-    let mut all_good = true;
-    let mut needs_daemon = false;
-    let mut needs_index = false;
+struct DoctorCheck {
+    name: &'static str,
+    ok: bool,
+    detail: String,
+    fixable: bool,
+}
 
-    // 1. Daemon
-    print!("{}•{} Daemon: ", blue(), reset());
-    if daemon_alive() {
-        println!("{}✓{} Active on :9090", color(), reset());
-    } else {
-        println!("{}✗{} Stopped", red(), reset());
-        needs_daemon = true;
-        all_good = false;
-    }
+fn doctor_checks() -> Vec<DoctorCheck> {
+    let mut checks = Vec::new();
+    let daemon_ok = daemon_alive();
+    checks.push(DoctorCheck { name: "daemon", ok: daemon_ok, detail: if daemon_ok { "Active on :9090".into() } else { "Stopped".into() }, fixable: true });
 
-    // 2. Proxy upstream routing
-    print!("{}•{} Upstream: ", blue(), reset());
-    if has_upstream() {
+    let upstream_ok = has_upstream();
+    let upstream_detail = if upstream_ok {
         let count = proxy_routes_count();
-        if count > 0 {
-            println!("{}✓{} {} routes in proxy-routes.json", color(), reset(), count);
-        } else {
-            println!("{}✓{} RELIARY_UPSTREAM_URL set", color(), reset());
-        }
-    } else {
-        println!("{}⚠{} No upstream configured", yellow(), reset());
-        println!("  {} Set RELIARY_UPSTREAM_URL or run 'init' for auto-discovery{}", dim(), reset());
-    }
+        if count > 0 { format!("{} routes", count) } else { "RELIARY_UPSTREAM_URL set".into() }
+    } else { "No upstream configured".into() };
+    checks.push(DoctorCheck { name: "upstream", ok: upstream_ok, detail: upstream_detail, fixable: false });
 
-    // 3. Pi Agent
-    print!("{}•{} Pi: ", blue(), reset());
     let pi_gate = home_dir().map(|h| h.join(".local/share/reliary/gate.js")).unwrap_or_default();
-    if pi_gate.exists() {
-        println!("{}✓{} gate.js installed", color(), reset());
-    } else {
-        println!("{}-{} gate.js not found (optional)", yellow(), reset());
-    }
+    checks.push(DoctorCheck { name: "pi", ok: pi_gate.exists(), detail: if pi_gate.exists() { "gate.js installed".into() } else { "not found (optional)".into() }, fixable: false });
 
-    // 4. Claude Code MCP
-    print!("{}•{} Claude: ", blue(), reset());
     let claude_cfg = home_dir().map(|h| h.join(".claude.json")).unwrap_or_default();
-    if has_mcp_server(&claude_cfg, "reliary") {
-        println!("{}✓{} Wired", color(), reset());
-    } else {
-        println!("{}-{} Not wired", yellow(), reset());
-    }
+    let claude_ok = has_mcp_server(&claude_cfg, "reliary");
+    checks.push(DoctorCheck { name: "claude", ok: claude_ok, detail: if claude_ok { "Wired".into() } else { "Not wired".into() }, fixable: false });
 
-    // 5. OpenCode MCP
-    print!("{}•{} OpenCode: ", blue(), reset());
     let opencode_cfg = if cfg!(target_os = "windows") {
         dirs::config_dir().map(|d| d.join("opencode").join("opencode.json"))
     } else if cfg!(target_os = "macos") {
@@ -112,30 +86,57 @@ pub fn doctor(fix: bool) {
     } else {
         home_dir().map(|h| h.join(".config/opencode/opencode.json"))
     }.unwrap_or_default();
-    if has_mcp_server(&opencode_cfg, "reliary") {
-        println!("{}✓{} Wired", color(), reset());
-    } else {
-        println!("{}-{} Not wired", yellow(), reset());
-    }
+    let opencode_ok = has_mcp_server(&opencode_cfg, "reliary");
+    checks.push(DoctorCheck { name: "opencode", ok: opencode_ok, detail: if opencode_ok { "Wired".into() } else { "Not wired".into() }, fixable: false });
 
-    // 6. Project Health
-    print!("{}•{} Index: ", blue(), reset());
     let index_path = PathBuf::from(".reliary/index.sqlite");
-    if index_path.exists() {
-        println!("{}✓{} Index exists", color(), reset());
-    } else {
-        println!("{}-{} No index found{}", yellow(), reset(), "");
-        needs_index = true;
+    checks.push(DoctorCheck { name: "index", ok: index_path.exists(), detail: if index_path.exists() { "Index exists".into() } else { "No index found".into() }, fixable: true });
+
+    let mode = crate::config::resolve_mode(Some("."));
+    checks.push(DoctorCheck { name: "mode", ok: true, detail: mode.as_str().into(), fixable: false });
+
+    checks
+}
+
+fn doctor_json(checks: &[DoctorCheck]) -> Value {
+    let all_good = checks.iter().all(|c| c.ok);
+    json!({
+        "ready": all_good,
+        "checks": checks.iter().map(|c| json!({
+            "name": c.name,
+            "ok": c.ok,
+            "detail": c.detail,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+pub fn doctor(fix: bool, format: &str) {
+    let checks = doctor_checks();
+
+    if format == "json" {
+        println!("{}", serde_json::to_string_pretty(&doctor_json(&checks)).unwrap());
+        return;
     }
 
-    // 7. Mode
-    print!("{}•{} Mode: ", blue(), reset());
-    let mode = crate::config::resolve_mode(Some("."));
-    println!("{}", mode.as_str());
+    println!("\n{}| Reliary Doctor |{}\n", color(), reset());
 
-    // Auto-fix
-    if fix {
-        println!("");
+    let mut needs_daemon = false;
+    let mut needs_index = false;
+
+    for c in &checks {
+        let icon = if c.ok { format!("{}✓{}", color(), reset()) } else { format!("{}✗{}", red(), reset()) };
+        println!("  {} {} {}{}", icon, c.name, dim(), c.detail);
+        if !c.ok && c.fixable {
+            match c.name {
+                "daemon" => needs_daemon = true,
+                "index" => needs_index = true,
+                _ => {}
+            }
+        }
+    }
+
+    if fix && (needs_daemon || needs_index) {
+        println!();
         if needs_daemon {
             print!("  {} Starting daemon... ", dim());
             let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("reliary-agent"));
@@ -147,108 +148,116 @@ pub fn doctor(fix: bool) {
             match cmd.spawn() {
                 Ok(_child) => {
                     std::thread::sleep(Duration::from_secs(1));
-                    if daemon_alive() {
-                        println!("{} started!", color());
-                    } else {
-                        println!("{} may need manual start", yellow());
-                    }
+                    if daemon_alive() { println!("{}started!", color()); } else { println!("{}may need manual start", yellow()); }
                 }
-                Err(e) => {
-                    println!("{} failed: {}", red(), e);
-                }
+                Err(e) => println!("{}failed: {}", red(), e),
             }
         }
         if needs_index {
             print!("  {} Building index... ", dim());
             let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("reliary-agent"));
             let status = Command::new(exe).arg("index").arg(".").stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit()).status();
-            if status.map_or(false, |s| s.success()) {
-                println!("{} done", color());
-            } else {
-                println!("{} failed", red());
-            }
+            if status.map_or(false, |s| s.success()) { println!("{}done", color()); } else { println!("{}failed", red()); }
         }
-        // Re-check after fixes
-        if daemon_alive() && !needs_daemon {
-            println!("  {} All good.", color());
-        } else if needs_daemon && daemon_alive() {
-            println!("  {} All good after fixes.", color());
-        }
-    } else if !all_good {
-        println!("\n  {} Tip: run '{} {}' to fix issues automatically.",
-            dim(), "reliary-agent", "doctor --fix");
     }
 
+    let all_good = checks.iter().all(|c| c.ok);
     if all_good {
         println!("\n{}✓{} System ready.", color(), reset());
+    } else if !fix {
+        println!("\n  {}Tip: run 'reliary-agent doctor --fix' to fix issues automatically.{}", dim(), reset());
     } else {
         println!("\n{}⚠{} Some checks failed.", yellow(), reset());
     }
 }
 
-pub fn status() {
-    println!("\n{}| Reliary Agent Status |{}\n", color(), reset());
+struct StatusData {
+    proxy_running: bool,
+    mode: String,
+    routes: usize,
+    index_files: i64,
+    chronicle_events: i64,
+    index_exists: bool,
+}
 
-    // 1. Daemon / Proxy
-    print!("{}•{} Proxy: ", blue(), reset());
-    if daemon_alive() {
-        println!("{}✓{} Running on :9090", color(), reset());
-    } else {
-        println!("{}✗{} Stopped", red(), reset());
-        if cfg!(unix) {
-            println!("  {}→ Run 'reliary-agent start' to run in background{}", dim(), reset());
+fn status_data() -> StatusData {
+    let index_path = PathBuf::from(".reliary/index.sqlite");
+    let mut index_files = 0i64;
+    let mut chronicle_events = 0i64;
+    let index_exists = index_path.exists();
+
+    if index_exists {
+        if let Ok(db) = rusqlite::Connection::open(&index_path) {
+            let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+            if let Ok(mut stmt) = db.prepare("SELECT COUNT(DISTINCT file_id) FROM file_phrases") {
+                if let Ok(mut rows) = stmt.query([]) {
+                    if let Ok(Some(row)) = rows.next() { index_files = row.get(0).unwrap_or(0); }
+                }
+            }
+            if let Ok(mut stmt) = db.prepare("SELECT COUNT(*) FROM chronicle") {
+                if let Ok(mut rows) = stmt.query([]) {
+                    if let Ok(Some(row)) = rows.next() { chronicle_events = row.get(0).unwrap_or(0); }
+                }
+            }
         }
     }
 
-    // 2. Gate Mode
-    print!("{}•{} Mode: ", blue(), reset());
-    let mode = crate::config::resolve_mode(Some("."));
-    println!("{}", mode.as_str());
+    StatusData {
+        proxy_running: daemon_alive(),
+        mode: crate::config::resolve_mode(Some(".")).as_str().to_string(),
+        routes: proxy_routes_count(),
+        index_files,
+        chronicle_events,
+        index_exists,
+    }
+}
 
-    // 3. Upstream routing
-    print!("{}•{} Routes: ", blue(), reset());
-    let count = proxy_routes_count();
-    if count > 0 {
-        println!("{} routes in proxy-routes.json", count);
+fn status_json(d: &StatusData) -> Value {
+    json!({
+        "proxy": { "running": d.proxy_running, "port": 9090 },
+        "mode": d.mode,
+        "routes": d.routes,
+        "index": { "exists": d.index_exists, "files": d.index_files },
+        "chronicle": { "events": d.chronicle_events },
+    })
+}
+
+pub fn status(format: &str) {
+    let d = status_data();
+
+    if format == "json" {
+        println!("{}", serde_json::to_string_pretty(&status_json(&d)).unwrap());
+        return;
+    }
+
+    println!("\n{}| Reliary Agent Status |{}\n", color(), reset());
+
+    print!("{}•{} Proxy: ", blue(), reset());
+    if d.proxy_running {
+        println!("{}✓{} Running on :9090", color(), reset());
+    } else {
+        println!("{}✗{} Stopped", red(), reset());
+        if cfg!(unix) { println!("  {}→ Run 'reliary-agent start' to run in background{}", dim(), reset()); }
+    }
+
+    println!("  {}•{} Mode: {}{}", blue(), reset(), d.mode, "");
+
+    print!("  {}•{} Routes: ", blue(), reset());
+    if d.routes > 0 {
+        println!("{} routes in proxy-routes.json", d.routes);
     } else if std::env::var("RELIARY_UPSTREAM_URL").ok().is_some() {
         println!("RELIARY_UPSTREAM_URL set");
     } else {
         println!("{}-{} None (proxy won't route)", yellow(), reset());
-        println!("  {}→ Set RELIARY_UPSTREAM_URL or run 'init'{}", dim(), reset());
+        println!("    {}→ Set RELIARY_UPSTREAM_URL or run 'init'{}", dim(), reset());
     }
 
-    // 4. Project Intelligence
-    print!("{}•{} Index: ", blue(), reset());
-    let index_path = PathBuf::from(".reliary/index.sqlite");
-    if !index_path.exists() {
-        println!("{}-{} No index found{}", yellow(), reset(), "");
-        println!("  {}→ Run 'reliary-agent index .' to build it{}", dim(), reset());
+    if d.index_exists {
+        println!("  {}•{} Index: {} files indexed", blue(), reset(), d.index_files);
+        println!("  {}•{} Memory: {} chronicle events", blue(), reset(), d.chronicle_events);
     } else {
-        if let Ok(db) = rusqlite::Connection::open(&index_path) {
-            let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
-            let mut file_count = 0;
-            if let Ok(mut stmt) = db.prepare("SELECT COUNT(DISTINCT file_id) FROM file_phrases") {
-                if let Ok(mut rows) = stmt.query([]) {
-                    if let Ok(Some(row)) = rows.next() {
-                        file_count = row.get::<_, i64>(0).unwrap_or(0);
-                    }
-                }
-            }
-            println!("{} files indexed", file_count);
-
-            print!("{}•{} Memory: ", blue(), reset());
-            let mut event_count = 0;
-            if let Ok(mut stmt) = db.prepare("SELECT COUNT(*) FROM chronicle") {
-                if let Ok(mut rows) = stmt.query([]) {
-                    if let Ok(Some(row)) = rows.next() {
-                        event_count = row.get::<_, i64>(0).unwrap_or(0);
-                    }
-                }
-            }
-            println!("{} chronicle events", event_count);
-        } else {
-            println!("{}✗{} Failed to open index", red(), reset());
-        }
+        println!("  {}•{} Index: {}-{} No index found{}", blue(), reset(), yellow(), reset(), "");
+        println!("    {}→ Run 'reliary-agent index .' to build it{}", dim(), reset());
     }
 }
 
@@ -291,14 +300,9 @@ pub fn logs(tail: bool, level: Option<String>) {
         if log_path.exists() {
             if tail {
                 println!("{} Tailing {}...{}", blue(), log_path_str, reset());
-                let status = Command::new("tail")
-                    .arg("-f")
-                    .arg(&log_path_str)
-                    .status();
+                let status = Command::new("tail").arg("-f").arg(&log_path_str).status();
                 if status.is_err() {
-                    if let Ok(content) = std::fs::read_to_string(log_path) {
-                        println!("{}", content);
-                    }
+                    if let Ok(content) = std::fs::read_to_string(log_path) { println!("{}", content); }
                 }
             } else if let Some(lvl) = level {
                 let lower_lvl = lvl.to_lowercase();
@@ -306,15 +310,11 @@ pub fn logs(tail: bool, level: Option<String>) {
                     for line in content.lines() {
                         let upper = format!(" [{}] ", lvl.to_uppercase());
                         let lower = format!("[{}]", lower_lvl);
-                        if line.contains(&upper) || line.contains(&lower) {
-                            println!("{}", line);
-                        }
+                        if line.contains(&upper) || line.contains(&lower) { println!("{}", line); }
                     }
                 }
             } else {
-                if let Ok(content) = std::fs::read_to_string(log_path) {
-                    println!("{}", content);
-                }
+                if let Ok(content) = std::fs::read_to_string(log_path) { println!("{}", content); }
             }
             return;
         } else {
@@ -327,12 +327,8 @@ pub fn logs(tail: bool, level: Option<String>) {
     {
         let mut cmd = Command::new("journalctl");
         cmd.args(["--user", "-u", "reliary-daemon.service", "--no-pager"]);
-        if let Some(lvl) = level {
-            cmd.arg(format!("-p{}", lvl.to_uppercase()));
-        }
-        if tail {
-            cmd.arg("-f");
-        }
+        if let Some(lvl) = level { cmd.arg(format!("-p{}", lvl.to_uppercase())); }
+        if tail { cmd.arg("-f"); }
         let status = cmd.status();
         if status.is_err() || status.map_or(true, |s| !s.success()) {
             eprintln!("{} Could not read daemon logs.{}", yellow(), reset());
@@ -350,32 +346,21 @@ pub fn logs(tail: bool, level: Option<String>) {
                 if tail {
                     println!("{} Tailing {}...{}", blue(), path_str, reset());
                     let status = Command::new("tail").arg("-f").arg(&path_str).status();
-                    if status.is_err() {
-                        if let Ok(content) = std::fs::read_to_string(&path_str) {
-                            println!("{}", content);
-                        }
-                    }
+                    if status.is_err() { if let Ok(content) = std::fs::read_to_string(&path_str) { println!("{}", content); } }
                 } else if let Some(lvl) = level {
                     let lvl_upper = lvl.to_uppercase();
                     if let Ok(content) = std::fs::read_to_string(&path_str) {
                         for line in content.lines() {
-                            if line.contains(&format!("[{}]", lvl_upper))
-                                || line.contains(&format!("[{}]", lvl.to_lowercase()))
-                            {
-                                println!("{}", line);
-                            }
+                            if line.contains(&format!("[{}]", lvl_upper)) || line.contains(&format!("[{}]", lvl.to_lowercase())) { println!("{}", line); }
                         }
                     }
                 } else {
-                    if let Ok(content) = std::fs::read_to_string(&path_str) {
-                        println!("{}", content);
-                    }
+                    if let Ok(content) = std::fs::read_to_string(&path_str) { println!("{}", content); }
                 }
                 return;
             }
         }
         eprintln!("{} No daemon log file found.{}", yellow(), reset());
-        eprintln!("  {} Start the daemon: 'reliary-agent serve &'{}", dim(), reset());
         return;
     }
 
@@ -389,7 +374,6 @@ pub fn logs(tail: bool, level: Option<String>) {
                         let name = entry.file_name();
                         let name_str = name.to_string_lossy();
                         if name_str.ends_with(".log") {
-                            let path_str = entry.path().to_string_lossy().to_string();
                             let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
                             println!("{} {}:{}", dim(), name_str, reset());
                             println!("{}", if tail { &content[content.len().saturating_sub(500)..] } else { &content });
@@ -406,6 +390,53 @@ pub fn logs(tail: bool, level: Option<String>) {
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         eprintln!("{} 'logs' is not supported on this platform.{}", yellow(), reset());
+    }
+}
+
+pub fn format_risk(path: &str, risk: &str, format: &str) {
+    if format == "json" {
+        let risk_lower = risk.to_lowercase();
+        let (level, reason) = if risk_lower.contains("high") {
+            ("high", "High blast radius — many callers or critical path")
+        } else if risk_lower.contains("medium") {
+            ("medium", "Moderate blast radius — some callers affected")
+        } else {
+            ("low", "Low risk: small file or few callers")
+        };
+        println!("{}", json!({
+            "file": path,
+            "risk": level,
+            "reason": reason,
+        }));
+    } else {
+        let risk_lower = risk.to_lowercase();
+        let icon = if risk_lower.contains("high") {
+            format!("{}⚠{}", red(), reset())
+        } else if risk_lower.contains("medium") {
+            format!("{}⚡{}", yellow(), reset())
+        } else {
+            format!("{}✓{}", color(), reset())
+        };
+        println!("  {} {} {}", icon, path, &risk[..60.min(risk.len())]);
+    }
+}
+
+pub fn format_dead(path: &str, entries: &[String], format: &str) {
+    if format == "json" {
+        println!("{}", json!({
+            "path": path,
+            "candidates": entries,
+        }));
+    } else {
+        println!("\n{}| Dead Code: {} |{}\n", color(), path, reset());
+        if entries.is_empty() {
+            println!("  {}No dead code candidates found.{}", dim(), reset());
+        } else {
+            for entry in entries {
+                println!("  {}•{} {}", yellow(), reset(), entry);
+            }
+            println!("\n  {}Found {} candidate(s){}", dim(), entries.len(), reset());
+        }
     }
 }
 
