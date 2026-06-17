@@ -56,14 +56,14 @@ Every agent gets proxy-level compression and safety simply by routing its API ca
 ### Pi (gate.js extension)
 
 ```bash
-reliary-agent init   # installs the gate.js extension automatically
-# Or skip init and just run:
-reliary-agent serve &
+reliary-agent init       # installs gate.js, prompts for proxy routing
+reliary-agent serve &    # starts daemon + proxy on :9090
+export OPENAI_BASE_URL=http://localhost:9090/v1   # route API calls through proxy
 pi --model gpt-4o --print "fix it"
 ```
 
 Pi gets the full stack:
-- ✅ Proxy compression + edit safety (via `:9090` — routed automatically)
+- ✅ Proxy compression + edit safety (via `*_BASE_URL` pointing at localhost:9090)
 - ✅ Gate.js extension (compresses all tool outputs)
 - ✅ Transparent strict mode (bash/write/grep are safely redirected to sandbox tools without errors)
 - ✅ Self-healing edits (tests run before the LLM sees failures)
@@ -108,7 +108,7 @@ Both get:
 
 ### Token Compression (API Proxy)
 
-The `serve` command starts an OpenAI-compatible proxy on `localhost:9090`. Point your agent's API URL here to get instant conversation compression. The proxy automatically detects whether you are using OpenAI, Anthropic, or DeepSeek from your API key and routes accordingly.
+The `serve` command starts an OpenAI-compatible proxy on `localhost:9090`. Point your agent's `*_BASE_URL` here to route all API calls through the proxy. The proxy discovers your upstream from your agent's provider config, or you can set `RELIARY_UPSTREAM_URL` as a global fallback.
 
 | Mechanism | Savings | How it works |
 |---|---|---|
@@ -208,7 +208,7 @@ See [CONFIG.md](./CONFIG.md) for full documentation on the cascading configurati
 | `RELIARY_MODE=reactive` | Safety escalates on unsafe behavior |
 | `RELIARY_MODE=strict` | Full sandbox — transparently redirects risky commands (default) |
 | `RELIARY_FEATURES=+editMerge,-taskTargets` | Toggle individual features |
-| `RELIARY_UPSTREAM_URL=https://api.openai.com/v1` | Override API upstream manually |
+| `RELIARY_UPSTREAM_URL=https://api.openai.com/v1` | Default upstream for unknown API keys (replace with your provider's URL) |
 | `RELIARY_PROXY_GUARD_DISABLE=1` | Disable cross-file edit safety (on by default) |
 | `RELIARY_PROXY_ANTI_DISABLE=1` | Disable Anti-decision memory (on by default) |
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.5.3
+
+### Documentation fixes
+- **Pi agent setup:** README now includes the `export OPENAI_BASE_URL=...` step (was missing — Pi would bypass the proxy). Removed false "routed automatically" claim.
+- **Stale provider detection text:** Replaced with accurate description of upstream discovery via agent configs or `RELIARY_UPSTREAM_URL`.
+- **Env var table:** Clarified `RELIARY_UPSTREAM_URL` example is just an example, replace with your provider's URL.
+
 ## v0.5.2
 
 ### Provider-agnostic (June 2026)
