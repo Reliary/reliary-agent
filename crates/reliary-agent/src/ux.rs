@@ -4,6 +4,21 @@ use std::net::TcpStream;
 use std::time::Duration;
 use serde_json::{json, Value};
 use std::process::Command;
+use std::io::Write;
+
+/// Show a spinner while a closure runs. Clears the line when done.
+/// Uses a helper that prints a message, runs the closure, then clears.
+/// Avoids threading (rusqlite Connection is !Sync).
+pub fn with_spinner<F, T>(msg: &str, f: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    eprint!("{} ... ", msg);
+    let _ = std::io::stderr().flush();
+    let result = f();
+    eprint!("\r\x1b[K");
+    result
+}
 
 fn home_dir() -> Option<PathBuf> {
     dirs::home_dir()
@@ -449,4 +464,21 @@ fn has_mcp_server(cfg_path: &PathBuf, server_name: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_with_spinner_runs_closure() {
+        let result = with_spinner("testing", || 42);
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_with_spinner_no_side_effects() {
+        let x = with_spinner("testing", || "hello world".to_string());
+        assert_eq!(x, "hello world");
+    }
 }

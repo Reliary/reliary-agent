@@ -48,8 +48,18 @@ fn get_data_dir() -> Option<PathBuf> {
 }
 
 pub fn run() {
-    println!("\nReliary Setup");
-    println!("-------------");
+    let bold = "\x1b[1m";
+    let dim = "\x1b[2m";
+    let reset = "\x1b[0m";
+
+    println!();
+    println!("{}  ╭────────────────────────────────────────────╮{}", bold, reset);
+    println!("{}  │       Reliary Agent Setup Wizard           │{}", bold, reset);
+    println!("{}  ╰────────────────────────────────────────────╯{}", bold, reset);
+    println!();
+    println!("{}  This will configure reliary-agent for your code agents.{}", dim, reset);
+    println!("{}  Each integration is optional -- say n to skip any.{}", dim, reset);
+    println!();
 
     let mut configured_agents = 0;
 
@@ -207,7 +217,7 @@ pub fn run() {
     }
 
     if configured_agents == 0 {
-        println!("No agents were configured.\n");
+        println!("  {} No agents were configured. Agents can still use the proxy manually.", dim);
     }
 
     // 5. Daemon
@@ -221,13 +231,18 @@ pub fn run() {
         println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
     }
 
-    // ── Next steps ──
-    println!("\n{}", "\x1b[1m  ── Next steps ──\x1b[0m");
-    println!("  1. Start the proxy (if not running):  reliary-agent serve");
-    println!("  2. Check health:                     reliary-agent doctor");
-    println!("  3. View logs:                        reliary-agent logs --tail");
-    println!("     Verbose:                          RELIARY_LOG=debug reliary-agent serve");
-    println!("  4. Open your agent and start working.\n");
+    // ── Summary ──
+    let dim = "\x1b[2m";
+    let reset = "\x1b[0m";
+    println!();
+    println!("{}  ╭────────────────────────────────────────────╮{}", bold, reset);
+    if configured_agents > 0 {
+        println!("{}  │   {} agent(s) configured.       ✓          │{}", dim, configured_agents, reset);
+    }
+    println!("{}  │   Next: {}reliary-agent doctor{}              │{}", dim, bold, dim, reset);
+    println!("{}  │   To start the proxy: {}reliary-agent serve{}   │{}", dim, bold, dim, reset);
+    println!("{}  ╰────────────────────────────────────────────╯{}", bold, reset);
+    println!();
 }
 
 fn inject_mcp_server(cfg_path: &PathBuf, server_name: &str) -> bool {
