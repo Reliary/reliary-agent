@@ -1,5 +1,9 @@
 name: Publish to crates.io
 
+permissions:
+  contents: read
+  id-token: write
+
 on:
   release:
     types: [published]
@@ -13,14 +17,11 @@ jobs:
       
       - uses: actions-rust-lang/setup-rust-toolchain@46a9d261ee2ace4b93b3bd6e867168ac38627b38  # v1.12.0
       
-      - name: Install cargo-workspaces
-        run: cargo install cargo-workspaces
-
-      - name: Publish to crates.io
-        if: env.CARGO_REGISTRY_TOKEN != ''
+      - name: Publish via OIDC (trusted publisher)
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          # The --no-verify flag prevents the local package verification step from
-          # failing due to crates.io index replication lag between crate uploads.
-          cargo workspaces publish --from-git --yes --no-verify
+          CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
+        run: bash scripts/publish_oidc.sh
+
+      - name: Notify
+        if: failure()
+        run: echo 'publish failed'

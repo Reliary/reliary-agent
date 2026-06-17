@@ -1,4 +1,7 @@
 name: Regression Benchmark
+permissions:
+  contents: read
+
 "on":
   schedule:
     - cron: '0 6 * * 1'  # Mondays 6am

@@ -96,4 +96,14 @@ if command -v actionlint >/dev/null 2>&1; then
     echo "  actionlint: done"
 fi
 
+# 11. Check commit signing is configured
+if ! git config --get user.signingkey >/dev/null 2>&1; then
+    echo "WARN: no GPG/SSH signing key configured. Set one up:"
+    echo "      gpg --full-generate-key"
+    echo "      git config --global user.signingkey <KEY>"
+    echo "      git config --global commit.gpgsign true"
+    echo "      (or) git config --global gpg.format ssh"
+fi
+echo "  signing check: done"
+
 echo "[guard] All checks passed."

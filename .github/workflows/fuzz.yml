@@ -1,5 +1,8 @@
 name: Fuzz (weekly)
 
+permissions:
+  contents: read
+
 "on":
   schedule:
     - cron: '0 6 * * 1'  # Monday 6 AM
