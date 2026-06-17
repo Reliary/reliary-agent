@@ -394,9 +394,10 @@ pub fn run_index(path: &str) {
                 eprintln!("{} Database schema creation failed", color::red("✗"));
                 return;
             }
-            eprint!("{} Building index for {}... ", color::bold(""), path);
-            std::io::stderr().flush().ok();
-            match reliary_search::ingest::index_directory(&db, path) {
+            let result = crate::ux::with_spinner(&format!("indexing {}", path), || {
+                reliary_search::ingest::index_directory(&db, path)
+            });
+            match result {
                 Ok(count) => eprintln!("{} {} files indexed", color::green("✓"), count),
                 Err(e) => eprintln!("{} Indexing error: {}", color::red("✗"), e),
             }
@@ -990,34 +991,38 @@ fn main() {
         Commands::Dead { path } => {
             let dead_fmt = match fmt { reliary_core::OutputFormat::Json => "json", _ => "default" };
             let config = reliary_dead::DeadConfig::default();
-            let mut files = Vec::new();
-            let path_buf = std::path::PathBuf::from(path);
-            if path_buf.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(&path_buf) {
-                    for entry in entries.flatten() {
-                        let p = entry.path();
-                        if p.is_file() {
-                            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-                            if matches!(ext, "rs" | "py" | "js" | "ts" | "go" | "java" | "rb" | "c" | "cpp" | "h" | "hpp" | "sh" | "toml" | "yaml" | "yml" | "json" | "md") {
-                                if let Ok(content) = std::fs::read_to_string(&p) {
-                                    let display = p.strip_prefix(std::env::current_dir().unwrap_or_default()).unwrap_or(&p);
-                                    files.push((display.to_string_lossy().to_string(), content));
+            let (candidates, entries) = crate::ux::with_spinner("scanning for dead code", || {
+                let mut files = Vec::new();
+                let path_buf = std::path::PathBuf::from(path);
+                if path_buf.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(&path_buf) {
+                        for entry in entries.flatten() {
+                            let p = entry.path();
+                            if p.is_file() {
+                                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                                if matches!(ext, "rs" | "py" | "js" | "ts" | "go" | "java" | "rb" | "c" | "cpp" | "h" | "hpp" | "sh" | "toml" | "yaml" | "yml" | "json" | "md") {
+                                    if let Ok(content) = std::fs::read_to_string(&p) {
+                                        let display = p.strip_prefix(std::env::current_dir().unwrap_or_default()).unwrap_or(&p);
+                                        files.push((display.to_string_lossy().to_string(), content));
+                                    }
                                 }
                             }
                         }
                     }
+                } else if path_buf.is_file() {
+                    if let Ok(content) = std::fs::read_to_string(&path_buf) {
+                        let display = path_buf.strip_prefix(std::env::current_dir().unwrap_or_default()).unwrap_or(&path_buf);
+                        files.push((display.to_string_lossy().to_string(), content));
+                    }
                 }
-            } else if path_buf.is_file() {
-                if let Ok(content) = std::fs::read_to_string(&path_buf) {
-                    let display = path_buf.strip_prefix(std::env::current_dir().unwrap_or_default()).unwrap_or(&path_buf);
-                    files.push((display.to_string_lossy().to_string(), content));
-                }
-            }
-            let candidates = reliary_dead::analyze_files(&files, &config);
-            let entries: Vec<String> = candidates.iter().map(|c| {
-                let conf = match c.confidence { reliary_dead::Confidence::High => "HIGH", reliary_dead::Confidence::Medium => "MED", reliary_dead::Confidence::Low => "LOW" };
-                format!("{}:{} [{}] {}", c.file, c.line, conf, c.reason)
-            }).collect();
+                let candidates = reliary_dead::analyze_files(&files, &config);
+                let entries: Vec<String> = candidates.iter().map(|c| {
+                    let conf = match c.confidence { reliary_dead::Confidence::High => "HIGH", reliary_dead::Confidence::Medium => "MED", reliary_dead::Confidence::Low => "LOW" };
+                    format!("{}:{} [{}] {}", c.file, c.line, conf, c.reason)
+                }).collect();
+                (candidates, entries)
+            });
+            drop(candidates);
             ux::format_dead(path, &entries, dead_fmt);
         }
         Commands::Trust { path } => {
