@@ -56,47 +56,175 @@ agent's `*_BASE_URL` at http://localhost:9090.
 
 ## Usage by Agent
 
-All agents get proxy-level compression and safety by routing API calls through localhost:9090.
+There are two separate things reliary gives your agent. Understanding the difference
+is key:
+
+1.  **MCP tools** (search, risk, dead code detection, fix patterns). These work
+    through your agent's MCP configuration, which `reliary-agent init` sets up
+    automatically. Available to Claude Code, Cline, and OpenCode. Pi does not support
+    MCP -- it uses the gate.js extension instead.
+2.  **API Proxy** (conversation compression, edit safety, response caching). This works
+    by routing your agent's API calls through localhost:9090. Every agent can use it --
+    just set a `*_BASE_URL` environment variable. The proxy auto-discovers your
+    upstream provider by scanning agent configs and environment variables.
 
 ### Pi (gate.js extension)
 
+Pi is the only agent that does not support MCP. Instead, it uses the gate.js extension
+to intercept tool calls. It also uses the proxy for compression like every other agent.
+
 ```bash
-reliary-agent init       # installs gate.js, prompts for proxy routing
-reliary-agent serve &    # starts daemon + proxy on :9090
+# 1. Install reliary-agent
+npm install -g @reliary/agent
+# or: cargo install reliary-agent
+
+# 2. Install gate.js + configure Pi
+reliary-agent init
+
+# 3. Start the proxy
+reliary-agent serve &
+
+# 4. Tell Pi to route API calls through the proxy
 export OPENAI_BASE_URL=http://localhost:9090/v1
-pi --model gpt-4o --print "fix it"
+
+# 5. Use Pi normally -- compression happens transparently
+pi --model gpt-4o --print "fix this bug"
 ```
 
-Pi gets the full stack:
-- Proxy compression + edit safety (via `*_BASE_URL` pointing at localhost:9090)
-- Gate.js extension (compresses all tool outputs)
-- Transparent strict mode (bash/write/grep redirected to sandbox tools without errors)
-- Self-healing edits (tests run before the LLM sees failures)
-- Default mode: **strict** (redirects risky commands, auto-deescalates to reactive after 5 redirects per tool)
+What you get:
+- Proxy compression + edit safety (API calls go through localhost:9090)
+- Gate.js extension (compresses tool outputs, self-healing edits, strict mode)
+- Transparent strict mode: bash/write/grep are redirected to sandbox tools without
+  the LLM seeing errors
+- Self-healing edits: tests run before the LLM sees failures
+- Default mode: **strict** (redirects risky commands, auto-deescalates after 5
+  redirects per tool)
+
+To verify it's working:
+```bash
+reliary-agent doctor            # Check gate.js is installed
+reliary-agent status            # Check proxy is running
+```
+Then check your Pi session -- you should see gate.js loading at startup and the
+proxy logging API calls to `/tmp/reliary_proxy.jsonl` (or the RELIARY_LOG_FILE
+path).
+
+**Common pitfalls:**
+- If `*_BASE_URL` is not set, Pi bypasses the proxy and no compression happens
+- If gate.js was installed before `reliary-agent serve` was running, restart Pi
+- gate.js requires `OPENAI_BASE_URL` (not `DEEPSEEK_BASE_URL` or `ANTHROPIC_BASE_URL`)
+  because Pi uses OpenAI-compatible format regardless of which model you use
 
 ### Claude Code
 
+Claude Code uses MCP for code intelligence tools (search, risk, dead code) and the
+proxy for conversation compression.
+
 ```bash
+# 1. Install reliary-agent
+npm install -g @reliary/agent
+
+# 2. Auto-configure MCP tools (writes to ~/.claude.json)
+reliary-agent init
+
+# 3. Start the proxy
 reliary-agent serve &
+
+# 4. Tell Claude to route API calls through the proxy
 export ANTHROPIC_BASE_URL=http://localhost:9090/
+
+# 5. Start Claude Code
+claude
 ```
 
-Claude Code gets:
-- Proxy compression + edit safety
-- MCP tools (search, compress, risk, fix, dead, heal, prior) -- auto-injected by `init`
-- No transparent redirect (Claude uses its own Bash tool)
+What you get:
+- Proxy compression + edit safety (API calls go through localhost:9090)
+- MCP tools: `reliary_search`, `reliary_compress`, `reliary_risk`, `reliary_fix`,
+  `reliary_dead`, `reliary_heal`, `reliary_prior` -- discoverable by Claude
+- No transparent redirect (Claude uses its own Bash tool, which reliary does not
+  intercept for Claude)
+
+To verify it's working:
+```bash
+cat ~/.claude.json | grep reliary    # Check MCP config was injected
+reliary-agent status                  # Check proxy is running
+```
+
+Inside Claude, ask: "what MCP tools are available?" -- you should see the reliary_
+tools listed.
+
+**Common pitfalls:**
+- `ANTHROPIC_BASE_URL` must end with a trailing `/` (Claude Code is picky about this)
+- If you set `ANTHROPIC_BASE_URL` after Claude is already running, restart Claude
+- MCP tools only appear if `init` was run and `~/.claude.json` contains the reliary
+  entry. Run `reliary-agent doctor` to check
 
 ### Cline / OpenCode
 
+Both agents use MCP for code intelligence tools and the proxy for compression.
+
 ```bash
+# 1. Install reliary-agent
+npm install -g @reliary/agent
+
+# 2. Auto-configure MCP tools
+reliary-agent init
+
+# 3. Start the proxy
 reliary-agent serve &
+
+# 4. Tell your agent to route API calls through the proxy
+#    (match the env var to what your provider expects)
 export OPENAI_BASE_URL=http://localhost:9090/v1
+
+# 5. Start your agent
 ```
 
-Both get:
+What you get:
 - Proxy compression + edit safety
 - MCP tools -- auto-injected by `init`
 - No gate.js (Pi-only extension)
+
+To verify it's working:
+```bash
+reliary-agent doctor           # Check MCP config and proxy
+reliary-agent status           # Show proxy route count
+```
+
+In OpenCode, check `~/.config/opencode/opencode.json` for the `mcpServers.reliary`
+entry. In Cline, check `~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json`.
+
+**Common pitfalls:**
+- OpenCode uses `~/.config/opencode/opencode.json` (Linux), 
+  `~/Library/Application Support/opencode/opencode.json` (macOS), or
+  `%APPDATA%/opencode/opencode.json` (Windows)
+- The env var must match your provider: `OPENAI_BASE_URL` for OpenAI-compatible
+  providers, `ANTHROPIC_BASE_URL` for Anthropic, etc.
+- Cline expects MCP config in its settings JSON, not in `~/.claude.json`
+
+### Any agent (proxy-only, no MCP)
+
+If your agent supports OpenAI-compatible API endpoints, you can still get proxy
+compression without MCP tools:
+
+```bash
+# 1. Install and start the proxy
+cargo install reliary-agent
+reliary-agent serve &
+
+# 2. Point your agent at the proxy
+export OPENAI_BASE_URL=http://localhost:9090/v1
+
+# 3. Set a fallback upstream (the proxy needs to know where to forward to)
+export RELIARY_UPSTREAM_URL=https://api.openai.com/v1
+
+# 4. Run your agent
+```
+
+You get proxy compression only (no MCP tools, no gate.js, no guard safety checks).
+The savings table below assumes the reliary+agent pairing with max features enabled.
+
+### Savings by Agent Stack
 
 ### Savings by Agent Stack
 
@@ -323,6 +451,66 @@ graph TD
 - **fix:** Pattern extraction and forgiving signature matching
 - **dead:** Dead code detection via occurrence counting
 - **agent:** The core binary serving the daemon, proxy, CLI, and MCP
+
+## Troubleshooting
+
+### "Proxy is not compressing anything"
+
+```bash
+reliary-agent status    # Check proxy is running on :9090
+```
+
+Then check your agent's `*_BASE_URL` env var is set correctly. Without it, the agent
+bypasses the proxy entirely. Each agent section above shows the exact var name.
+
+### "MCP tools not showing up"
+
+```bash
+reliary-agent doctor    # Check which agents are wired
+```
+
+If doctor says the agent is not wired, run `reliary-agent init` and answer Y for
+that agent. If doctor says it is wired but the agent does not see the tools, restart
+the agent -- MCP config is read at agent startup.
+
+### "`reliary-agent serve` fails with 'address in use'"
+
+Something else is running on port 9090. Either:
+```bash
+# Stop whatever is on 9090, or use a different port
+reliary-agent serve 9091
+export OPENAI_BASE_URL=http://localhost:9091/v1
+```
+
+### "Proxy is running but API calls hang"
+
+The proxy needs to know where to forward requests. If your API key is not recognized,
+set `RELIARY_UPSTREAM_URL` as a fallback:
+
+```bash
+export RELIARY_UPSTREAM_URL=https://api.openai.com/v1
+reliary-agent serve &
+```
+
+Or run `reliary-agent init` to generate `proxy-routes.json` from your agent configs.
+
+### "gate.js extension not loading in Pi"
+
+Check the extension is installed:
+```bash
+ls ~/.local/share/reliary/gate.js    # Should exist
+```
+
+If it was installed before the daemon was running, restart Pi. The extension checks
+daemon health at startup and degrades gracefully if the daemon is down (no compression
+but no errors).
+
+### "I'm not seeing any token savings"
+
+Proxy compression compounds on long sessions (15+ turns). Short 3-turn sessions see
+modest savings. The first-appearance freeze only matters after the first turn. Run
+a multi-turn task (like fixing a bug in a large file) and compare API billing --
+that is where the 16-84% range comes from.
 
 ## Development
 

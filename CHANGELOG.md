@@ -1,6 +1,39 @@
 # Changelog
 
-## v0.5.3
+## v0.6.0
+
+### UX Polish (June 2026)
+- **Shell completions:** `reliary-agent completions {bash,zsh,fish,powershell,elvish}` via clap_complete. Optionally write to file with `--outdir`.
+- **Man page generation:** `reliary-agent man [--outdir ./man/man1]` via clap_mangen.
+- **Pager integration:** Long output from `search`, `dead`, and `status` pipes through `$PAGER` when stdout is a TTY.
+- **NO_COLOR support:** All ANSI color helpers respect the no-color.org standard. Also respects `TERM=dumb`.
+- **Verbosity flags:** `-v`/`-vv`/`-vvv` and `-q` available on every command.
+- **Progress spinner:** `index` and `dead` now show a progress indicator while working.
+
+### New Commands
+- **`reliary-agent trust .`:** One-shot project setup -- creates `.reliary/` and builds the search index.
+- **`reliary-agent update [--check]`:** Downloads the latest release from GitHub and replaces the current binary.
+- **`reliary-agent completions`:** Shell completion generator for bash/zsh/fish/powershell/elvish.
+- **`reliary-agent man`:** Man page generator.
+
+### Config Validation
+- **Unknown key warnings:** If you type `reliary-agent config mode strict` and misspell (`mod`), it warns.
+- **Invalid mode detection:** Values other than `fast`/`reactive`/`strict` trigger a warning.
+- **Invalid JSON detection:** Malformed config.json prints a clear warning instead of silently parsing as empty.
+
+### Init Wizard
+- **Setup wizard UI:** Fancy ASCII art banner, welcome message, and summary box at the end showing how many agents were configured plus next steps.
+
+### README Overhaul
+- **Crystal-clear agent wiring:** Usage by Agent section rewritten with exact, copy-paste steps for every agent. Each agent's section lists what you get, what you don't get, and how to verify it's working.
+- **Hidden commands documented:** `apply-edit`, `fix-dir`, `fix-file`, `mcp`, `memory`, `session-state`, `veto` now listed (with explanation of what they do internally).
+- **MCP tools section fixed:** Lists all 7 tools (search, compress, risk, fix, dead, heal, prior) instead of stale subset.
+- **Default mode corrected:** Every reference says `strict` (not `reactive`).
+- **Troubleshooting section:** Common failure modes and their fixes.
+
+### Internal
+- 70 unit tests passing (was 57 at v0.5.0). Zero compiler warnings.
+- Clean build with `-D warnings` enforced in CI.
 
 ### Documentation fixes
 - **Pi agent setup:** README now includes the `export OPENAI_BASE_URL=...` step (was missing — Pi would bypass the proxy). Removed false "routed automatically" claim.
