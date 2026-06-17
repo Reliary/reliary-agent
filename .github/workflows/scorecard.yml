@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
-      - uses: ossf/scorecard-action@66c0415881d6fcae4a36c365ec509fc53f4d8796  # v2.4.4
+      - uses: ossf/scorecard-action@99c09fe975337306107572b4fdf4db224cf8e2f2  # v2.4.3
         with:
           results_file: results.sarif
           results_format: sarif
@@ -29,6 +29,6 @@ jobs:
           name: SARIF
           path: results.sarif
           retention-days: 5
-      - uses: github/codeql-action/upload-sarif@c92a1213351cc51f6a5e7a7b7a5210f11b9506c8  # v3
+      - uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
