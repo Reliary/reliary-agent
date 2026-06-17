@@ -53,6 +53,7 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
 | `RELIARY_PROXY_GUARD_DISABLE` | `1` | Disable guard (cross-file edit safety). On by default. |
 | `RELIARY_PROXY_ANTI_DISABLE` | `1` | Disable anti-decision (sticky identifier failure memory) in proxy. On by default. |
 | `RELIARY_PROXY_OUTPUT_COMPRESS` | `1` | Enable first-appearance freeze compression in proxy. On by default. |
+| `RELIARY_UPSTREAM_URL` | _(none)_ | Fallback upstream URL for unknown API keys. All unrecognized auth headers route here instead of returning 403. Useful when your provider isn't discovered from agent configs (e.g. a LiteLLM proxy). |
 
 ## Agent Setup Examples (Proxy Routing)
 
@@ -60,7 +61,7 @@ To route your agent's API traffic through the proxy for conversation compression
 
 | Agent | Environment Variable | Value |
 |---|---|---|
-| **Pi / Cline / OpenCode** | `DEEPSEEK_BASE_URL` (or your provider's URL var) | `http://localhost:9090/v1` |
+| **Pi / Cline / OpenCode** | `*_BASE_URL` (e.g. `OPENAI_BASE_URL`) | `http://localhost:9090/v1` |
 | **Claude Code** | `ANTHROPIC_BASE_URL` | `http://localhost:9090/` |
 
 ## Feature Toggle Syntax
