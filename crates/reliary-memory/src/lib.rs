@@ -1,5 +1,4 @@
 /// HDC memory: 10K-bit hypervectors with Hebbian updates, SQLite persistence.
-
 use std::collections::HashMap;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -223,7 +222,7 @@ impl MemoryStore {
             }
         }
         let mut sorted: Vec<(String, u64)> = scores.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
         sorted.truncate(top_n);
         sorted
     }
@@ -254,8 +253,8 @@ mod tests {
     fn test_make_hv() {
         let hv = make_hv(42, 10000);
         assert_eq!(hv.len(), 10000);
-        assert!(hv.iter().any(|&x| x == 1));
-        assert!(hv.iter().any(|&x| x == -1));
+        assert!(hv.contains(&1));
+        assert!(hv.contains(&-1));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-/// SQLite schema for FTS5 phrase index.
+//! SQLite schema for FTS5 phrase index.
 
 use rusqlite::Connection;
 

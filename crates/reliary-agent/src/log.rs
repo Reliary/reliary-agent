@@ -1,13 +1,13 @@
-/// Structured logging with levels for reliary-agent.
-/// 
-/// Two env vars control output:
-/// - `RELIARY_LOG` — filtering for reliary's own messages (default: `info`)
-/// - `RUST_LOG` — standard tracing env-filter (overrides RELIARY_LOG if set)
-/// 
-/// Levels: error, warn, info, debug, trace
-/// 
-/// Logs are written to stderr. If `RELIARY_LOG_FILE` is set, also written to
-/// that file (appended, rotated at 10MB).
+//! Structured logging with levels for reliary-agent.
+//!
+//! Two env vars control output:
+//! - `RELIARY_LOG` — filtering for reliary's own messages (default: `info`)
+//! - `RUST_LOG` — standard tracing env-filter (overrides RELIARY_LOG if set)
+//!
+//! Levels: error, warn, info, debug, trace
+//!
+//! Logs are written to stderr. If `RELIARY_LOG_FILE` is set, also written to
+//! that file (appended, rotated at 10MB).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -83,7 +83,7 @@ fn init_once() {
             let _ = fs::create_dir_all(parent);
         }
         if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {
-            let meta = file.metadata().ok();
+            let meta = file.metadata().ok();  // GUARDED: intentional
             let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
             *LOG_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(FileLogger {
                 file,

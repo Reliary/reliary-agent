@@ -1,5 +1,5 @@
-/// Self-healing edits: shadow-apply fix, run test, revert on failure.
-/// LLM never sees the failure spiral — gets tighter error on next attempt.
+//! Self-healing edits: shadow-apply fix, run test, revert on failure.
+// LLM never sees the failure spiral — gets tighter error on next attempt.
 
 use std::path::Path;
 use std::fs::{self, File};
@@ -7,7 +7,7 @@ use std::io::Write;
 use tracing::error;
 use std::process::Command;
 
-/// Atomic file write: write to tmp, sync, rename. Prevents partial write corruption.
+// Atomic file write: write to tmp, sync, rename. Prevents partial write corruption.
 pub fn atomic_write(path: &str, content: &str) -> Result<(), String> {
     let tmp = format!("{}.tmp.{}", path, std::process::id());
     let mut file = File::create(&tmp).map_err(|e| format!("create tmp {}: {}", tmp, e))?;
@@ -17,8 +17,8 @@ pub fn atomic_write(path: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Apply a fix in a shadow worktree, run tests, revert on failure.
-/// Returns Ok(()) if fix passes tests, Err(error_summary) with first test failure.
+// Apply a fix in a shadow worktree, run tests, revert on failure.
+// Returns Ok(()) if fix passes tests, Err(error_summary) with first test failure.
 pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), String> {
     if !Path::new(file).exists() {
         return Err(format!("File not found: {}", file));
@@ -74,6 +74,55 @@ fn extract_first_failure(output: &str) -> String {
     }
 }
 
+// Shadow-apply a reliary_fix and test
+pub fn heal_fix(file: &str, old: &str, new: &str, workdir: &str) -> Result<String, String> {
+    let content = fs::read_to_string(file).map_err(|e| format!("Read: {}", e))?;
+    let fixes = vec![(old.to_string(), new.to_string())];
+    let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
+
+    if count == 0 {
+        return Err("No matches found".to_string());
+    }
+
+    match heal_edit(file, &modified, workdir) {
+        Ok(()) => Ok(format!("OK: {} replacements, tests pass", count)),
+        Err(e) => Err(format!("{} (reverted)", e)),
+    }
+}
+
+// Batch heal: apply multiple edits simultaneously, run tests once, revert ALL on failure.
+pub fn batch_heal(edits: &[(String, String, String)], workdir: &str) -> String {
+    let mut originals: Vec<(String, String)> = Vec::new();
+    for (file, old, new) in edits {
+        let content = match fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(e) => return format!("FAIL: cannot read {} — {}", file, e),
+        };
+        let fixes = vec![(old.clone(), new.clone())];
+        let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
+        if count == 0 { return format!("FAIL: no match in {}", file); }
+        originals.push((file.clone(), content));
+        if let Err(e) = atomic_write(file, &modified) {
+            return format!("FAIL: atomic write error {} — {}", file, e);
+        }
+    }
+    let output = Command::new("cargo").args(["test", "--quiet"]).current_dir(workdir).output();
+    match output {
+        Ok(out) if out.status.success() => {
+            format!("OK: {} files edited, tests pass", edits.len())
+        }
+        Ok(out) => {
+            for (file, original) in &originals { let _ = atomic_write(file, original); }
+            let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            format!("REVERTED ({} files): {}", edits.len(), extract_first_failure(&combined))
+        }
+        Err(e) => {
+            for (file, original) in &originals { let _ = atomic_write(file, original); }
+            format!("REVERTED (all files): {}", e)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,54 +153,5 @@ mod tests {
         let output = "line1\nline2\nline3\nline4\n";
         let r = extract_first_failure(output);
         assert!(r.contains("line2"), "Got: {}", r);
-    }
-}
-
-/// Shadow-apply a reliary_fix and test
-pub fn heal_fix(file: &str, old: &str, new: &str, workdir: &str) -> Result<String, String> {
-    let content = fs::read_to_string(file).map_err(|e| format!("Read: {}", e))?;
-    let fixes = vec![(old.to_string(), new.to_string())];
-    let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
-
-    if count == 0 {
-        return Err("No matches found".to_string());
-    }
-
-    match heal_edit(file, &modified, workdir) {
-        Ok(()) => Ok(format!("OK: {} replacements, tests pass", count)),
-        Err(e) => Err(format!("{} (reverted)", e)),
-    }
-}
-
-/// Batch heal: apply multiple edits simultaneously, run tests once, revert ALL on failure.
-pub fn batch_heal(edits: &[(String, String, String)], workdir: &str) -> String {
-    let mut originals: Vec<(String, String)> = Vec::new();
-    for (file, old, new) in edits {
-        let content = match fs::read_to_string(file) {
-            Ok(c) => c,
-            Err(e) => return format!("FAIL: cannot read {} — {}", file, e),
-        };
-        let fixes = vec![(old.clone(), new.clone())];
-        let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
-        if count == 0 { return format!("FAIL: no match in {}", file); }
-        originals.push((file.clone(), content));
-        if let Err(e) = atomic_write(file, &modified) {
-            return format!("FAIL: atomic write error {} — {}", file, e);
-        }
-    }
-    let output = Command::new("cargo").args(["test", "--quiet"]).current_dir(workdir).output();
-    match output {
-        Ok(out) if out.status.success() => {
-            format!("OK: {} files edited, tests pass", edits.len())
-        }
-        Ok(out) => {
-            for (file, original) in &originals { let _ = atomic_write(file, original); }
-            let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-            format!("REVERTED ({} files): {}", edits.len(), extract_first_failure(&combined))
-        }
-        Err(e) => {
-            for (file, original) in &originals { let _ = atomic_write(file, original); }
-            format!("REVERTED (all files): {}", e)
-        }
     }
 }

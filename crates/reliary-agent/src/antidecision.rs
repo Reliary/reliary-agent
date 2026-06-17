@@ -67,7 +67,7 @@ fn extract_primary_identifier(text: &str, file: &str) -> String {
         .unwrap_or("");
     let identifiers: Vec<&str> = text.split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|s| s.len() >= 3 && s.len() <= 40)
-        .filter(|s| s.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_'))
+        .filter(|s| s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_'))
         .filter(|s| *s != "edit" && *s != "apply" && *s != "write" && *s != "bash"
                     && *s != "file" && *s != "sed" && *s != "old" && *s != "new"
                     && *s != "text" && *s != "content" && *s != "from" && *s != "with"
@@ -87,7 +87,7 @@ fn extract_primary_identifier(text: &str, file: &str) -> String {
 #[allow(dead_code)]
 fn is_interesting_ident(s: &str) -> bool {
     if s.len() < 3 || s.len() > 40 { return false; }
-    if !s.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_') { return false; }
+    if !s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') { return false; }
     true
 }
 
@@ -236,7 +236,7 @@ pub fn annotate_tool_result(text: &str, workdir: &str, file_name: &str) -> Optio
 #[allow(dead_code)]
 fn extract_identifiers(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|s| s.len() >= 2 && s.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_'))
+        .filter(|s| s.len() >= 2 && s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_'))
         .map(|s| s.to_string())
         .collect()
 }

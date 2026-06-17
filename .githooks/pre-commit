@@ -1,16 +1,44 @@
 #!/bin/sh
-# Guardrails pre-commit hook: gitleaks + cargo audit + cargo deny + hardcoded paths
+# Guardrails pre-commit hook: clippy, .ok(), gitleaks, audit, deny, YAML, hardcoded paths, stale files
 set -e
 
 echo "[guard] Running pre-commit checks..."
 
-# 1. Hardcoded /home/john/ paths
-if git diff --cached --name-only | xargs grep -l '/home/john/' 2>/dev/null; then
-    echo "FAIL: Hardcoded /home/john/ path detected. Use $HOME or env vars."
+# 1. Hardcoded absolute HOME paths (must use $HOME or env vars)
+if git diff --cached --name-only | xargs grep -lnP '/home/[^/]+/' 2>/dev/null | grep -v '.githooks/'; then
+    echo "FAIL: Hardcoded /home/user/ path detected. Use \$HOME or env vars."
     exit 1
 fi
 
-# 2. Gitleaks (staged files only)
+# 2. Clippy all-targets deny
+if command -v cargo >/dev/null 2>&1; then
+    cargo clippy --all-targets -- -D warnings 2>/dev/null || {
+        echo "FAIL: clippy found warnings. Run: cargo clippy --fix --all-targets --allow-dirty"
+        exit 1
+    }
+    echo "  clippy: clean"
+fi
+
+# 3. Silent .ok() check — flag only bare .ok(); at statement level (not in expressions)
+bad=$(python3 -c "
+import subprocess, sys
+try:
+    files = subprocess.check_output(['git', 'diff', '--cached', '--name-only', '--diff-filter=ACM']).decode().split()
+except: sys.exit(0)
+for f in files:
+    if not f.endswith('.rs'): continue
+    with open(f) as fh:
+        for i, line in enumerate(fh, 1):
+            sl = line.rstrip()
+            if sl.lstrip().startswith('#') or 'mod tests' in sl: continue
+            # Only flag .ok(); as a statement (not .ok() inside expressions)
+            if sl.strip().endswith('.ok();') and 'GUARDED: intentional' not in sl:
+                print(f'{f}:{i}: {sl}')
+" 2>/dev/null)
+if [ -n "$bad" ]; then echo "FAIL: bare .ok(); statements without // GUARDED: intentional in staged files:"; echo "$bad"; exit 1; fi
+echo "  .ok() checks: clean"
+
+# 4. Gitleaks (staged files only)
 if command -v gitleaks >/dev/null 2>&1; then
     gitleaks protect --staged --config .gitleaks.toml 2>/dev/null || {
         echo "FAIL: Gitleaks detected secrets in staged changes."
@@ -18,7 +46,7 @@ if command -v gitleaks >/dev/null 2>&1; then
     }
 fi
 
-# 3. cargo audit (check for known vulnerabilities)
+# 5. cargo audit (check for known vulnerabilities)
 if command -v cargo-audit >/dev/null 2>&1 || command -v cargo audit >/dev/null 2>&1; then
     cargo audit --deny-warnings 2>/dev/null || {
         echo "WARN: cargo audit found vulnerabilities."
@@ -26,14 +54,14 @@ if command -v cargo-audit >/dev/null 2>&1 || command -v cargo audit >/dev/null 2
     }
 fi
 
-# 4. cargo deny bans (check for duplicate deps, yanked crates)
+# 6. cargo deny bans (check for duplicate deps, yanked crates)
 if command -v cargo-deny >/dev/null 2>&1 || command -v cargo deny >/dev/null 2>&1; then
     cargo deny check bans 2>/dev/null || {
         echo "WARN: cargo deny found ban violations."
     }
 fi
 
-# 5. Validate workflow YAML syntax
+# 7. Validate workflow YAML syntax
 if command -v python3 >/dev/null 2>&1; then
     for f in .github/workflows/*.yml; do
         if [ -f "$f" ]; then
@@ -45,7 +73,7 @@ if command -v python3 >/dev/null 2>&1; then
     done
 fi
 
-# 6. Check for stale .perf files in src
+# 8. Check for stale .perf files in src
 stale=$(find . -name "*.perf" -not -path "./target/*" 2>/dev/null)
 if [ -n "$stale" ]; then
     echo "FAIL: stale .perf files committed: $stale"

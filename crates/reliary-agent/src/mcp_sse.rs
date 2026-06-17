@@ -1,14 +1,15 @@
-/// MCP over SSE transport — runs on the same axum server as the proxy (port :9090).
-/// Shared state with proxy: session hashes, anti-decision DB, response cache.
-/// Stdio MCP (mcp.rs) remains as the always-available fallback.
-///
-/// Protocol (MCP 2024-11-05 SSE transport):
-///   1. Client: GET /mcp/sse
-///   2. Server: SSE event "endpoint" with /mcp/messages?sessionId=xxx
-///   3. Client: POST /mcp/messages?sessionId=xxx (JSON-RPC body)
-///   4. Server: SSE event "message" with JSON-RPC response
-///
-/// Cleanup: sessions auto-expire after 5 min idle. SSE disconnect cleans up immediately.
+//! MCP over SSE transport — runs on the same axum server as the proxy (port :9090).
+//
+// Shared state with proxy: session hashes, anti-decision DB, response cache.
+// Stdio MCP (mcp.rs) remains as the always-available fallback.
+//
+// Protocol (MCP 2024-11-05 SSE transport):
+//   1. Client: GET /mcp/sse
+//   2. Server: SSE event "endpoint" with /mcp/messages?sessionId=xxx
+//   3. Client: POST /mcp/messages?sessionId=xxx (JSON-RPC body)
+//   4. Server: SSE event "message" with JSON-RPC response
+//
+// Cleanup: sessions auto-expire after 5 min idle. SSE disconnect cleans up immediately.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, LazyLock};
@@ -69,9 +70,7 @@ pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>>
     let rx_stream = UnboundedReceiverStream::new(rx);
 
     let stream = rx_stream.map(move |event| {
-        let data = match event {
-            McpEvent::Response(json) => json,
-        };
+        let McpEvent::Response(data) = event;
         Ok(Event::default().data(data).event("message"))
     });
 
@@ -191,7 +190,7 @@ pub async fn messages_handler(
     };
 
     // Queue response for delivery via SSE
-    if let Some(json_str) = serde_json::to_string(&response).ok() {
+    if let Ok(json_str) = serde_json::to_string(&response) {
         let sent = {
             let guard = SSE_SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(sess) = guard.get(&session_id) {

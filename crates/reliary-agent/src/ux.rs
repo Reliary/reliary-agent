@@ -129,7 +129,7 @@ pub fn doctor(fix: bool, format: &str) {
     let checks = doctor_checks();
 
     if format == "json" {
-        println!("{}", serde_json::to_string_pretty(&doctor_json(&checks)).unwrap());
+        println!("{}", serde_json::to_string_pretty(&doctor_json(&checks)).unwrap_or_else(|_| r#"{"ready":false,"checks":[]}"#.to_string()));
         return;
     }
 
@@ -172,7 +172,7 @@ pub fn doctor(fix: bool, format: &str) {
             print!("  {} Building index... ", dim());
             let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("reliary-agent"));
             let status = Command::new(exe).arg("index").arg(".").stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit()).status();
-            if status.map_or(false, |s| s.success()) { println!("{}done", color()); } else { println!("{}failed", red()); }
+            if status.is_ok_and(|s| s.success()) { println!("{}done", color()); } else { println!("{}failed", red()); }
         }
     }
 
@@ -241,7 +241,7 @@ pub fn status(format: &str) {
     let d = status_data();
 
     if format == "json" {
-        println!("{}", serde_json::to_string_pretty(&status_json(&d)).unwrap());
+        println!("{}", serde_json::to_string_pretty(&status_json(&d)).unwrap_or_else(|_| r#"{"proxy":{"running":false}}"#.to_string()));
         return;
     }
 
@@ -255,7 +255,7 @@ pub fn status(format: &str) {
         if cfg!(unix) { println!("  {}→ Run 'reliary-agent start' to run in background{}", dim(), reset()); }
     }
 
-    println!("  {}•{} Mode: {}{}", blue(), reset(), d.mode, "");
+    println!("  {}•{} Mode: {}", blue(), reset(), d.mode);
 
     print!("  {}•{} Routes: ", blue(), reset());
     if d.routes > 0 {
@@ -271,7 +271,7 @@ pub fn status(format: &str) {
         println!("  {}•{} Index: {} files indexed", blue(), reset(), d.index_files);
         println!("  {}•{} Memory: {} chronicle events", blue(), reset(), d.chronicle_events);
     } else {
-        println!("  {}•{} Index: {}-{} No index found{}", blue(), reset(), yellow(), reset(), "");
+        println!("  {}•{} Index: {}-{} No index found", blue(), reset(), yellow(), reset());
         println!("    {}→ Run 'reliary-agent index .' to build it{}", dim(), reset());
     }
 }
@@ -349,7 +349,6 @@ pub fn logs(tail: bool, level: Option<String>) {
             eprintln!("{} Could not read daemon logs.{}", yellow(), reset());
             eprintln!("  {} Is the daemon running? Run 'reliary-agent doctor' to check.{}", dim(), reset());
         }
-        return;
     }
 
     #[cfg(target_os = "macos")]

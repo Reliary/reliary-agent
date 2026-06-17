@@ -157,8 +157,8 @@ fn normalize_url(base_url: &str) -> String {
 
 /// Resolve an env var reference like "$OPENAI_API_KEY" to its value.
 fn resolve_env_var(val: &str) -> String {
-    if val.starts_with('$') {
-        std::env::var(&val[1..]).unwrap_or_default()
+    if let Some(rest) = val.strip_prefix('$') {
+        std::env::var(rest).unwrap_or_default()
     } else {
         val.to_string()
     }

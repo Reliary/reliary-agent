@@ -1,12 +1,12 @@
-/// Incremental FTS5 re-index: scavenger companion that updates the index for changed files.
-/// Grammar-free: works on any text file with a supported extension.
+//! Incremental FTS5 re-index: scavenger companion that updates the index for changed files.
+// Grammar-free: works on any text file with a supported extension.
 
 use std::path::Path;
 use rayon::prelude::*;
 use tracing::warn;
 
-/// Re-index files that have been modified since the last index build.
-/// Returns the number of files re-indexed.
+// Re-index files that have been modified since the last index build.
+// Returns the number of files re-indexed.
 pub fn incremental_reindex(workdir: &str) -> usize {
     let db_path_str = format!("{}/.reliary/index.sqlite", workdir.trim_end_matches('/'));
     let db_path = Path::new(&db_path_str);

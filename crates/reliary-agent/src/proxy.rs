@@ -1,5 +1,5 @@
-/// Provider-agnostic proxy with axum — true SSE streaming support.
-/// Auth-based routing via routes.rs. No model lists, no provider detection.
+//! Provider-agnostic proxy with axum — true SSE streaming support.
+// Auth-based routing via routes.rs. No model lists, no provider detection.
 
 use axum::{
     Router, extract::Query, http::{HeaderMap, StatusCode, header},
@@ -71,8 +71,8 @@ fn daemon_cmd_str(cmd: &str) -> String {
 
 // ── History Compression Components ──
 
-/// Per-auth-key state — first-appearance freeze cache.
-/// `content_cache`: maps content hash → compressed version.
+// Per-auth-key state — first-appearance freeze cache.
+// `content_cache`: maps content hash → compressed version.
 struct PerKeyState {
     content_cache: HashMap<u64, String>,
 }
@@ -91,7 +91,7 @@ impl PerKeyState {
     }
 }
 
-/// Global per-auth-key state store
+// Global per-auth-key state store
 static PER_KEY_STATE: LazyLock<Mutex<HashMap<String, PerKeyState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -101,9 +101,9 @@ fn get_or_create_state(auth_key: &str) -> std::sync::MutexGuard<'static, HashMap
     guard
 }
 
-/// Compress old assistant reasoning — strip verbose explanations, keep code blocks intact.
-/// Splits message into code blocks (```...```) and prose sections.
-/// Compresses prose, leaves code verbatim.
+// Compress old assistant reasoning — strip verbose explanations, keep code blocks intact.
+// Splits message into code blocks (```...```) and prose sections.
+// Compresses prose, leaves code verbatim.
 fn compress_assistant_text(text: &str, dict: Option<&reliary_compress::CompressionDict>) -> Option<String> {
     // First try full-text compress (works for prose-only with no code blocks)
     if let Some(compressed) = reliary_compress::compress_reasoning(text, dict) {
@@ -177,7 +177,7 @@ fn compress_assistant_text(text: &str, dict: Option<&reliary_compress::Compressi
     }
 }
 
-/// Sift-based tool result compression — uses reliary-output for structural collapse.
+// Sift-based tool result compression — uses reliary-output for structural collapse.
 fn sift_compress_tool_result(content: &str) -> String {
     if content.len() <= 200 { return content.to_string(); }
     let compressed = reliary_output::compress_output(content);
@@ -188,11 +188,11 @@ fn sift_compress_tool_result(content: &str) -> String {
     }
 }
 
-/// First-appearance freeze compression: compress every message on first occurrence,
-/// cache the compressed version, and use the cached version forever after.
-/// This preserves KV cache stability — the compressed version is what the API/SDK
-/// has cached from the start.
-fn compress_messages(messages: &mut Vec<Value>, state: &mut PerKeyState) -> (usize, usize) {
+// First-appearance freeze compression: compress every message on first occurrence,
+// cache the compressed version, and use the cached version forever after.
+// This preserves KV cache stability — the compressed version is what the API/SDK
+// has cached from the start.
+fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize, usize) {
     let mut history_saved: usize = 0;
     for msg in messages.iter_mut() {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -315,13 +315,8 @@ async fn proxy_post(
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         for msg in messages.iter_mut() {
             if let Some(role) = msg.get_mut("role") {
-                if let Some(r) = role.as_str() {
-                    match r {
-                        "developer" | "latest_reminder" => {
-                            *role = Value::String("system".to_string());
-                        }
-                        _ => {}
-                    }
+                if let Some("developer" | "latest_reminder") = role.as_str() {
+                    *role = Value::String("system".to_string());
                 }
             }
         }
@@ -425,10 +420,14 @@ async fn proxy_post(
     // First-appearance freeze: compress every message on first occurrence
     let (history_saved, _aggressiveness) = {
         let mut guard = get_or_create_state(&auth_key);
-        let state = guard.get_mut(&auth_key).unwrap();
-        if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
-            compress_messages(messages, state)
+        if let Some(state) = guard.get_mut(&auth_key) {
+            if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+                compress_messages(messages, state)
+            } else {
+                (0, 0)
+            }
         } else {
+            tracing::error!("state missing after insert for auth_key {}", &auth_key[..8.min(auth_key.len())]);
             (0, 0)
         }
     };
@@ -538,7 +537,7 @@ async fn proxy_post(
     }
 }
 
-/// Extract file path and new content from an edit tool call embedded in assistant JSON.
+// Extract file path and new content from an edit tool call embedded in assistant JSON.
 fn extract_edit_from_assistant(text: &str) -> Option<(String, String)> {
     // Try to find edit/apply-edit tool call patterns in the assistant's response.
     // Pattern 1: "edit" -> "filePath": "..." "newText": "..."
@@ -564,7 +563,7 @@ fn extract_edit_from_assistant(text: &str) -> Option<(String, String)> {
     None
 }
 
-/// Try multiple relative path forms to match the index's stored paths.
+// Try multiple relative path forms to match the index's stored paths.
 fn resolve_index_paths(file_path: &str, root: &str) -> Vec<String> {
     let mut candidates = Vec::new();
     if file_path.starts_with(root) {
@@ -588,7 +587,7 @@ fn resolve_index_paths(file_path: &str, root: &str) -> Vec<String> {
     candidates
 }
 
-/// GET /check-diff — check a proposed edit for structural issues.
+// GET /check-diff — check a proposed edit for structural issues.
 async fn check_diff_handler(Query(params): Query<HashMap<String, String>>) -> String {
     let file_path = params.get("file").map(|s| s.as_str()).unwrap_or("");
     let new_content = params.get("content").map(|s| s.as_str()).unwrap_or("");
@@ -613,7 +612,7 @@ async fn check_diff_handler(Query(params): Query<HashMap<String, String>>) -> St
     }
 }
 
-/// GET /read-validated — warn about externally-referenced identifiers before editing.
+// GET /read-validated — warn about externally-referenced identifiers before editing.
 async fn read_validated_handler(Query(params): Query<HashMap<String, String>>) -> String {
     let file_path = params.get("file").map(|s| s.as_str()).unwrap_or("");
     if file_path.is_empty() {
@@ -631,7 +630,7 @@ async fn read_validated_handler(Query(params): Query<HashMap<String, String>>) -
                     return serde_json::json!({"error": "file too large"}).to_string();
                 }
             }
-            if f.read_to_string(&mut content).is_err() {
+            if f.read_to_string(&mut content).is_err() {  // GUARDED: intentional
                 return serde_json::json!({"error": "cannot read file"}).to_string();
             }
         }
@@ -673,7 +672,7 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
                 std::thread::sleep(std::time::Duration::from_secs(120));
             }
         })
-        .ok();
+        .ok();  // GUARDED: intentional
 
     #[cfg(unix)] {
         if let Ok(limit) = rlimit::getrlimit(rlimit::Resource::NOFILE) {

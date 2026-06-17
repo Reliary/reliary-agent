@@ -1,6 +1,5 @@
 /// Pre-edit risk analysis.
 /// Grammar-free: uses structural heuristics, not AST parsing.
-
 /// Risk categories a file or edit operation can fall into.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RiskLevel {
@@ -63,11 +62,10 @@ pub fn compute_file_risk(file: &str, content: &str) -> FileRisk {
     // Heuristic risk scoring
     let risk = if def_count > 20 && total_lines > 200 && test_refs < 3 && todo_count > 5 {
         RiskLevel::High
-    } else if def_count > 10 && total_lines > 100 && todo_count > 2 {
-        RiskLevel::Medium
-    } else if def_count > 30 && total_lines > 300 {
-        RiskLevel::Medium
-    } else if test_refs == 0 && total_lines > 50 {
+    } else if (def_count > 10 && total_lines > 100 && todo_count > 2)
+        || (def_count > 30 && total_lines > 300)
+        || (test_refs == 0 && total_lines > 50)
+    {
         RiskLevel::Medium
     } else {
         RiskLevel::Low

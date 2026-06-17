@@ -53,7 +53,7 @@ pub fn build_dict(symbols: &[String]) -> CompressionDict {
             frequency: freq,
         })
         .collect();
-    entries.sort_by(|a, b| b.frequency.cmp(&a.frequency));
+    entries.sort_by_key(|b| std::cmp::Reverse(b.frequency));
     CompressionDict { entries }
 }
 
@@ -119,7 +119,7 @@ mod tests {
     fn test_build_dict() {
         let symbols = vec!["validate_config".to_string(), "line_zone".to_string(), "validate_config".to_string()];
         let dict = build_dict(&symbols);
-        assert!(dict.entries.len() >= 1 && dict.entries.len() <= 2);
+        assert!(!dict.entries.is_empty() && dict.entries.len() <= 2);
     }
 
     #[test]

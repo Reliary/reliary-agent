@@ -1,5 +1,5 @@
-/// Grammar-free structural edit guards.
-/// Uses FTS5 phrase_occ table to detect missing imports and orphaned references.
+//! Grammar-free structural edit guards.
+// Uses FTS5 phrase_occ table to detect missing imports and orphaned references.
 
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -32,9 +32,9 @@ fn is_interesting_ident(s: &str) -> bool {
     true
 }
 
-/// Check a proposed edit for structural issues:
-/// - Missing imports (new uppercase identifier not defined in project)
-/// - Orphaned references (removed identifier still referenced elsewhere)
+// Check a proposed edit for structural issues:
+// - Missing imports (new uppercase identifier not defined in project)
+// - Orphaned references (removed identifier still referenced elsewhere)
 pub fn check_diff(index_path: &str, file_path: &str, new_content: &str) -> Value {
     let db = match Connection::open(index_path) {
         Ok(d) => {
@@ -185,8 +185,8 @@ pub fn check_diff(index_path: &str, file_path: &str, new_content: &str) -> Value
     }
 }
 
-/// Before reading a file, check for identifiers defined in this file that
-/// are referenced elsewhere (warns about deletion/rename risk).
+// Before reading a file, check for identifiers defined in this file that
+// are referenced elsewhere (warns about deletion/rename risk).
 pub fn read_validated(index_path: &str, file_path: &str, content: &str) -> Value {
     let db = match Connection::open(index_path) {
         Ok(d) => {
@@ -351,6 +351,5 @@ mod tests {
         let result = check_diff(&path, "crates/reliary-agent/src/proxy.rs", content);
         let status = result["status"].as_str().unwrap_or("error");
         println!("CLEAN CHECK: status={}", status);
-        assert!(true);
     }
 }

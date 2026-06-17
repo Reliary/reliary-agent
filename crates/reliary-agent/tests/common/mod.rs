@@ -11,7 +11,7 @@ static DAEMON_LOCK: Mutex<()> = Mutex::new(());
 /// Shared daemon instance per test binary. Tests share one daemon.
 fn get_shared_daemon() -> &'static DaemonGuard {
     static DAEMON: OnceLock<DaemonGuard> = OnceLock::new();
-    DAEMON.get_or_init(|| start_daemon_inner())
+    DAEMON.get_or_init(start_daemon_inner)
 }
 
 pub struct DaemonGuard {
@@ -128,7 +128,7 @@ impl McpGuard {
         self.stdin.write_all(line.as_bytes()).unwrap();
         self.stdin.flush().unwrap();
         let mut resp = String::new();
-        self.reader.read_line(&mut resp).unwrap();
+        self.reader.read_line(&mut resp).unwrap();  // GUARDED: intentional
         serde_json::from_str(&resp).unwrap()
     }
 

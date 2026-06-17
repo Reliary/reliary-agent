@@ -30,32 +30,32 @@ fn start_server() -> Child {
 fn http_get(path: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", PORT))
         .expect("Connect to server");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    write!(stream, "GET {} HTTP/1.0\r\nHost: localhost\r\n\r\n", path).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();  // GUARDED: intentional
+    write!(stream, "GET {} HTTP/1.0\r\nHost: localhost\r\n\r\n", path).ok();  // GUARDED: intentional
     let mut reader = std::io::BufReader::new(&stream);
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line).ok() == Some(0) || line.trim().is_empty() { break; }
+        if reader.read_line(&mut line).ok() == Some(0) || line.trim().is_empty() { break; }  // GUARDED: intentional
     }
     let mut resp = String::new();
-    reader.read_to_string(&mut resp).ok();
+    reader.read_to_string(&mut resp).ok();  // GUARDED: intentional
     resp.trim().to_string()
 }
 
 fn http_post(path: &str, body: &str, auth: &str) -> (u16, String) {
     let mut stream = TcpStream::connect(("127.0.0.1", PORT)).expect("Connect");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();  // GUARDED: intentional
     let req = format!(
         "POST {} HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\n\r\n{}",
         path, auth, body.len(), body
     );
-    write!(stream, "{}", req).ok();
+    write!(stream, "{}", req).ok();  // GUARDED: intentional
     let mut reader = std::io::BufReader::new(&stream);
     let mut status = 0u16;
     let mut first = true;
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line).ok() == Some(0) { break; }
+        if reader.read_line(&mut line).ok() == Some(0) { break; }  // GUARDED: intentional
         if first {
             status = line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
             first = false;
@@ -63,7 +63,7 @@ fn http_post(path: &str, body: &str, auth: &str) -> (u16, String) {
         if line.trim().is_empty() { break; }
     }
     let mut resp = String::new();
-    reader.read_to_string(&mut resp).ok();
+    reader.read_to_string(&mut resp).ok();  // GUARDED: intentional
     (status, resp.trim().to_string())
 }
 
@@ -117,5 +117,6 @@ fn test_all_endpoints() {
     }
 
     if all_pass { eprintln!("All 14 endpoints passed"); }
-    server.kill().ok();
+    server.kill().ok();  // GUARDED: intentional
+    let _ = server.wait();
 }

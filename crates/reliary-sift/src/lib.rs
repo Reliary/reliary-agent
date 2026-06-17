@@ -1,5 +1,4 @@
 /// Structural output compression + Maxwell information-theoretic gate.
-
 /// Zone truncation: keep first N lines, omit middle, keep last M
 pub fn zone_truncate(text: &str, head: usize, tail: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
@@ -95,7 +94,6 @@ impl MaxwellGate {
 
 /// Grammar-free content line classification and transformation.
 /// Works on any text file without knowing the language/tool.
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum LineType {
     Blank,

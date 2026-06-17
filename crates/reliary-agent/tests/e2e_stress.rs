@@ -22,7 +22,7 @@ fn e2e_concurrent_load() {
     }
 
     for (i, h) in handles.into_iter().enumerate() {
-        h.join().expect(&format!("thread {} panicked", i));
+        h.join().unwrap_or_else(|_| panic!("thread {} panicked", i));
     }
 
     let elapsed = start.elapsed();

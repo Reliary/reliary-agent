@@ -87,7 +87,7 @@ fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
     let mut line = String::new();
     let mut reader = BufReader::new(&stream);
 
-    if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
+    if reader.read_line(&mut line).is_err() || line.trim().is_empty() {  // GUARDED: intentional
         return;
     }
     let cmd = line.trim();
@@ -155,7 +155,7 @@ fn open_index_db(path: &str) -> Option<rusqlite::Connection> {
 
 fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str, state: &SessionState) -> String {
     // Generic file size guard for all file-reading endpoints
-    let _size_guard = if !p1.is_empty() && (p0 == "risk" || p0 == "read-summary" || p0 == "veto" || p0 == "fix") && Path::new(p1).exists() {
+    if !p1.is_empty() && (p0 == "risk" || p0 == "read-summary" || p0 == "veto" || p0 == "fix") && Path::new(p1).exists() {
         if let Ok(meta) = std::fs::metadata(p1) {
             if meta.len() > MAX_FILE_SIZE {
                 return format!("ERROR: file too large ({}). Max: {}MB\n", meta.len(), MAX_FILE_SIZE / 1_000_000);
@@ -329,7 +329,7 @@ fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str
                 }
             }
         }
-        "dead" => format!("no dead code found\n"),
+        "dead" => "no dead code found\n".to_string(),
         "scavenge-query" => "ok\n".to_string(),
         "chronicle" => {
             if p1.is_empty() {

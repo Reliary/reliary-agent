@@ -30,7 +30,7 @@ fn test_config_json_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Should be valid JSON
     let parsed: serde_json::Value = serde_json::from_str(&stdout)
-        .expect(&format!("config --format json should produce valid JSON: {}", stdout));
+        .unwrap_or_else(|_| panic!("config --format json should produce valid JSON: {}", stdout));
     // Should contain mode and mode_source
     assert!(parsed.get("mode").is_some(), "JSON should have mode key");
     assert!(parsed.get("mode_source").is_some(), "JSON should have mode_source key");
@@ -167,7 +167,7 @@ fn test_dead_json_output() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout)
-        .expect(&format!("dead --format json should produce valid JSON: {}", stdout));
+        .unwrap_or_else(|_| panic!("dead --format json should produce valid JSON: {}", stdout));
     assert!(parsed.get("path").is_some(), "JSON should have path key");
     assert!(parsed.get("candidates").is_some(), "JSON should have candidates array");
 }
@@ -196,7 +196,7 @@ fn test_doctor_json_output() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout)
-        .expect(&format!("doctor --format json should produce valid JSON: {}", stdout));
+        .unwrap_or_else(|_| panic!("doctor --format json should produce valid JSON: {}", stdout));
     assert!(parsed.get("ready").is_some(), "JSON should have ready key");
     assert!(parsed.get("checks").is_some(), "JSON should have checks array");
     let checks = parsed.get("checks").unwrap().as_array().unwrap();
@@ -218,7 +218,7 @@ fn test_status_json_output() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout)
-        .expect(&format!("status --format json should produce valid JSON: {}", stdout));
+        .unwrap_or_else(|_| panic!("status --format json should produce valid JSON: {}", stdout));
     assert!(parsed.get("proxy").is_some(), "JSON should have proxy key");
     assert!(parsed.get("mode").is_some(), "JSON should have mode key");
     assert!(parsed.get("routes").is_some(), "JSON should have routes key");

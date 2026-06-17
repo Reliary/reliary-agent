@@ -1,5 +1,4 @@
-/// Collapse repetitive command-output patterns.
-
+//! Collapse repetitive command-output patterns.
 use crate::classify::*;
 
 /// Compress command output: classify + collapse runs + format.
@@ -282,7 +281,7 @@ mod tests {
         assert!(compressed_test.contains("E0308"), "E0308 should survive");
 
         // File content (too short to compress)
-        let compressed_file = compress_output(&file);
+        let compressed_file = compress_output(file);
         let file_pct = (1.0 - compressed_file.len() as f64 / file.len() as f64) * 100.0;
         println!("File content:  {} -> {} chars ({:.0}%)", file.len(), compressed_file.len(), file_pct);
         assert_eq!(compressed_file.len(), file.len(), "short file should pass through");

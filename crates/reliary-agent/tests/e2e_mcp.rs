@@ -3,7 +3,6 @@
 /// Tests run against the reliary-agent binary in "mcp" (stdio) mode.
 ///
 /// Each test: initialize → tools/list → tools/call → validate response shape.
-
 mod common;
 
 use serde_json::Value;
@@ -34,13 +33,13 @@ fn list_tools(mcp: &mut common::McpGuard) -> Vec<Value> {
 }
 
 fn call_tool(mcp: &mut common::McpGuard, name: &str, args: serde_json::Value) -> Value {
-    let resp = mcp.send(&serde_json::json!({
+    
+    mcp.send(&serde_json::json!({
         "jsonrpc": "2.0",
         "id": 99,
         "method": "tools/call",
         "params": { "name": name, "arguments": args },
-    }));
-    resp
+    }))
 }
 
 /// Test 1: Full MCP handshake — initialize → tools/list → validate every tool's schema
@@ -105,7 +104,7 @@ fn e2e_mcp_all_tools_respond() {
     let err = resp.get("error");
     assert!(err.is_none(), "compress failed: {:?}", err);
     let content = &resp["result"]["content"];
-    assert!(content.is_array() && content.as_array().unwrap().len() >= 1,
+    assert!(content.is_array() && !content.as_array().unwrap().is_empty(),
         "compress should return content array");
     let text = content[0]["text"].as_str().unwrap_or("");
     assert!(text.contains("compressed") || text.contains("original_len"),
