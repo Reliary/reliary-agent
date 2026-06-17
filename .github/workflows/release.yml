@@ -108,7 +108,7 @@ jobs:
           path: artifacts
       - name: Generate Homebrew formula
         run: |
-          bash scripts/generate_brew_formula.sh "${{ github.ref_name }}" /tmp/homebrew
+          bash scripts/generate_brew_formula.sh "${{ github.ref_name#v }}" /tmp/homebrew
           cat /tmp/homebrew/reliary-agent.rb
       - name: Push to homebrew-tap
         env:
