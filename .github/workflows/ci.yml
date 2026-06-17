@@ -85,5 +85,5 @@ jobs:
           else
             echo "cargo-tarpaulin not available -- skipping (install: cargo install cargo-tarpaulin)"
           fi
-      - name: Integrity guard — commits are signed (PRs only)
+      - name: Integrity guard - commits are signed (PRs only)
 
