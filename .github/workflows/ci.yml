@@ -152,6 +152,30 @@ jobs:
             echo "WARN: README claims strict as default mode — code defaults to reactive"
           fi
           echo "QoL: README default mode check passed"
+      - name: QoL guard — doctor --format json is valid JSON
+        run: |
+          out=$(./target/release/reliary-agent --format json doctor 2>/dev/null)
+          if ! echo "$out" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'ready' in d and 'checks' in d" 2>/dev/null; then
+            echo "FAIL: 'doctor --format json' output missing required keys"
+            exit 1
+          fi
+          echo "QoL: doctor JSON valid"
+      - name: QoL guard — status --format json is valid JSON
+        run: |
+          out=$(./target/release/reliary-agent --format json status 2>/dev/null)
+          if ! echo "$out" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'proxy' in d and 'mode' in d" 2>/dev/null; then
+            echo "FAIL: 'status --format json' output missing required keys"
+            exit 1
+          fi
+          echo "QoL: status JSON valid"
+      - name: QoL guard — dead produces real output
+        run: |
+          out=$(./target/release/reliary-agent dead . 2>/dev/null)
+          if ! echo "$out" | grep -q "Dead Code\|No dead code"; then
+            echo "FAIL: 'dead' output should contain header or no-results message"
+            exit 1
+          fi
+          echo "QoL: dead produces real output"
       - name: cargo audit
         run: cargo audit --deny warnings 2>&1 | tail -5 || true
       - name: cargo deny

@@ -156,3 +156,71 @@ fn test_clean_requires_confirmation() {
         "clean should show confirmation prompt: {}", stderr
     );
 }
+
+// --- Dead code detection tests ---
+
+#[test]
+fn test_dead_json_output() {
+    let output = Command::new(rel())
+        .args(["--format", "json", "dead", "."])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .expect(&format!("dead --format json should produce valid JSON: {}", stdout));
+    assert!(parsed.get("path").is_some(), "JSON should have path key");
+    assert!(parsed.get("candidates").is_some(), "JSON should have candidates array");
+}
+
+#[test]
+fn test_dead_default_output() {
+    let output = Command::new(rel())
+        .args(["dead", "."])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Should show either candidates or "No dead code" message
+    assert!(
+        stdout.contains("Dead Code") || stdout.contains("No dead code"),
+        "dead should show results or no-results message: {}", stdout
+    );
+}
+
+// --- Doctor JSON output ---
+
+#[test]
+fn test_doctor_json_output() {
+    let output = Command::new(rel())
+        .args(["--format", "json", "doctor"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .expect(&format!("doctor --format json should produce valid JSON: {}", stdout));
+    assert!(parsed.get("ready").is_some(), "JSON should have ready key");
+    assert!(parsed.get("checks").is_some(), "JSON should have checks array");
+    let checks = parsed.get("checks").unwrap().as_array().unwrap();
+    assert!(!checks.is_empty(), "checks array should not be empty");
+    for c in checks {
+        assert!(c.get("name").is_some(), "check should have name");
+        assert!(c.get("ok").is_some(), "check should have ok");
+        assert!(c.get("detail").is_some(), "check should have detail");
+    }
+}
+
+// --- Status JSON output ---
+
+#[test]
+fn test_status_json_output() {
+    let output = Command::new(rel())
+        .args(["--format", "json", "status"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .expect(&format!("status --format json should produce valid JSON: {}", stdout));
+    assert!(parsed.get("proxy").is_some(), "JSON should have proxy key");
+    assert!(parsed.get("mode").is_some(), "JSON should have mode key");
+    assert!(parsed.get("routes").is_some(), "JSON should have routes key");
+    assert!(parsed.get("index").is_some(), "JSON should have index key");
+}
