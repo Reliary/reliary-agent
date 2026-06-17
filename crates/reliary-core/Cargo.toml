@@ -1,6 +1,6 @@
 [package]
 name = "reliary-core"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 description.workspace = true
 repository.workspace = true
