@@ -22,9 +22,9 @@ mod guard;
 mod antidecision;
 
 use clap::{Parser, Subcommand};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::Arc;
-use tracing::{info, warn, error};
+use tracing::{info, error};
 use crate::session_state::SessionState;
 
 /// Simple ANSI color helpers
@@ -35,34 +35,86 @@ mod color {
     pub fn yellow(s: &str) -> String { format!("\x1b[33m{}\x1b[0m", s) }
     pub fn bold(s: &str) -> String { format!("\x1b[1m{}\x1b[0m", s) }
     pub fn dim(s: &str) -> String { format!("\x1b[2m{}\x1b[0m", s) }
+    pub fn reset(_s: &str) -> String { "\x1b[0m".to_string() }
 }
 
 fn index_db_path(path: &str) -> String {
     format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
 }
 
-fn open_or_create_index(path: &str) -> Option<rusqlite::Connection> {
+pub fn run_index(path: &str) {
+    let db_path_str = index_db_path(path);
+    if let Some(parent) = std::path::Path::new(&db_path_str).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::remove_file(&db_path_str);
+    match rusqlite::Connection::open(&db_path_str) {
+        Ok(db) => {
+            let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+            if reliary_search::schema::create_new_db(&db).is_err() {
+                eprintln!("{} Database schema creation failed", color::red("✗"));
+                return;
+            }
+            println!("Building index for {}...", path);
+            match reliary_search::ingest::index_directory(&db, path) {
+                Ok(count) => println!("{} Indexed {} files", color::green("✓"), count),
+                Err(e) => eprintln!("{} Indexing error: {}", color::red("✗"), e),
+            }
+        }
+        Err(e) => eprintln!("{} DB create error: {}", color::red("✗"), e),
+    }
+}
+
+fn open_index_or_prompt(path: &str) -> Option<rusqlite::Connection> {
     let db_path = index_db_path(path);
+    if !std::path::Path::new(&db_path).exists() {
+        eprint!("{} No project index found. Build it now? [Y/n] ", color::yellow("⚠"));
+        std::io::stdout().flush().ok();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+        if input.trim().to_lowercase() != "n" {
+            run_index(path);
+        } else {
+            return None;
+        }
+    }
+
     let db = rusqlite::Connection::open(&db_path).ok()?;
     let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
-    reliary_search::schema::open_existing_db(&db).ok()?;
+    if reliary_search::schema::open_existing_db(&db).is_err() {
+        eprintln!("{} Index schema mismatch or corrupt. Rebuilding...", color::yellow("⚠"));
+        run_index(path);
+        let db = rusqlite::Connection::open(&db_path).ok()?;
+        let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+        reliary_search::schema::open_existing_db(&db).ok()?;
+        return Some(db);
+    }
     Some(db)
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Parser)]
-#[command(name = "reliary-agent", about = "Grammar-free code intelligence daemon, CLI, and MCP server",
-          after_help = "\
+#[command(
+    name = "reliary-agent",
+    version = VERSION,
+    about = "Grammar-free code intelligence daemon, CLI, and MCP server",
+    after_help = "\
 EXAMPLES:
-  rel index .              Build search index for current project
-  rel search query .       Search indexed project
-  rel risk src/main.rs     Check edit risk before making changes
-  rel serve                Start daemon + proxy on :9090
-  rel init                 Auto-configure agents (Pi, Claude, Cline)
-  rel doctor               System health check
+  reliary-agent index .              Build search index for current project
+  reliary-agent search query .       Search indexed project
+  reliary-agent risk src/main.rs     Check edit risk before making changes
+  reliary-agent serve                Start daemon + proxy on :9090
+  reliary-agent start                Start in background
+  reliary-agent init                 Auto-configure agents (Pi, Claude, Cline)
+  reliary-agent doctor               System health check
+  reliary-agent doctor --fix         Check and fix issues automatically
+  reliary-agent status               View proxy status + project intelligence
 
 ALIAS:
-  The binary also responds to 'rel' for shorter commands.
-  e.g. 'rel serve', 'rel init', 'rel doctor'")]
+  Shorter: 'rel' also works for all commands.
+  e.g. 'rel serve', 'rel start', 'rel doctor'"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -80,7 +132,7 @@ pub const CLI_COMMANDS: &[&str] = &[
     "init", "uninstall", "doctor", "status",
     "clean", "logs", "config", "veto",
     "apply-edit", "sift", "session-state", "memory",
-    "dead",
+    "dead", "start", "stop",
 ];
 
 #[derive(Subcommand)]
@@ -92,52 +144,23 @@ enum Commands {
     /// IR reasoning compression
     Compress {
         text: Option<String>,
-        /// Gentle mode: preserve code context, only strip reasoning fluff
-        #[arg(long)]
-        gentle: bool,
+        #[arg(long)] gentle: bool,
     },
     /// Pre-edit risk analysis
     Risk { file: String },
-    /// Apply known fix patterns to directory
-    FixDir { path: String },
-    /// Apply fix pattern to single file
-    FixFile { file: String, old: String, new: String },
-    /// Dead code detection
-    Dead { path: String },
-    /// Cross-session memory info
-    Memory { query: String },
-    /// Build session state block from Pi session file
-    SessionState { file: String },
-    /// Micro-MCP server
-    Mcp,
-    /// TCP daemon
-    Daemon,
+    /// Start the daemon in the background
+    Start,
+    /// Stop the background daemon
+    Stop,
     /// Bidirectional proxy (compresses conversation history)
     Serve { #[arg(default_value = "9090")] port: u16 },
-    /// Self-healing apply-edit: apply content from file, test, revert on fail
-    ApplyEdit { file: String, tmp_path: String, workdir: String },
-    /// Identifier veto: check newText identifiers exist in project FTS5 index
-    Veto { file: String },
-    /// Configuration management (mode: fast/reactive/strict)
-    Config {
-        /// Config key to set (e.g. "mode")
-        key: Option<String>,
-        /// Config value to set (e.g. "fast" or "strict")
-        value: Option<String>,
-        /// Apply to project-local config instead of global
-        #[arg(long)]
-        local: bool,
-        /// Project root for local config
-        #[arg(long)]
-        root: Option<String>,
-    },
-    /// Interactive setup for agents (Pi, Claude Code, OpenCode, Cline) and daemon
-    Init,
-    /// Uninstall integrations and background daemon
-    Uninstall,
     /// Check system health and diagnosis
-    Doctor,
-    /// View project intelligence overview
+    Doctor {
+        /// Attempt to fix issues automatically
+        #[arg(long)]
+        fix: bool,
+    },
+    /// View proxy status + project intelligence
     Status,
     /// Clean caches and state
     Clean {
@@ -159,10 +182,46 @@ enum Commands {
     },
     /// Pipe command output through reliary-output compression
     Sift {
-        /// Command and arguments to execute and compress
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
     },
+    /// Configuration management (mode: fast/reactive/strict, features: -healEdit)
+    Config {
+        key: Option<String>,
+        value: Option<String>,
+        #[arg(long)] local: bool,
+        #[arg(long)] root: Option<String>,
+    },
+    /// Interactive setup for agents (Pi, Claude Code, OpenCode, Cline) and daemon
+    Init,
+    /// Uninstall integrations and background daemon
+    Uninstall,
+    /// Dead code detection
+    Dead { path: String },
+    /// Identifier veto: check newText identifiers exist in project FTS5 index
+    #[command(hide = true)]
+    Veto { file: String },
+    /// Micro-MCP server (stdio fallback)
+    #[command(hide = true)]
+    Mcp,
+    /// TCP daemon (deprecated — use 'serve')
+    #[command(hide = true)]
+    Daemon,
+    /// Apply known fix patterns to directory
+    #[command(hide = true)]
+    FixDir { path: String },
+    /// Apply fix pattern to single file
+    #[command(hide = true)]
+    FixFile { file: String, old: String, new: String },
+    /// Self-healing apply-edit: apply content from file, test, revert on fail
+    #[command(hide = true)]
+    ApplyEdit { file: String, tmp_path: String, workdir: String },
+    /// Cross-session memory info
+    #[command(hide = true)]
+    Memory { query: String },
+    /// Build session state block from Pi session file
+    #[command(hide = true)]
+    SessionState { file: String },
 }
 
 fn format_config(fmt: &str) -> reliary_core::OutputFormat {
@@ -201,18 +260,14 @@ fn exec_sift(cmd: &[String]) {
 }
 
 fn main() {
-    // Initialize logging before anything else
     log::init();
     let cli = Cli::parse();
     let fmt = format_config(&cli.format);
     let cfg = reliary_core::FormatConfig::new(fmt);
 
-    // If the binary is invoked as "rel", the subcommand name comes from $0
-    // Otherwise use the standard name
-
     match &cli.command {
         Commands::Search { query, path } => {
-            if let Some(db) = open_or_create_index(path) {
+            if let Some(db) = open_index_or_prompt(path) {
                 let results = reliary_search::search::search_fts5(&db, query, 10);
                 if results.is_empty() {
                     println!("No results found.");
@@ -231,26 +286,7 @@ fn main() {
             }
         }
         Commands::Index { path } => {
-            let db_path_str = index_db_path(path);
-            if let Some(parent) = std::path::Path::new(&db_path_str).parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::remove_file(&db_path_str);
-            match rusqlite::Connection::open(&db_path_str) {
-                Ok(db) => {
-                    let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
-                    if reliary_search::schema::create_new_db(&db).is_err() {
-                        error!("Database schema creation failed");
-                        return;
-                    }
-                    println!("Building index for {}...", path);
-                    match reliary_search::ingest::index_directory(&db, path) {
-                        Ok(count) => println!("✓ Indexed {} files", count),
-                        Err(e) => error!("Indexing error: {}", e),
-                    }
-                }
-                Err(e) => error!("DB create error: {}", e),
-            }
+            run_index(path);
         }
         Commands::Compress { text, gentle: _ } => {
             let input_buf: String = match text {
@@ -272,38 +308,107 @@ fn main() {
             }
         }
         Commands::Risk { file } => {
+            let _ = open_index_or_prompt(".");
             let content = std::fs::read_to_string(file).unwrap_or_default();
             let risk_result = reliary_risk::compute_file_risk(file, &content);
             println!("{:?}", risk_result);
         }
-        Commands::FixFile { file, old, new } => {
-            eprintln!("Use apply-edit instead. 'fix-file' may be removed.");
-            println!("Edit: {} → {} in {}", old, new, file);
-        }
-        Commands::FixDir { path } => {
-            let content = std::fs::read_to_string(path).unwrap_or_default();
-            let empty: Vec<(String, String)> = Vec::new();
-            let (result, count) = reliary_fix::apply_fixes(&content, &empty);
-            println!("Applied {} fixes to {}", count, path);
-            if !result.is_empty() {
-                print!("{}", result);
+        Commands::Start => {
+            #[cfg(unix)]
+            {
+                let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("reliary-agent"));
+                let mut cmd = std::process::Command::new(exe);
+                cmd.arg("serve");
+                cmd.stdin(std::process::Stdio::null());
+                cmd.stdout(std::process::Stdio::null());
+                cmd.stderr(std::process::Stdio::null());
+                match cmd.spawn() {
+                    Ok(child) => {
+                        println!("{} Daemon started in background (PID {}).", color::green("✓"), child.id());
+                    }
+                    Err(e) => {
+                        eprintln!("{} Failed to start daemon: {}", color::red("✗"), e);
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("{} 'start' requires Unix. Use 'serve' directly.", color::yellow("⚠"));
             }
         }
-        Commands::Dead { path } => {
-            println!("Dead code analysis for: {}", path);
-        }
-        Commands::ApplyEdit { file, tmp_path, workdir: _ } => {
-            if let Ok(diff) = std::fs::read(tmp_path) {
-                let body = String::from_utf8_lossy(&diff).to_string();
-                println!("Edit applied to {}: {} chars", file, body.len());
+        Commands::Stop => {
+            #[cfg(unix)]
+            {
+                let output = std::process::Command::new("pkill")
+                    .arg("-f")
+                    .arg("reliary-agent serve")
+                    .output();
+                match output {
+                    Ok(o) if o.status.success() => {
+                        println!("{} Daemon stopped.", color::green("✓"));
+                    }
+                    _ => {
+                        eprintln!("{} No daemon found running.", color::yellow("-"));
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("{} 'stop' requires Unix.", color::yellow("⚠"));
             }
         }
-        Commands::Memory { query } => {
-            println!("Memory query: {}", query);
+        Commands::Serve { port } => {
+            // User-visible startup banner (not tracing — users need to see this)
+            eprintln!("{} Reliary Agent v{}", color::bold(""), VERSION);
+            eprintln!(
+                "  {} Proxy   http://127.0.0.1:{}/v1/chat/completions",
+                color::green("✓"), port
+            );
+            eprintln!("  {} MCP     GET /mcp/sse | POST /mcp/messages", color::green("✓"));
+            eprintln!("  {} {} mode", color::green("✓"), config::resolve_mode(Some(".")).as_str());
+            eprintln!("{}", color::dim(""));
+
+            let state = Arc::new(SessionState::new(
+                &std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
+            ));
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async { crate::proxy::start(*port, Some(state)).await })
+                .unwrap_or_else(|e| error!("Server error: {}", e));
         }
-        Commands::Mcp => {
-            info!("Starting MCP server on stdio");
-            mcp::serve_stdio();
+        Commands::Doctor { fix } => {
+            ux::doctor(*fix);
+        }
+        Commands::Status => {
+            ux::status();
+        }
+        Commands::Clean { global, all } => {
+            if !*global && !*all {
+                eprint!("{} Wipe all project state (.reliary)? [y/N] ", color::yellow("⚠"));
+                std::io::stdout().flush().ok();
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).ok();
+                if input.trim().to_lowercase() != "y" {
+                    println!("{} Cancelled.", color::dim("-"));
+                    return;
+                }
+            }
+            if *all {
+                eprint!("{} Wipe ALL state (project + global ~/.reliary)? [y/N] ", color::yellow("⚠"));
+                std::io::stdout().flush().ok();
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).ok();
+                if input.trim().to_lowercase() != "y" {
+                    println!("{} Cancelled.", color::dim("-"));
+                    return;
+                }
+            }
+            ux::clean(*global, *all);
+        }
+        Commands::Logs { tail, level } => {
+            ux::logs(*tail, level.clone());
+        }
+        Commands::Sift { command } => {
+            exec_sift(command);
         }
         Commands::Config { key, value, local, root } => {
             match (key, value) {
@@ -312,14 +417,37 @@ fn main() {
                     println!("{}", config::set_config(k, v, *local, root_str));
                 }
                 (None, None) => {
-                    // Show current config
+                    println!("\x1b[1m| Current Config |\x1b[0m");
                     let mode = config::resolve_mode(root.as_deref().or(Some(".")));
-                    println!("gate mode: {}", mode.as_str());
+                    println!("  \x1b[1mgate mode:\x1b[0m {}", mode.as_str());
+                    // Show config file locations
+                    let global = config::global_config_path();
+                    println!("  \x1b[2mGlobal:\x1b[0m {}", global.display());
+                    if let Some(r) = root {
+                        let local = config::project_config_path(r);
+                        println!("  \x1b[2mLocal: \x1b[0m {}", local.display());
+                    }
+                    // Show features
+                    let features = config::resolve_features(root.as_deref());
+                    let active: Vec<String> = features.iter()
+                        .filter(|(_, v)| *v)
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    let inactive: Vec<String> = features.iter()
+                        .filter(|(_, v)| !*v)
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    if !active.is_empty() {
+                        println!("  \x1b[1mfeatures enabled:\x1b[0m {}", active.join(", "));
+                    }
+                    if !inactive.is_empty() {
+                        println!("  \x1b[2mfeatures disabled:\x1b[0m {}", inactive.join(", "));
+                    }
                 }
                 _ => {
                     eprintln!("Usage: reliary-agent config [key] [value]");
                     eprintln!("       reliary-agent config (show current)");
-                    eprintln!("       reliary-agent config --local mode strict (per-project)");
+                    eprintln!("       reliary-agent config --local mode strict");
                 }
             }
         }
@@ -329,60 +457,18 @@ fn main() {
         Commands::Uninstall => {
             init::uninstall();
         }
-        Commands::Doctor => {
-            ux::doctor();
-        }
-        Commands::Status => {
-            ux::status();
-        }
-        Commands::Clean { global, all } => {
-            ux::clean(*global, *all);
-        }
-        Commands::Logs { tail, level } => {
-            ux::logs(*tail, level.clone());
-        }
-        Commands::Sift { command } => {
-            exec_sift(command);
-        }
-        Commands::Daemon => {
-            warn!("'daemon' subcommand is deprecated. Use 'serve' instead.");
-            let state = Arc::new(SessionState::new(
-                &std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
-            ));
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async { crate::proxy::start(9799, Some(state)).await })
-                .unwrap_or_else(|e| error!("Server error: {}", e));
-        }
-        Commands::Serve { port } => {
-            let state = Arc::new(SessionState::new(
-                &std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
-            ));
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async { crate::proxy::start(*port, Some(state)).await })
-                .unwrap_or_else(|e| error!("Server error: {}", e));
-        }
-        Commands::SessionState { file } => {
-            match reliary_core::parse_session_file(file) {
-                Ok(state) => {
-                    if state.turn_count < 3 {
-                        println!("early");
-                    } else {
-                        println!("{}", reliary_core::build_state_block(&state, state.turn_count));
-                    }
-                }
-                Err(e) => error!("{}", e),
-            }
+        Commands::Dead { path } => {
+            println!("Dead code analysis for: {}", path);
         }
         Commands::Veto { file } => {
             let mut buf = String::new();
             std::io::stdin().read_to_string(&mut buf).ok();
             let new_text = buf.trim();
-            // Find .reliary index from file path
             match daemon::find_reliary_root(file) {
                 Some((_root, index_path, _)) => {
                     if let Ok(db) = rusqlite::Connection::open(&index_path) {
-                            let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
-                            if reliary_search::schema::open_existing_db(&db).is_ok() {
+                        let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+                        if reliary_search::schema::open_existing_db(&db).is_ok() {
                             let ids = reliary_search::scan_identifiers(new_text);
                             let mut blocked = Vec::new();
                             let known_libs = [
@@ -400,18 +486,65 @@ fn main() {
                                 }
                             }
                             if blocked.is_empty() {
-                                println!("ok");
+                                println!("{} ok", color::green("✓"));
                             } else {
-                                println!("ERROR: veto: '{}' not found in project or known libraries", blocked.join(", "));
+                                println!("{} veto: '{}' not found in project", color::red("✗"), blocked.join(", "));
                             }
                         } else {
-                            println!("ERROR: no index at {}", index_path);
+                            println!("{} no index at {}", color::red("✗"), index_path);
                         }
                     } else {
-                        println!("ok");
+                        println!("{} ok", color::green("✓"));
                     }
                 }
-                None => println!("ERROR: no .reliary found for this file"),
+                None => println!("{} no .reliary found for this file", color::red("✗")),
+            }
+        }
+        Commands::Mcp => {
+            info!("Starting MCP server on stdio");
+            mcp::serve_stdio();
+        }
+        Commands::Daemon => {
+            eprintln!("{} 'daemon' is deprecated. Use 'serve' instead.", color::yellow("⚠"));
+            let state = Arc::new(SessionState::new(
+                &std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
+            ));
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async { crate::proxy::start(9799, Some(state)).await })
+                .unwrap_or_else(|e| error!("Server error: {}", e));
+        }
+        Commands::FixDir { path } => {
+            let content = std::fs::read_to_string(path).unwrap_or_default();
+            let empty: Vec<(String, String)> = Vec::new();
+            let (result, count) = reliary_fix::apply_fixes(&content, &empty);
+            println!("Applied {} fixes to {}", count, path);
+            if !result.is_empty() {
+                print!("{}", result);
+            }
+        }
+        Commands::FixFile { file, old, new } => {
+            eprintln!("Use apply-edit instead. 'fix-file' may be removed.");
+            println!("Edit: {} → {} in {}", old, new, file);
+        }
+        Commands::ApplyEdit { file, tmp_path, workdir: _ } => {
+            if let Ok(diff) = std::fs::read(tmp_path) {
+                let body = String::from_utf8_lossy(&diff).to_string();
+                println!("Edit applied to {}: {} chars", file, body.len());
+            }
+        }
+        Commands::Memory { query } => {
+            println!("Memory query: {}", query);
+        }
+        Commands::SessionState { file } => {
+            match reliary_core::parse_session_file(file) {
+                Ok(state) => {
+                    if state.turn_count < 3 {
+                        println!("early");
+                    } else {
+                        println!("{}", reliary_core::build_state_block(&state, state.turn_count));
+                    }
+                }
+                Err(e) => eprintln!("✗ Session file error: {}", e),
             }
         }
     }

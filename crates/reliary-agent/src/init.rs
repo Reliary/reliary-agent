@@ -58,7 +58,17 @@ pub fn run() {
     let has_pi = pi_bin.exists() || Command::new("pi").arg("--version").output().is_ok();
     
     if has_pi {
-        if ask_yes_no("Found Pi Agent. Install Reliary extension?", true) {
+        // Idempotency: detect if gate.js already installed
+        let gate_exists = home_dir()
+            .map(|h| h.join(".local/share/reliary/gate.js"))
+            .map(|p| p.exists())
+            .unwrap_or(false);
+        let msg = if gate_exists {
+            "Found Pi Agent + existing gate.js installation. Re-install?"
+        } else {
+            "Found Pi Agent. Install Reliary extension?"
+        };
+        if ask_yes_no(msg, true) {
             if let Some(data_dir) = get_data_dir() {
                 let target_dir = data_dir.join("reliary");
                 if fs::create_dir_all(&target_dir).is_ok() {
