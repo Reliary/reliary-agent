@@ -14,7 +14,7 @@ fn atomic_write(path: &str, content: &str) -> bool {
     let tmp = format!("{}.tmp.{}", path, std::process::id());
     std::fs::write(&tmp, content).is_ok() && std::fs::rename(&tmp, path).is_ok()
 }
-const EMBEDDED_GATE_JS: &str = include_str!("../../../pi/gate.js");
+const EMBEDDED_GATE_JS: &str = include_str!("../pi/gate.js");
 
 fn ask_yes_no(prompt: &str, default: bool) -> bool {
     let def_str = if default { "[Y/n]" } else { "[y/N]" };
