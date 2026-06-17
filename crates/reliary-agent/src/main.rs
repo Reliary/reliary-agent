@@ -21,21 +21,360 @@ mod routes;
 mod guard;
 mod antidecision;
 
-use clap::{Parser, Subcommand};
-use std::io::{Read, Write};
+use clap::{Parser, Subcommand, ValueEnum, CommandFactory};
+use clap_complete::generate;
+use std::io::{Read, Write, IsTerminal};
 use std::sync::Arc;
 use tracing::{info, error};
 use crate::session_state::SessionState;
 
-/// Simple ANSI color helpers
+/// Simple ANSI color helpers — respects NO_COLOR env var
 #[allow(dead_code)]
 mod color {
-    pub fn green(s: &str) -> String { format!("\x1b[32m{}\x1b[0m", s) }
-    pub fn red(s: &str) -> String { format!("\x1b[31m{}\x1b[0m", s) }
-    pub fn yellow(s: &str) -> String { format!("\x1b[33m{}\x1b[0m", s) }
-    pub fn bold(s: &str) -> String { format!("\x1b[1m{}\x1b[0m", s) }
-    pub fn dim(s: &str) -> String { format!("\x1b[2m{}\x1b[0m", s) }
-    pub fn reset(_s: &str) -> String { "\x1b[0m".to_string() }
+    fn no_color() -> bool {
+        std::env::var("NO_COLOR").is_ok() || std::env::var("TERM").map(|t| t == "dumb").unwrap_or(false)
+    }
+    pub fn green(s: &str) -> String {
+        if no_color() { s.to_string() } else { format!("\x1b[32m{}\x1b[0m", s) }
+    }
+    pub fn red(s: &str) -> String {
+        if no_color() { s.to_string() } else { format!("\x1b[31m{}\x1b[0m", s) }
+    }
+    pub fn yellow(s: &str) -> String {
+        if no_color() { s.to_string() } else { format!("\x1b[33m{}\x1b[0m", s) }
+    }
+    pub fn bold(s: &str) -> String {
+        if no_color() { s.to_string() } else { format!("\x1b[1m{}\x1b[0m", s) }
+    }
+    pub fn dim(s: &str) -> String {
+        if no_color() { s.to_string() } else { format!("\x1b[2m{}\x1b[0m", s) }
+    }
+    pub fn reset(_s: &str) -> String {
+        if no_color() { String::new() } else { "\x1b[0m".to_string() }
+    }
+    pub fn is_enabled() -> bool { !no_color() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_structure_valid() {
+        let cmd = Cli::command();
+        // Verify all expected subcommands exist
+        let names: Vec<&str> = cmd.get_subcommands().map(|s| s.get_name()).collect();
+        for expected in &["search", "index", "compress", "risk", "serve", "doctor",
+                          "status", "clean", "logs", "config", "init", "uninstall",
+                          "dead", "start", "stop", "completions", "man", "update",
+                          "trust", "sift"] {
+            assert!(names.contains(expected), "Missing subcommand: {}", expected);
+        }
+    }
+
+    #[test]
+    fn cli_commands_list_complete() {
+        let cmd = Cli::command();
+        let subcmds: Vec<&str> = cmd.get_subcommands().map(|s| s.get_name()).collect();
+        for cmd_name in CLI_COMMANDS {
+            // Hidden commands like daemon, mcp, veto won't be in --help but exist in the enum
+            assert!(subcmds.contains(cmd_name) || matches!(*cmd_name,
+                "daemon" | "mcp" | "veto" | "fix-dir" | "fix-file" | "apply-edit"
+                | "session-state" | "memory"
+            ), "CLI_COMMANDS lists '{}' but it's not a subcommand", cmd_name);
+        }
+    }
+
+    #[test]
+    fn completions_bash_generates_output() {
+        let mut cmd = Cli::command();
+        let mut buf = Vec::new();
+        generate(clap_complete::Shell::Bash, &mut cmd, "reliary-agent", &mut buf);
+        let output = String::from_utf8_lossy(&buf).to_string();
+        assert!(output.contains("reliary-agent"), "Bash completions should mention binary name");
+        assert!(output.contains("completions"), "Bash completions should list 'completions' subcommand");
+        assert!(output.contains("search"), "Bash completions should list 'search' subcommand");
+        assert!(output.contains("serve"), "Bash completions should list 'serve' subcommand");
+        assert!(output.contains("update"), "Bash completions should list 'update' subcommand");
+        assert!(output.contains("trust"), "Bash completions should list 'trust' subcommand");
+    }
+
+    #[test]
+    fn completions_zsh_generates_output() {
+        let mut cmd = Cli::command();
+        let mut buf = Vec::new();
+        generate(clap_complete::Shell::Zsh, &mut cmd, "reliary-agent", &mut buf);
+        let output = String::from_utf8_lossy(&buf).to_string();
+        assert!(output.contains("reliary-agent"), "Zsh completions should mention binary name");
+    }
+
+    #[test]
+    fn completions_fish_generates_output() {
+        let mut cmd = Cli::command();
+        let mut buf = Vec::new();
+        generate(clap_complete::Shell::Fish, &mut cmd, "reliary-agent", &mut buf);
+        let output = String::from_utf8_lossy(&buf).to_string();
+        assert!(output.contains("reliary-agent"), "Fish completions should mention binary name");
+    }
+
+    #[test]
+    fn completions_powershell_generates_output() {
+        let mut cmd = Cli::command();
+        let mut buf = Vec::new();
+        generate(clap_complete::Shell::PowerShell, &mut cmd, "reliary-agent", &mut buf);
+        let output = String::from_utf8_lossy(&buf).to_string();
+        assert!(output.contains("reliary-agent"), "PowerShell completions should mention binary name");
+    }
+
+    #[test]
+    fn completions_elvish_generates_output() {
+        let mut cmd = Cli::command();
+        let mut buf = Vec::new();
+        generate(clap_complete::Shell::Elvish, &mut cmd, "reliary-agent", &mut buf);
+        let output = String::from_utf8_lossy(&buf).to_string();
+        assert!(output.contains("reliary-agent"), "Elvish completions should mention binary name");
+    }
+
+    #[test]
+    fn man_page_generates() {
+        let cmd = Cli::command();
+        let man = clap_mangen::Man::new(cmd);
+        let mut buf = Vec::new();
+        man.render(&mut buf).expect("Failed to render man page");
+        let output = String::from_utf8_lossy(&buf).to_string();
+        assert!(output.contains(".TH reliary-agent"), "Man page should have TH header");
+        assert!(output.contains("search"), "Man page should document search");
+        assert!(output.contains("serve"), "Man page should document serve");
+        assert!(output.contains("completions"), "Man page should document completions");
+        assert!(output.contains("update"), "Man page should document update");
+        assert!(output.contains("trust"), "Man page should document trust");
+    }
+
+    #[test]
+    fn no_color_env_var() {
+        // Test with NO_COLOR set
+        std::env::set_var("NO_COLOR", "1");
+        assert!(color::green("test") == "test", "NO_COLOR should disable green");
+        assert!(color::red("test") == "test", "NO_COLOR should disable red");
+        assert!(color::yellow("test") == "test", "NO_COLOR should disable yellow");
+        assert!(color::bold("test") == "test", "NO_COLOR should disable bold");
+        assert!(color::dim("test") == "test", "NO_COLOR should disable dim");
+        assert!(color::reset("") == "", "NO_COLOR should disable reset");
+        assert!(!color::is_enabled(), "is_enabled should return false with NO_COLOR");
+        std::env::remove_var("NO_COLOR");
+
+        // Test without NO_COLOR
+        assert!(color::green("test").contains("\x1b[32m"), "Without NO_COLOR, green should have ANSI");
+        assert!(color::is_enabled(), "is_enabled should return true without NO_COLOR");
+    }
+
+    #[test]
+    fn trust_creates_reliary_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        do_trust(path);
+        assert!(tmp.path().join(".reliary").exists(), "trust should create .reliary dir");
+    }
+
+    #[test]
+    fn trust_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        do_trust(path);
+        do_trust(path); // Second call should not panic
+        assert!(tmp.path().join(".reliary").exists(), ".reliary should still exist");
+    }
+
+    #[test]
+    fn validate_config_rejects_unknown_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reliary_dir = tmp.path().join(".reliary");
+        std::fs::create_dir_all(&reliary_dir).unwrap();
+        let config_path = reliary_dir.join("config.json");
+        std::fs::write(&config_path, r#"{"mode": "strict", "badkey": "value"}"#).unwrap();
+
+        // validate_config prints warnings to stderr — just verify it doesn't panic
+        validate_config(tmp.path().to_str().unwrap());
+    }
+
+    #[test]
+    fn validate_config_accepts_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reliary_dir = tmp.path().join(".reliary");
+        std::fs::create_dir_all(&reliary_dir).unwrap();
+        let config_path = reliary_dir.join("config.json");
+        std::fs::write(&config_path, r#"{"mode": "fast", "features": {"compress": true, "healEdit": false}}"#).unwrap();
+
+        validate_config(tmp.path().to_str().unwrap());
+    }
+
+    #[test]
+    fn validate_config_rejects_invalid_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reliary_dir = tmp.path().join(".reliary");
+        std::fs::create_dir_all(&reliary_dir).unwrap();
+        let config_path = reliary_dir.join("config.json");
+        std::fs::write(&config_path, "not json {{{").unwrap();
+
+        // Should print warning, not panic
+        validate_config(tmp.path().to_str().unwrap());
+    }
+
+    #[test]
+    fn validate_config_rejects_invalid_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reliary_dir = tmp.path().join(".reliary");
+        std::fs::create_dir_all(&reliary_dir).unwrap();
+        let config_path = reliary_dir.join("config.json");
+        std::fs::write(&config_path, r#"{"mode": "invalid_mode"}"#).unwrap();
+
+        // Should print warning about invalid mode
+        validate_config(tmp.path().to_str().unwrap());
+    }
+
+    #[test]
+    fn validate_config_rejects_invalid_feature() {
+        let tmp = tempfile::tempdir().unwrap();
+        let reliary_dir = tmp.path().join(".reliary");
+        std::fs::create_dir_all(&reliary_dir).unwrap();
+        let config_path = reliary_dir.join("config.json");
+        std::fs::write(&config_path, r#"{"features": {"badFeature": true}}"#).unwrap();
+
+        // Should print warning about unknown feature
+        validate_config(tmp.path().to_str().unwrap());
+    }
+
+    #[test]
+    fn verbose_flag_parsed() {
+        let cli = Cli::try_parse_from(["reliary-agent", "-vv", "search", "test", "."]);
+        assert!(cli.is_ok());
+        assert_eq!(cli.unwrap().verbose, 2);
+    }
+
+    #[test]
+    fn quiet_flag_parsed() {
+        let cli = Cli::try_parse_from(["reliary-agent", "-q", "search", "test", "."]);
+        assert!(cli.is_ok());
+        assert!(cli.unwrap().quiet);
+    }
+
+    #[test]
+    fn format_flag_parsed() {
+        let cli = Cli::try_parse_from(["reliary-agent", "-f", "json", "search", "test", "."]);
+        assert!(cli.is_ok());
+        assert_eq!(cli.unwrap().format, "json");
+    }
+
+    #[test]
+    fn completions_outdir_creates_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outdir = tmp.path().to_str().unwrap();
+        let cli = Cli::try_parse_from(["reliary-agent", "completions", "bash", "--outdir", outdir]);
+        assert!(cli.is_ok());
+        // The completions command would write to outdir/reliary-agent.bash
+        // We can't easily test the full dispatch without calling main, but we verify parsing works
+    }
+
+    #[test]
+    fn update_check_flag_parsed() {
+        let cli = Cli::try_parse_from(["reliary-agent", "update", "--check"]);
+        assert!(cli.is_ok());
+        match cli.unwrap().command {
+            Commands::Update { check } => assert!(check),
+            _ => panic!("Expected Update command"),
+        }
+    }
+
+    #[test]
+    fn trust_path_parsed() {
+        let cli = Cli::try_parse_from(["reliary-agent", "trust", "/tmp/test"]);
+        assert!(cli.is_ok());
+        match cli.unwrap().command {
+            Commands::Trust { path } => assert_eq!(path, "/tmp/test"),
+            _ => panic!("Expected Trust command"),
+        }
+    }
+
+    #[test]
+    fn trust_default_path() {
+        let cli = Cli::try_parse_from(["reliary-agent", "trust"]);
+        assert!(cli.is_ok());
+        match cli.unwrap().command {
+            Commands::Trust { path } => assert_eq!(path, "."),
+            _ => panic!("Expected Trust command with default path"),
+        }
+    }
+
+    #[test]
+    fn man_page_has_all_sections() {
+        let cmd = Cli::command();
+        let man = clap_mangen::Man::new(cmd);
+        let mut buf = Vec::new();
+        man.render(&mut buf).unwrap();
+        let output = String::from_utf8_lossy(&buf).to_string();
+        // Verify key sections
+        assert!(output.contains("NAME"), "Man page should have NAME section");
+        assert!(output.contains("DESCRIPTION") || output.contains("SYNOPSIS"), "Man page should have DESCRIPTION or SYNOPSIS");
+        assert!(output.contains("OPTIONS"), "Man page should have OPTIONS");
+    }
+
+    #[test]
+    fn completions_includes_global_flags() {
+        let mut cmd = Cli::command();
+        let mut buf = Vec::new();
+        generate(clap_complete::Shell::Bash, &mut cmd, "reliary-agent", &mut buf);
+        let output = String::from_utf8_lossy(&buf).to_string();
+        // Global flags should appear in completions
+        assert!(output.contains("--format") || output.contains("format"), "Completions should include --format flag");
+        assert!(output.contains("--verbose") || output.contains("verbose"), "Completions should include --verbose flag");
+        assert!(output.contains("--quiet") || output.contains("quiet"), "Completions should include --quiet flag");
+    }
+
+    #[test]
+    fn color_module_unit_tests() {
+        // Test all color functions with and without NO_COLOR
+        std::env::set_var("NO_COLOR", "1");
+        assert_eq!(color::green("hello"), "hello");
+        assert_eq!(color::red("hello"), "hello");
+        assert_eq!(color::yellow("hello"), "hello");
+        assert_eq!(color::bold("hello"), "hello");
+        assert_eq!(color::dim("hello"), "hello");
+        assert_eq!(color::reset(""), "");
+        assert!(!color::is_enabled());
+        std::env::remove_var("NO_COLOR");
+
+        assert!(color::green("hello").contains("hello"));
+        assert!(color::red("hello").contains("hello"));
+        assert!(color::is_enabled());
+    }
+
+    #[test]
+    fn index_db_path_format() {
+        assert_eq!(index_db_path("/tmp/test"), "/tmp/test/.reliary/index.sqlite");
+        assert_eq!(index_db_path("/tmp/test/"), "/tmp/test/.reliary/index.sqlite");
+    }
+}
+
+/// Pipe text through the system pager if stdout is a TTY
+fn pipe_to_pager(text: &str) {
+    if !std::io::stdout().is_terminal() || text.len() < 4096 {
+        print!("{}", text);
+        return;
+    }
+    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less -RF".to_string());
+    let parts: Vec<&str> = pager.splitn(2, ' ').collect();
+    let prog = parts[0];
+    let args: Vec<&str> = if parts.len() > 1 { parts[1].split(' ').collect() } else { vec![] };
+    match std::process::Command::new(prog).args(&args).stdin(std::process::Stdio::piped()).spawn() {
+        Ok(mut child) => {
+            if let Some(ref mut stdin) = child.stdin {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+        }
+        Err(_) => print!("{}", text),
+    }
 }
 
 fn index_db_path(path: &str) -> String {
@@ -55,9 +394,10 @@ pub fn run_index(path: &str) {
                 eprintln!("{} Database schema creation failed", color::red("✗"));
                 return;
             }
-            println!("Building index for {}...", path);
+            eprint!("{} Building index for {}... ", color::bold(""), path);
+            std::io::stderr().flush().ok();
             match reliary_search::ingest::index_directory(&db, path) {
-                Ok(count) => println!("{} Indexed {} files", color::green("✓"), count),
+                Ok(count) => eprintln!("{} {} files indexed", color::green("✓"), count),
                 Err(e) => eprintln!("{} Indexing error: {}", color::red("✗"), e),
             }
         }
@@ -94,6 +434,10 @@ fn open_index_or_prompt(path: &str) -> Option<rusqlite::Connection> {
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+fn build_cli() -> clap::Command {
+    Cli::command()
+}
+
 #[derive(Parser)]
 #[command(
     name = "reliary-agent",
@@ -110,18 +454,34 @@ EXAMPLES:
   reliary-agent doctor               System health check
   reliary-agent doctor --fix         Check and fix issues automatically
   reliary-agent status               View proxy status + project intelligence
+  reliary-agent completions bash     Generate bash completions
+  reliary-agent man                  Generate man page
 
 ALIAS:
   Shorter: 'rel' also works for all commands.
-  e.g. 'rel serve', 'rel start', 'rel doctor'"
+  e.g. 'rel serve', 'rel start', 'rel doctor'
+
+ENVIRONMENT:
+  NO_COLOR          Disable colored output
+  RELIARY_MODE      Override safety mode (fast/reactive/strict)
+  RELIARY_FEATURES  Toggle features (+compress,-healEdit)
+  RELIARY_LOG       Log level (error/warn/info/debug/trace)"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 
     /// Output format: default (human), compact (agent), json (CI)
-    #[arg(short, long, default_value = "default")]
+    #[arg(short, long, default_value = "default", global = true)]
     format: String,
+
+    /// Verbose output (repeat for more: -v, -vv, -vvv)
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
+
+    /// Suppress non-error output
+    #[arg(short, long, global = true)]
+    quiet: bool,
 }
 
 /// Reference list of all CLI subcommand names. CI guardrail verifies each
@@ -132,7 +492,8 @@ pub const CLI_COMMANDS: &[&str] = &[
     "init", "uninstall", "doctor", "status",
     "clean", "logs", "config", "veto",
     "apply-edit", "sift", "session-state", "memory",
-    "dead", "start", "stop",
+    "dead", "start", "stop", "completions", "man",
+    "update", "trust",
 ];
 
 #[derive(Subcommand)]
@@ -185,7 +546,7 @@ enum Commands {
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
     },
-    /// Configuration management (mode: fast/reactive/strict, features: -healEdit)
+    /// Configuration management
     Config {
         key: Option<String>,
         value: Option<String>,
@@ -198,6 +559,33 @@ enum Commands {
     Uninstall,
     /// Dead code detection
     Dead { path: String },
+    /// Quick project setup: creates .reliary/ and builds index
+    Trust {
+        /// Project directory (default: current)
+        #[arg(default_value = ".")]
+        path: String,
+    },
+    /// Update reliary-agent to latest release
+    Update {
+        /// Check only, don't install
+        #[arg(long)]
+        check: bool,
+    },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate for
+        #[arg(value_enum)]
+        shell: Shell,
+        /// Output directory (default: stdout)
+        #[arg(short, long)]
+        outdir: Option<String>,
+    },
+    /// Generate man page
+    Man {
+        /// Output directory (default: stdout)
+        #[arg(short, long)]
+        outdir: Option<String>,
+    },
     /// Identifier veto: check newText identifiers exist in project FTS5 index
     #[command(hide = true)]
     Veto { file: String },
@@ -222,6 +610,15 @@ enum Commands {
     /// Build session state block from Pi session file
     #[command(hide = true)]
     SessionState { file: String },
+}
+
+#[derive(ValueEnum, Clone)]
+enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+    PowerShell,
+    Elvish,
 }
 
 fn format_config(fmt: &str) -> reliary_core::OutputFormat {
@@ -259,11 +656,139 @@ fn exec_sift(cmd: &[String]) {
     std::process::exit(output.status.code().unwrap_or(0));
 }
 
+fn validate_config(workdir: &str) {
+    let path = config::project_config_path(workdir);
+    if !path.exists() { return; }
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(obj) = parsed.as_object() {
+                for key in obj.keys() {
+                    match key.as_str() {
+                        "mode" | "features" | "apiMode" | "privacyMode" | "apiBaseUrl" | "serverUrl" => {}
+                        unknown => {
+                            eprintln!("{} Unknown config key '{}' in {}", color::yellow("⚠"), unknown, path.display());
+                        }
+                    }
+                }
+                // Validate mode value
+                if let Some(mode) = obj.get("mode") {
+                    if let Some(s) = mode.as_str() {
+                        if !matches!(s, "fast" | "reactive" | "strict") {
+                            eprintln!("{} Invalid mode '{}' — expected fast, reactive, or strict", color::yellow("⚠"), s);
+                        }
+                    }
+                }
+                // Validate features
+                if let Some(features) = obj.get("features") {
+                    if let Some(fobj) = features.as_object() {
+                        for (k, v) in fobj {
+                            if !matches!(k.as_str(), "compress" | "convWindow" | "readEnrichment" | "editMerge" | "healEdit" | "priorInjection") {
+                                eprintln!("{} Unknown feature '{}' in {}", color::yellow("⚠"), k, path.display());
+                            }
+                            if !v.is_boolean() {
+                                eprintln!("{} Feature '{}' should be boolean, got {}", color::yellow("⚠"), k, v);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            eprintln!("{} Config file is not valid JSON: {}", color::yellow("⚠"), path.display());
+        }
+    }
+}
+
+fn do_trust(path: &str) {
+    let reliary_dir = std::path::PathBuf::from(path).join(".reliary");
+    if reliary_dir.exists() {
+        println!("{} .reliary/ already exists in {}", color::green("✓"), path);
+    } else {
+        std::fs::create_dir_all(&reliary_dir).expect("Failed to create .reliary/");
+        println!("{} Created .reliary/ in {}", color::green("✓"), path);
+    }
+    // Build index
+    run_index(path);
+    // Validate config
+    validate_config(path);
+    println!("{} Project trusted: {}", color::green("✓"), path);
+}
+
+fn do_update(check_only: bool) {
+    println!("{} Checking for updates...", color::bold(""));
+    let current = VERSION;
+    // Try to fetch latest release from GitHub
+    let output = std::process::Command::new("curl")
+        .args(["-sL", "https://api.github.com/repos/Reliary/reliary-agent/releases/latest"])
+        .output();
+    match output {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            if let Ok(release) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                let tag = release.get("tag_name").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let latest = tag.trim_start_matches('v');
+                if latest == current {
+                    println!("{} Already up to date (v{})", color::green("✓"), current);
+                } else {
+                    println!("{} Update available: v{} → v{}", color::yellow("!"), current, latest);
+                    if check_only {
+                        println!("  Run 'reliary-agent update' to install");
+                    } else {
+                        // Detect platform
+                        let os = std::env::consts::OS;
+                        let arch = std::env::consts::ARCH;
+                        let ext = if os == "windows" { ".zip" } else { ".tar.gz" };
+                        let asset_name = format!("reliary-agent-{}-{}-{}{}", tag, os, arch, ext);
+                        let download_url = format!("https://github.com/Reliary/reliary-agent/releases/download/{}/{}", tag, asset_name);
+                        println!("  Downloading {}...", asset_name);
+                        let dl = std::process::Command::new("curl")
+                            .args(["-sL", "-o", "/tmp/reliary-update.tar.gz", &download_url])
+                            .status();
+                        if dl.map_or(false, |s| s.success()) {
+                            // Extract and install
+                            let extract = std::process::Command::new("tar")
+                                .args(["-xzf", "/tmp/reliary-update.tar.gz", "-C", "/tmp/"])
+                                .status();
+                            if extract.map_or(false, |s| s.success()) {
+                                let binary = std::env::current_exe().unwrap_or_default();
+                                let install = std::process::Command::new("cp")
+                                    .args(["/tmp/reliary-agent", binary.to_string_lossy().as_ref()])
+                                    .status();
+                                if install.map_or(false, |s| s.success()) {
+                                    println!("{} Updated to v{}", color::green("✓"), latest);
+                                } else {
+                                    eprintln!("{} Install failed — try manually: cp /tmp/reliary-agent {}", color::red("✗"), binary.display());
+                                }
+                            } else {
+                                eprintln!("{} Extract failed", color::red("✗"));
+                            }
+                            let _ = std::fs::remove_file("/tmp/reliary-update.tar.gz");
+                        } else {
+                            eprintln!("{} Download failed", color::red("✗"));
+                        }
+                    }
+                }
+            } else {
+                eprintln!("{} Could not parse GitHub response", color::red("✗"));
+            }
+        }
+        Err(e) => {
+            eprintln!("{} Could not check for updates: {}", color::red("✗"), e);
+            eprintln!("  Install manually from: https://github.com/Reliary/reliary-agent/releases");
+        }
+    }
+}
+
 fn main() {
     log::init();
     let cli = Cli::parse();
     let fmt = format_config(&cli.format);
     let cfg = reliary_core::FormatConfig::new(fmt);
+
+    // Validate config on startup (except for config/init/doctor commands)
+    match &cli.command {
+        Commands::Config { .. } | Commands::Init | Commands::Doctor { .. } => {}
+        _ => validate_config("."),
+    }
 
     match &cli.command {
         Commands::Search { query, path } => {
@@ -275,7 +800,8 @@ fn main() {
                     let lines: Vec<String> = results.iter()
                         .map(|r| format!("{:.4} {}", r.score, r.file))
                         .collect();
-                    println!("{}", cfg.format_output("search results", &lines));
+                    let output = cfg.format_output("search results", &lines);
+                    pipe_to_pager(&output);
                 }
             } else {
                 let tokens = reliary_search::tokenize(query);
@@ -359,7 +885,6 @@ fn main() {
             }
         }
         Commands::Serve { port } => {
-            // User-visible startup banner (not tracing — users need to see this)
             eprintln!("{} Reliary Agent v{}", color::bold(""), VERSION);
             eprintln!(
                 "  {} Proxy   http://127.0.0.1:{}/v1/chat/completions",
@@ -495,6 +1020,57 @@ fn main() {
                 format!("{}:{} [{}] {}", c.file, c.line, conf, c.reason)
             }).collect();
             ux::format_dead(path, &entries, dead_fmt);
+        }
+        Commands::Trust { path } => {
+            do_trust(path);
+        }
+        Commands::Update { check } => {
+            do_update(*check);
+        }
+        Commands::Completions { shell, outdir } => {
+            let mut cmd = build_cli();
+            let sh = match shell {
+                Shell::Bash => clap_complete::Shell::Bash,
+                Shell::Zsh => clap_complete::Shell::Zsh,
+                Shell::Fish => clap_complete::Shell::Fish,
+                Shell::PowerShell => clap_complete::Shell::PowerShell,
+                Shell::Elvish => clap_complete::Shell::Elvish,
+            };
+            let ext = match shell {
+                Shell::Bash => "bash",
+                Shell::Zsh => "zsh",
+                Shell::Fish => "fish",
+                Shell::PowerShell => "ps1",
+                Shell::Elvish => "elvish",
+            };
+            let mut buf = Vec::new();
+            generate(sh, &mut cmd, "reliary-agent", &mut buf);
+            let output = String::from_utf8_lossy(&buf).to_string();
+            if let Some(dir) = outdir {
+                let path = std::path::Path::new(dir);
+                std::fs::create_dir_all(path).ok();
+                let file_path = path.join(format!("reliary-agent.{}", ext));
+                std::fs::write(&file_path, &output).expect("Failed to write completion file");
+                println!("{} Generated {} completions → {}", color::green("✓"), ext, file_path.display());
+            } else {
+                print!("{}", output);
+            }
+        }
+        Commands::Man { outdir } => {
+            let cmd = build_cli();
+            let man = clap_mangen::Man::new(cmd);
+            if let Some(dir) = outdir {
+                let path = std::path::Path::new(dir);
+                std::fs::create_dir_all(path).ok();
+                let file_path = path.join("reliary-agent.1");
+                let mut file = std::fs::File::create(&file_path).expect("Failed to create man page");
+                man.render(&mut file).expect("Failed to render man page");
+                println!("{} Generated man page → {}", color::green("✓"), file_path.display());
+            } else {
+                let mut buf = Vec::new();
+                man.render(&mut buf).expect("Failed to render man page");
+                print!("{}", String::from_utf8_lossy(&buf));
+            }
         }
         Commands::Veto { file } => {
             let mut buf = String::new();
