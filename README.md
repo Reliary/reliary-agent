@@ -32,7 +32,7 @@ npm install -g @reliary/agent
 cargo install reliary-agent
 
 # Homebrew (macOS / Linux)
-brew install Reliary/tap/reliary-agent
+brew install Reliary/homebrew-tap/reliary-agent
 ```
 
 ## Quickstart
