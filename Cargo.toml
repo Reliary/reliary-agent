@@ -21,3 +21,14 @@ description = "Grammar-free code intelligence daemon, CLI, MCP server, and API p
 license = "MIT"
 repository = "https://github.com/Reliary/reliary-agent"
 readme = "README.md"
+
+[workspace.dependencies]
+reliary-core = { version = "0.6", path = "crates/reliary-core" }
+reliary-search = { version = "0.6", path = "crates/reliary-search" }
+reliary-compress = { version = "0.6", path = "crates/reliary-compress" }
+reliary-sift = { version = "0.6", path = "crates/reliary-sift" }
+reliary-risk = { version = "0.6", path = "crates/reliary-risk" }
+reliary-memory = { version = "0.6", path = "crates/reliary-memory" }
+reliary-fix = { version = "0.6", path = "crates/reliary-fix" }
+reliary-dead = { version = "0.6", path = "crates/reliary-dead" }
+reliary-output = { version = "0.6", path = "crates/reliary-output" }
