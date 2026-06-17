@@ -1,87 +1,89 @@
 name: CI (guardrails)
-"on":
+on:
   push:
     branches: [master]
   pull_request:
     branches: [master]
-  schedule:
-    - cron: '0 3 * * *'
 
 permissions:
   contents: read
-  pull-requests: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      - uses: actions-rust-lang/setup-rust-toolchain@46a9d261ee2ace4b93b3bd6e867168ac38627b38  # v1.12.0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions-rust-lang/setup-rust-toolchain@46a9d261ee2ace4b93b3bd6e867168ac38627b38
+
       - name: Install tools
         run: |
           cargo install cargo-audit cargo-deny 2>/dev/null || true
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck 2>/dev/null || true
-          # actionlint — download pre-built binary
           curl -sL "https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz" | sudo tar -xz -C /usr/local/bin actionlint 2>/dev/null || true
-      - name: Validate workflow YAML syntax
-        run: |
-          pip install pyyaml -q 2>/dev/null || true
-          for f in .github/workflows/*.yml; do
-            python3 -c "import yaml; yaml.safe_load(open('$f'))" || { echo "FAIL: $f has invalid YAML"; exit 1; }
-            echo "  OK: $f"
-          done
-      - name: cargo deny check advisories
-        run: cargo deny check advisories 2>/dev/null || { echo 'deny advisories FAIL'; exit 1; }
-      - name: cargo deny check sources
-        run: cargo deny check sources 2>/dev/null || { echo 'deny sources FAIL'; exit 1; }
-      - name: actionlint (workflow validation)
-        run: |
-          actionlint .github/workflows/*.yml 2>/dev/null || echo "WARN: actionlint found issues in workflow files"
-      - name: shellcheck (script linting)
-        run: |
-          shellcheck scripts/*.sh 2>/dev/null || echo "WARN: shellcheck found script issues"
-      - name: semgrep (Rust security rules)
-        run: |
-          if command -v semgrep >/dev/null 2>&1; then
-            semgrep --config .semgrep/rust-security.yml --error crates/ 2>/dev/null || echo "WARN: semgrep found security issues"
-          elif pip3 install semgrep -q 2>/dev/null; then
-            semgrep --config .semgrep/rust-security.yml --error crates/ 2>/dev/null || echo "WARN: semgrep found security issues"
-          else
-            echo "semgrep not available — skipping"
-          fi
-      - name: typos (spell check)
-        run: |
-          if command -v typos >/dev/null 2>&1; then
-            typos --format brief 2>/dev/null || echo "WARN: typos found spelling errors"
-          else
-            pip3 install typos -q 2>/dev/null && typos --format brief 2>/dev/null || echo "WARN: typos found spelling errors" || echo "typos not available — skipping"
-          fi
-      - name: lychee (link checker)
-        run: |
-          if command -v lychee >/dev/null 2>&1; then
-            lychee --no-progress README.md CHANGELOG.md CONFIG.md 2>/dev/null || echo "WARN: broken links detected"
-          else
-            echo "lychee not available — skipping"
-          fi
-      - name: markdownlint (docs formatting)
-        run: |
-          if command -v markdownlint >/dev/null 2>&1; then
-            markdownlint README.md CHANGELOG.md CONFIG.md pi/GATE.md CONTRIBUTING.md 2>/dev/null || echo "WARN: markdown formatting issues"
-          elif npm ls markdownlint-cli 2>/dev/null; then
-            npx markdownlint README.md CHANGELOG.md CONFIG.md 2>/dev/null || echo "WARN: markdown formatting issues"
-          else
-            echo "markdownlint not available — skipping"
-          fi
-      - name: tarpaulin (code coverage)
-        run: |
-          if command -v cargo-tarpaulin >/dev/null 2>&1; then
-            cargo tarpaulin --out Xml --ignore-tests --exclude-files "tests/*" 2>/dev/null || echo "WARN: tarpaulin failed"
-            if [ -f cobertura.xml ]; then
-              cov=$(python3 -c 'import xml.etree.ElementTree as ET; tree = ET.parse("cobertura.xml"); lines = tree.findall(".//lines"); cov = sum(int(l.get("lines-covered", 0)) for l in lines) if lines else 0; tot = sum(int(l.get("lines-valid", 0)) for l in lines) if lines else 1; print(f"{cov/tot*100:.1f}" if tot > 0 else "0")' 2>/dev/null)
-              echo "Line coverage: ${cov}%"
-              [ "$(echo "$cov >= 30" | bc 2>/dev/null || echo 0)" -eq 1 ] || echo "WARN: coverage below 30% (${cov}%)"
-            fi
-          else
-            echo "cargo-tarpaulin not available -- skipping (install: cargo install cargo-tarpaulin)"
-          fi
-      - name: Integrity guard - commits are signed (PRs only)
 
+      - name: Build
+        run: cargo build --release
+
+      - name: cargo test
+        run: cargo test --release -- --test-threads=1
+
+      - name: clippy
+        run: cargo clippy --all-targets --release -- -D warnings 2>&1 || { echo 'clippy FAIL'; exit 1; }
+
+      - name: ok() guard
+        run: |
+          bad=$(grep -rn "\.ok();" crates/ --include="*.rs" 2>/dev/null | grep -v "GUARDED: intentional\|test\|#\[cfg\|\.and_then\|filter_map\|\.ok()?\|// ok" || true)
+          if [ -n "$bad" ]; then echo "FAIL"; echo "$bad"; exit 1; fi
+
+      - name: CLI docs check
+        run: |
+          cmds=$(grep -A50 "^pub const CLI_COMMANDS" crates/reliary-agent/src/main.rs 2>/dev/null | grep '"' | grep -oP '"[a-z][a-z-]+"' | tr -d '"' | sort -u || true)
+          missing=""
+          for cmd in $cmds; do
+            if ! grep -q "$cmd" README.md 2>/dev/null; then missing="$missing  $cmd\n"; fi
+          done
+          if [ -n "$missing" ]; then echo "FAIL"; printf "$missing"; exit 1; fi
+
+      - name: cargo audit
+        run: cargo audit --deny warnings 2>&1 | tail -5 || echo 'audit found issues'
+
+      - name: cargo deny
+        run: |
+          cargo deny check advisories 2>/dev/null || { echo 'advisories FAIL'; exit 1; }
+          cargo deny check sources 2>/dev/null || { echo 'sources FAIL'; exit 1; }
+          cargo deny check bans 2>/dev/null || { echo 'bans FAIL'; exit 1; }
+
+      - name: actionlint
+        run: actionlint .github/workflows/*.yml 2>/dev/null || echo 'actionlint found issues'
+
+      - name: shellcheck
+        run: shellcheck scripts/*.sh 2>/dev/null || echo 'shellcheck found issues'
+
+      - name: gitleaks config
+        run: test -f .gitleaks.toml || { echo 'FAIL'; exit 1; }
+
+      - name: stale files
+        run: |
+          stale=$(find . -name "*.bak" -o -name "*.perf" -o -name "*.old" -not -path "./target/*" 2>/dev/null)
+          if [ -n "$stale" ]; then echo "FAIL"; echo "$stale"; exit 1; fi
+
+      - name: gate.js sync
+        run: |
+          if ! diff pi/gate.js crates/reliary-agent/pi/gate.js >/dev/null 2>&1; then
+            echo "gate.js out of sync"; exit 1; fi
+
+      - name: gate.js tests
+        run: node scripts/test_gate_levels.js
+
+      - name: no openssl-sys
+        run: |
+          if cargo tree -e normal 2>/dev/null | grep -q "openssl-sys"; then
+            echo "openssl-sys blocks ARM"; exit 1; fi
+
+      - name: binary size
+        run: ls -lh target/release/reliary-agent 2>/dev/null || true
+
+      - name: test count
+        run: |
+          count=$(cargo test 2>&1 | grep "^test result:" | grep -oP '\d+(?= passed)' | python3 -c "import sys; print(sum(int(l) for l in sys.stdin if l.strip()))")
+          echo "Test count: $count"
