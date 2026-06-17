@@ -85,7 +85,7 @@ jobs:
           done > artifacts/SHA256SUMS
           cat artifacts/SHA256SUMS
       - name: Install cosign
-        uses: sigstore/cosign-installer@c1e9e78737838a88701b0c48e0c332c8b0e3e7d0  # v3.8.2
+        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb  # v3.8.2
       - name: Sign checksums with cosign
         run: |
           cosign sign-blob artifacts/SHA256SUMS --bundle artifacts/SHA256SUMS.sig --yes 2>/dev/null || echo "WARN: cosign signing failed (expected on forks)"
