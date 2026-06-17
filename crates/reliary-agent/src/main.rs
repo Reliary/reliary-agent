@@ -484,16 +484,15 @@ struct Cli {
     quiet: bool,
 }
 
-/// Reference list of all CLI subcommand names. CI guardrail verifies each
-/// appears in README.md. Add new subcommands here and in the doc.
+/// Reference list of all user-facing CLI subcommand names. CI guardrail verifies each
+/// appears in README.md. Hidden commands (daemon, mcp, veto, fix-dir, fix-file,
+/// apply-edit, session-state, memory) are excluded — they exist but are not documented.
 pub const CLI_COMMANDS: &[&str] = &[
     "search", "index", "compress", "risk",
-    "fix-dir", "fix-file", "serve", "mcp",
-    "init", "uninstall", "doctor", "status",
-    "clean", "logs", "config", "veto",
-    "apply-edit", "sift", "session-state", "memory",
-    "dead", "start", "stop", "completions", "man",
-    "update", "trust",
+    "serve", "init", "uninstall", "doctor", "status",
+    "clean", "logs", "config",
+    "dead", "start", "stop", "sift",
+    "completions", "man", "update", "trust",
 ];
 
 #[derive(Subcommand)]
