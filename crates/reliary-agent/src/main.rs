@@ -417,31 +417,36 @@ fn main() {
                     println!("{}", config::set_config(k, v, *local, root_str));
                 }
                 (None, None) => {
-                    println!("\x1b[1m| Current Config |\x1b[0m");
-                    let mode = config::resolve_mode(root.as_deref().or(Some(".")));
-                    println!("  \x1b[1mgate mode:\x1b[0m {}", mode.as_str());
-                    // Show config file locations
-                    let global = config::global_config_path();
-                    println!("  \x1b[2mGlobal:\x1b[0m {}", global.display());
-                    if let Some(r) = root {
-                        let local = config::project_config_path(r);
-                        println!("  \x1b[2mLocal: \x1b[0m {}", local.display());
-                    }
-                    // Show features
-                    let features = config::resolve_features(root.as_deref());
-                    let active: Vec<String> = features.iter()
-                        .filter(|(_, v)| *v)
-                        .map(|(k, _)| k.clone())
-                        .collect();
-                    let inactive: Vec<String> = features.iter()
-                        .filter(|(_, v)| !*v)
-                        .map(|(k, _)| k.clone())
-                        .collect();
-                    if !active.is_empty() {
-                        println!("  \x1b[1mfeatures enabled:\x1b[0m {}", active.join(", "));
-                    }
-                    if !inactive.is_empty() {
-                        println!("  \x1b[2mfeatures disabled:\x1b[0m {}", inactive.join(", "));
+                    let resolved_mode = config::resolve_mode_with_source(root.as_deref().or(Some(".")));
+                    let resolved_features = config::resolve_features_with_source(root.as_deref());
+
+                    if fmt == reliary_core::OutputFormat::Json {
+                        let mut map = serde_json::Map::new();
+                        map.insert("mode".into(), serde_json::Value::String(resolved_mode.value.as_str().into()));
+                        map.insert("mode_source".into(), serde_json::Value::String(resolved_mode.source.as_str().into()));
+                        let features_obj: Vec<serde_json::Value> = resolved_features.iter().map(|f| {
+                            serde_json::json!({"name": f.name, "enabled": f.enabled, "source": f.source.as_str()})
+                        }).collect();
+                        map.insert("features".into(), serde_json::Value::Array(features_obj));
+                        map.insert("global_config".into(), serde_json::Value::String(config::global_config_path().to_string_lossy().into()));
+                        if let Some(r) = root {
+                            map.insert("project_config".into(), serde_json::Value::String(config::project_config_path(r).to_string_lossy().into()));
+                        }
+                        println!("{}", serde_json::to_string_pretty(&map).unwrap());
+                    } else {
+                        println!("\x1b[1m| Current Config |\x1b[0m");
+                        println!("  \x1b[1mgate mode:\x1b[0m {} \x1b[2m(from: {})\x1b[0m", resolved_mode.value.as_str(), resolved_mode.source.as_str());
+                        let global = config::global_config_path();
+                        println!("  \x1b[2mGlobal:\x1b[0m {}", global.display());
+                        if let Some(r) = root {
+                            let local_path = config::project_config_path(r);
+                            println!("  \x1b[2mLocal: \x1b[0m {}", local_path.display());
+                        }
+                        println!("  \x1b[1mfeatures:\x1b[0m");
+                        for f in &resolved_features {
+                            let icon = if f.enabled { "\x1b[32m+\x1b[0m" } else { "\x1b[2m-\x1b[0m" };
+                            println!("    {} {} \x1b[2m({})\x1b[0m", icon, f.name, f.source.as_str());
+                        }
                     }
                 }
                 _ => {

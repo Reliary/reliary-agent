@@ -22,8 +22,6 @@ Save 16-84% on API tokens and eliminate debug spirals across any agent framework
 
 ## Installation
 
-Choose your preferred package manager to install `reliary-agent`:
-
 ```bash
 # NPM (Recommended for Node.js developers)
 npm install -g @reliary/agent
@@ -46,7 +44,7 @@ reliary-agent serve &              # starts daemon + API proxy on port 9090
 reliary-agent index ./project      # build local search index
 ```
 
-After `init`, your agents have access to the daemon's MCP tools (search, risk, heal).
+After `init`, your agents have access to the daemon's MCP tools (search, risk, guard).
 For conversation compression, configure your agent to route through the [API Proxy](#token-compression-api-proxy).
 
 ## Usage by Agent
@@ -63,11 +61,11 @@ pi --model gpt-4o --print "fix it"
 ```
 
 Pi gets the full stack:
-- ✅ Proxy compression + edit safety (via `*_BASE_URL` pointing at localhost:9090)
-- ✅ Gate.js extension (compresses all tool outputs)
-- ✅ Transparent strict mode (bash/write/grep are safely redirected to sandbox tools without errors)
-- ✅ Self-healing edits (tests run before the LLM sees failures)
-- Default mode: **strict** (100% pass rate on benchmarks, ~70K WC median vs ~92K reactive)
+- Proxy compression + edit safety (via `*_BASE_URL` pointing at localhost:9090)
+- Gate.js extension (compresses all tool outputs)
+- Transparent strict mode (bash/write/grep are safely redirected to sandbox tools without errors)
+- Self-healing edits (tests run before the LLM sees failures)
+- Default mode: **reactive** (safety escalates on unsafe behavior, auto-deescalates after N turns)
 
 ### Claude Code
 
@@ -77,9 +75,9 @@ export ANTHROPIC_BASE_URL=http://localhost:9090/
 ```
 
 Claude Code gets:
-- ✅ Proxy compression + edit safety (via `:9090`, routed via env var)
-- ✅ MCP tools (search, risk, guard, dead) — auto-injected by `init`
-- ❌ Transparent redirect does not apply (Claude uses its own Bash tool)
+- Proxy compression + edit safety (via `:9090`, routed via env var)
+- MCP tools (search, risk, guard, dead) — auto-injected by `init`
+- No transparent redirect (Claude uses its own Bash tool)
 
 ### Cline / OpenCode
 
@@ -89,20 +87,20 @@ export OPENAI_BASE_URL=http://localhost:9090/v1   # match your provider's *_BASE
 ```
 
 Both get:
-- ✅ Proxy compression + edit safety (via `:9090`)
-- ✅ MCP tools — auto-injected by `init`
-- ❌ No gate.js (Pi-only extension)
+- Proxy compression + edit safety (via `:9090`)
+- MCP tools — auto-injected by `init`
+- No gate.js (Pi-only extension)
 
 ### Savings by Agent Stack
 
 | Agent | Stack | Savings |
 |---|---|---|
-| **Pi** | Proxy + guard + gate.js strict mode | **16-84% weighted cost**, ~70K WC median |
+| **Pi** | Proxy + guard + gate.js | **16-84% weighted cost** |
 | **Claude Code** | Proxy + guard + MCP | **16-60%** |
 | **Cline / OpenCode** | Proxy + guard + MCP | **16-60%** |
 | **Any agent** | Proxy only (passthrough) | **0%** (just routing) |
 
-> *Note: Long multi-turn sessions (15+ turns) hit the highest savings. Short 3-turn fixes hit the lower end. The safety guards eliminate catastrophic debug spirals.*
+> Long multi-turn sessions (15+ turns) hit the highest savings. Short 3-turn fixes hit the lower end. The safety guards eliminate catastrophic debug spirals.
 
 ## Features
 
@@ -129,7 +127,7 @@ flowchart LR
 
 ### Self-Healing Edits
 
-When the LLM edits a file, `reliary` shadow-applies the change, runs your test suite, and reverts the file if the tests fail. The LLM never sees the failure spiral.
+When the LLM edits a file, `reliary` shadow-applies the change, runs your test suite, and reverts the file if the tests fail. The LLM never sees the failure spiral. Toggle with `features.healEdit` (on by default, disable via `RELIARY_FEATURES=-healEdit`).
 
 ```mermaid
 flowchart LR
@@ -145,7 +143,7 @@ flowchart LR
 
 ### Safety & Guardrails
 
-- **Cross-File Edit Guard (on by default):** Intercepts edits and checks them against the local search index. If an edit would orphan cross-file references (e.g., renaming a function without updating the places that call it), a warning is injected *before* the edit reaches the LLM. 
+- **Cross-File Edit Guard (on by default):** Intercepts edits and checks them against the local search index. If an edit would orphan cross-file references (e.g., renaming a function without updating the places that call it), a warning is injected *before* the edit reaches the LLM.
 - **Anti-Decision Memory (on by default):** A cross-session learning system. If the LLM repeatedly tries and fails to use a specific identifier across multiple sessions, the proxy injects a subtle warning the next time it tries to use it, conditioning the LLM to stop repeating the mistake.
 - **Transparent Strict Mode (Pi only):** Instead of blocking risky commands (like blind `sed` replacements) with error messages that confuse the LLM, the agent transparently redirects them to safe sandbox tools.
 - **Identifier Veto:** Blocks edits that reference completely hallucinated function or variable names.
@@ -157,43 +155,61 @@ Every underlying tool is available through standard MCP, working natively with C
 
 ```bash
 reliary-agent search "bm25_idf" ./project           # Fast local search
-reliary-agent risk ./src/main.rs                    # Pre-edit risk analysis
-reliary-agent dead ./project                        # Dead code detection
+reliary-agent risk ./src/main.rs                     # Pre-edit risk analysis
+reliary-agent describe ./src/main.rs                 # Identifier summary
 ```
 
 ## CLI Reference
 
+### Core
+
 ```bash
-# Explore
-reliary-agent index ./project         # Build search index
-reliary-agent search "query" ./path   # Search index
-reliary-agent risk ./src/file.rs      # Pre-edit risk analysis
-reliary-agent dead ./project          # Dead code detection
+reliary-agent serve                              # Start daemon + proxy on :9090
+reliary-agent start                              # Start daemon in background
+reliary-agent stop                               # Stop background daemon
+reliary-agent doctor                             # System health check
+reliary-agent doctor --fix                       # Check + auto-fix issues
+reliary-agent status                             # Project intelligence overview
+reliary-agent init                               # Auto-configure agents (Pi, Claude, Cline)
+reliary-agent uninstall                          # Remove all integrations
+```
 
-# Edit
-reliary-agent fix-dir ./project       # Apply stored fix patterns
-reliary-agent fix-file file old new   # Apply pattern to single file
+### Search & Index
 
-# Services
-reliary-agent serve                   # Daemon + proxy (:9090)
-reliary-agent mcp                     # MCP server (stdio)
-reliary-agent init                    # Auto-configure agents
-reliary-agent uninstall               # Remove all integrations
-reliary-agent doctor                  # System health check
-reliary-agent status                  # Project intelligence overview
-reliary-agent clean                   # Wipe project .reliary
-reliary-agent logs                    # Tail daemon logs
+```bash
+reliary-agent index ./project                    # Build search index
+reliary-agent search "query" ./path              # Search index
+reliary-agent risk ./src/file.rs                 # Pre-edit risk analysis
+reliary-agent describe ./src/file.rs             # Identifier summary
+```
 
-# Config
-reliary-agent config                  # Show current settings
-reliary-agent config mode strict      # Set safety level
+### Compression
 
-# Utilities
-reliary-agent veto ./src/file.rs      # Check identifiers exist in index
-reliary-agent apply-edit file body    # Apply edit with self-healing
-reliary-agent sift ./src/file.rs      # Compress large terminal output
-reliary-agent session-state           # Debug session state machine
-reliary-agent memory                  # Cross-session memory query (stub)
+```bash
+reliary-agent compress < input.txt               # IR reasoning compression (stdin)
+reliary-agent sift cargo test                    # Pipe command output through compression
+```
+
+### Configuration
+
+```bash
+reliary-agent config                             # Show current config + file paths
+reliary-agent config mode fast                   # Set gate mode (fast/reactive/strict)
+reliary-agent config --local mode strict         # Set in project .reliary/config.json
+reliary-agent clean                              # Wipe project .reliary (with confirmation)
+reliary-agent clean --global                     # Wipe ~/.reliary
+reliary-agent clean --all                        # Wipe both
+reliary-agent logs                               # Tail daemon logs
+reliary-agent logs --tail                        # Follow in real-time
+reliary-agent logs --level debug                 # Filter by level
+```
+
+### Output Format
+
+```bash
+reliary-agent --format json search "query" .     # JSON output for scripts/CI
+reliary-agent --format compact search "query" .  # Minimal output for agents
+reliary-agent --format default search "query" .  # Human-readable (default)
 ```
 
 ## Configuration
@@ -205,12 +221,23 @@ See [CONFIG.md](./CONFIG.md) for full documentation on the cascading configurati
 | Env var | Effect |
 |---|---|
 | `RELIARY_MODE=fast` | Maximum compression (no safety rails) |
-| `RELIARY_MODE=reactive` | Safety escalates on unsafe behavior |
-| `RELIARY_MODE=strict` | Full sandbox — transparently redirects risky commands (default) |
-| `RELIARY_FEATURES=+editMerge,-taskTargets` | Toggle individual features |
-| `RELIARY_UPSTREAM_URL=https://api.openai.com/v1` | Default upstream for unknown API keys (replace with your provider's URL) |
-| `RELIARY_PROXY_GUARD_DISABLE=1` | Disable cross-file edit safety (on by default) |
-| `RELIARY_PROXY_ANTI_DISABLE=1` | Disable Anti-decision memory (on by default) |
+| `RELIARY_MODE=reactive` | Safety escalates on unsafe behavior (default) |
+| `RELIARY_MODE=strict` | Full sandbox — transparently redirects risky commands |
+| `RELIARY_FEATURES=+editMerge,-healEdit` | Toggle individual features |
+| `RELIARY_UPSTREAM_URL=https://api.openai.com/v1` | Default upstream for unknown API keys |
+| `RELIARY_PROXY_GUARD_DISABLE=1` | Disable cross-file edit safety |
+| `RELIARY_PROXY_ANTI_DISABLE=1` | Disable Anti-decision memory |
+
+### Features
+
+| Feature | Default | Description |
+|---|---|---|
+| `compress` | on | Reasoning compression on assistant messages |
+| `convWindow` | on | Conversation window collapsing for old messages |
+| `readEnrichment` | on | Enrich file reads with structural summaries |
+| `editMerge` | off | Merge consecutive edits (disabled due to regression) |
+| `healEdit` | on | Self-healing: test edits before applying |
+| `priorInjection` | off | Inject prior session knowledge (disabled due to overhead) |
 
 ## Architecture
 
@@ -244,7 +271,7 @@ graph TD
 
 ```bash
 cargo build --release
-cargo test --release
+cargo test --release -- --test-threads=1
 reliary-agent serve &    # start daemon + proxy
 ```
 
@@ -253,6 +280,7 @@ reliary-agent serve &    # start daemon + proxy
 - **[CONFIG.md](./CONFIG.md)** — Mode system, feature flags, config cascade
 - **[SECURITY.md](./SECURITY.md)** — Vulnerability disclosure and security policy
 - **[CONTRIBUTING.md](./CONTRIBUTING.md)** — Build, test, PR workflow
+- **[pi/GATE.md](./pi/GATE.md)** — Pi extension reference
 
 ## License
 

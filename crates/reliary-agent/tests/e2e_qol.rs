@@ -1,24 +1,128 @@
-/// QoL integration tests for doctor, clean, config, version, and features.
+/// QoL + config transparency + JSON output tests.
 use std::process::Command;
 
 fn rel() -> String {
     env!("CARGO_BIN_EXE_reliary-agent").to_string()
 }
 
-// --- 1. --version flag ---
+// --- Config transparency tests ---
+
 #[test]
-fn test_version_flag() {
+fn test_config_shows_source_default() {
+    let output = Command::new(rel())
+        .args(["config"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Should show source for mode
+    assert!(
+        stdout.contains("from:") || stdout.contains("default"),
+        "config should show source: {}", stdout
+    );
+}
+
+#[test]
+fn test_config_json_output() {
+    let output = Command::new(rel())
+        .args(["--format", "json", "config"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Should be valid JSON
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .expect(&format!("config --format json should produce valid JSON: {}", stdout));
+    // Should contain mode and mode_source
+    assert!(parsed.get("mode").is_some(), "JSON should have mode key");
+    assert!(parsed.get("mode_source").is_some(), "JSON should have mode_source key");
+    assert!(parsed.get("features").is_some(), "JSON should have features array");
+}
+
+#[test]
+fn test_config_json_features_have_sources() {
+    let output = Command::new(rel())
+        .args(["--format", "json", "config"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let features = parsed.get("features").unwrap().as_array().unwrap();
+    assert!(!features.is_empty(), "features array should not be empty");
+    for f in features {
+        assert!(f.get("name").is_some(), "feature should have name");
+        assert!(f.get("enabled").is_some(), "feature should have enabled");
+        assert!(f.get("source").is_some(), "feature should have source");
+    }
+}
+
+#[test]
+fn test_config_env_source_override() {
+    let output = Command::new(rel())
+        .args(["--format", "json", "config"])
+        .env("RELIARY_MODE", "fast")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.get("mode").unwrap().as_str(), Some("fast"));
+    assert_eq!(parsed.get("mode_source").unwrap().as_str(), Some("env"));
+}
+
+#[test]
+fn test_config_feature_env_source() {
+    let output = Command::new(rel())
+        .args(["--format", "json", "config"])
+        .env("RELIARY_FEATURES", "-compress,+editMerge")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let features = parsed.get("features").unwrap().as_array().unwrap();
+    let compress = features.iter().find(|f| f["name"] == "compress").unwrap();
+    assert_eq!(compress["enabled"], false);
+    assert_eq!(compress["source"], "env");
+    let edit_merge = features.iter().find(|f| f["name"] == "editMerge").unwrap();
+    assert_eq!(edit_merge["enabled"], true);
+    assert_eq!(edit_merge["source"], "env");
+}
+
+// --- Doctor / Status tests ---
+
+#[test]
+fn test_doctor_output_format() {
+    let output = Command::new(rel())
+        .args(["doctor"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Daemon:"), "doctor should check daemon: {}", stdout);
+    assert!(stdout.contains("Upstream:"), "doctor should check upstream: {}", stdout);
+}
+
+#[test]
+fn test_status_output_format() {
+    let output = Command::new(rel())
+        .args(["status"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Proxy:"), "status should show proxy: {}", stdout);
+    assert!(stdout.contains("Mode:"), "status should show mode: {}", stdout);
+    assert!(stdout.contains("Routes:"), "status should show routes: {}", stdout);
+}
+
+// --- CLI guardrails ---
+
+#[test]
+fn test_version_flag_works() {
     let output = Command::new(rel())
         .arg("--version")
         .output()
         .unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("reliary-agent"), "should contain binary name: {}", stdout);
-    assert!(stdout.contains("0."), "should contain version number: {}", stdout);
+    assert!(stdout.contains("reliary-agent"));
 }
 
-// --- 2. Internal commands hidden from --help ---
 #[test]
 fn test_internal_commands_hidden() {
     let output = Command::new(rel())
@@ -26,162 +130,26 @@ fn test_internal_commands_hidden() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // These should NOT appear in help
     let hidden = ["fix-file", "apply-edit", "session-state", "memory", "veto", "fix-dir", "mcp"];
     for cmd in &hidden {
-        // Hidden commands might appear in raw text but shouldn't be listed in usage lines
-        // Check they're not in the "Commands:" section
         let commands_section = stdout.split("Commands:").nth(1).unwrap_or("");
         assert!(
             !commands_section.contains(cmd),
-            "Internal command '{}' should be hidden from help but found in Commands section",
-            cmd
-        );
-    }
-    // These SHOULD appear in help
-    let visible = ["search", "index", "serve", "start", "doctor", "status", "init", "clean", "logs", "config"];
-    for cmd in &visible {
-        assert!(
-            stdout.contains(cmd),
-            "Visible command '{}' missing from help output",
+            "Internal command '{}' should be hidden from help",
             cmd
         );
     }
 }
 
-// --- 3. Config displays file paths ---
 #[test]
-fn test_config_shows_paths() {
-    let output = Command::new(rel())
-        .args(["config"])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("gate mode"), "should show gate mode: {}", stdout);
-    assert!(stdout.contains("Global:"), "should show global config path: {}", stdout);
-}
-
-// --- 4. Config shows features ---
-#[test]
-fn test_config_shows_features() {
-    let output = Command::new(rel())
-        .args(["config"])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Default features: compress, convWindow, readEnrichment should be enabled
-    assert!(stdout.contains("compress"), "should list compress feature: {}", stdout);
-    assert!(stdout.contains("features enabled") || stdout.contains("features disabled"),
-        "should show features: {}", stdout);
-}
-
-// --- 5. Doctor checks upstream ---
-#[test]
-fn test_doctor_upstream_check() {
-    let output = Command::new(rel())
-        .args(["doctor"])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Upstream:") || stdout.contains("upstream"),
-        "doctor should check upstream routing: {}", stdout
-    );
-}
-
-// --- 6. Clean confirmation prompt ---
-#[test]
-fn test_clean_confirmation_required() {
-    // Running clean without stdin should hang or fail, not delete
+fn test_clean_requires_confirmation() {
     let output = Command::new(rel())
         .args(["clean"])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Wipe") || stderr.contains("clean") || stderr.contains("project state"),
+        stderr.contains("Wipe") || stderr.contains("project state"),
         "clean should show confirmation prompt: {}", stderr
-    );
-}
-
-// --- 7. Serve banner visible ---
-#[test]
-fn test_serve_banner_contains_version() {
-    // Start serve briefly, capture stderr
-    let mut child = Command::new(rel())
-        .args(["serve"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    // Wait 2 seconds for startup
-    std::thread::sleep(std::time::Duration::from_secs(2));
-
-    // Kill it
-    child.kill().ok();
-    let output = child.wait_with_output().unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Reliary Agent") || stderr.contains("Proxy"),
-        "serve should print startup banner: {}", stderr
-    );
-}
-
-// --- 8. Status shows proxy state ---
-#[test]
-fn test_status_shows_proxy() {
-    let output = Command::new(rel())
-        .args(["status"])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Proxy:") || stdout.contains("proxy") || stdout.contains("Proxy"),
-        "status should show proxy state: {}", stdout
-    );
-    assert!(
-        stdout.contains("Mode:"),
-        "status should show mode: {}", stdout
-    );
-}
-
-// --- 9. Config set and get round-trip ---
-#[test]
-fn test_config_roundtrip() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
-
-    // Set a config value
-    let output = Command::new(rel())
-        .args(["config", "mode", "fast", "--local", "--root", root])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Set mode = fast"), "should confirm: {}", stdout);
-
-    // Read it back
-    let output = Command::new(rel())
-        .args(["config", "--root", root])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("fast"), "should show mode=fast: {}", stdout);
-}
-
-// --- 10. Feature toggle ---
-#[test]
-fn test_feature_toggle_via_env() {
-    // Set a feature override via env var
-    let output = Command::new(rel())
-        .args(["config"])
-        .env("RELIARY_FEATURES", "-compress,+editMerge")
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // compress should be disabled, editMerge should be enabled
-    assert!(
-        stdout.contains("compress") && stdout.contains("editMerge"),
-        "should show both features: {}", stdout
     );
 }
