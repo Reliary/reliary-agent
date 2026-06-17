@@ -28,8 +28,8 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
 | Mode | Bash/write/grep | Safety escalation | Best for |
 |------|----------------|-------------------|----------|
 | `fast` | Pass through | None | Efficient models (Qwen, Nemotron) |
-| `reactive` (default) | Pass through until trigger | Escalates on unsafe behavior | Most models |
-| `strict` | Transparent redirect | Redirects to sandbox tools (auto-deescalates) | High-variance models (DeepSeek) |
+| `reactive` | Pass through until trigger | Escalates on unsafe behavior | Most models |
+| `strict` (default) | Transparent redirect | Bash/write/grep redirected to sandbox tools, auto-deescalates after 5 redirects | High-variance models (DeepSeek) |
 
 ## Features
 
