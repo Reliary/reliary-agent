@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.2
+
+### Provider-agnostic (June 2026)
+
+- **Removed `scan_env_vars()`:** The proxy no longer hardcodes mappings like `DEEPSEEK_API_KEY` → `api.deepseek.com`. Auto-discovery now uses agent configs only (OpenCode, Pi, Claude, Cline). Unknown API keys fall through to `RELIARY_UPSTREAM_URL`.
+- **Fixed `normalize_url()` for generic upstreams:** URLs without a known path suffix now get `/v1/chat/completions` appended instead of bare `/chat/completions`. Fixes routing for LiteLLM and other non-standard endpoints.
+- **Cleaner `init` prompts:** No provider names in Pi proxy routing or fallback messages. Documents `RELIARY_UPSTREAM_URL` as the generic fallback.
+- **Docs:** README/CONFIG.md examples use neutral provider references. `RELIARY_UPSTREAM_URL` documented.
+- **Test data:** All `DEEPSEEK_API_KEY` references replaced with `OPENAI_API_KEY` in test fixtures.
+
 ## v0.5.1
 
 ### Bugfix
