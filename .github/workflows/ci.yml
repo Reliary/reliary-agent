@@ -88,7 +88,14 @@ jobs:
       - name: Init smoke test
         run: |
           timeout 10 ./target/release/reliary-agent init </dev/null 2>&1 || true
-      - name: Dependency graph diff (against master)
+      - name: Integrity guard — gate.js copies in sync
+        run: |
+          if ! diff pi/gate.js crates/reliary-agent/pi/gate.js >/dev/null 2>&1; then
+            echo "FAIL: pi/gate.js and crates/reliary-agent/pi/gate.js out of sync"
+            echo "  Run: cp pi/gate.js crates/reliary-agent/pi/gate.js"
+            exit 1
+          fi
+          echo "gate.js copies in sync"
         run: |
           cargo tree -e normal --prefix none 2>/dev/null | sort > /tmp/deps_head.txt
           echo "(dependency diff requires upstream branch reference)"
