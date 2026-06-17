@@ -28,6 +28,41 @@ impl GateMode {
     }
 }
 
+/// The layer from which a config value was resolved.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigSource {
+    Env,
+    Project,
+    Global,
+    Default,
+}
+
+impl ConfigSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ConfigSource::Env => "env",
+            ConfigSource::Project => "project .reliary/config.json",
+            ConfigSource::Global => "global ~/.reliary/config.json",
+            ConfigSource::Default => "default",
+        }
+    }
+}
+
+/// A resolved config value with its source.
+#[derive(Debug, Clone)]
+pub struct ResolvedMode {
+    pub value: GateMode,
+    pub source: ConfigSource,
+}
+
+/// A resolved feature with its source.
+#[derive(Debug, Clone)]
+pub struct ResolvedFeature {
+    pub name: String,
+    pub enabled: bool,
+    pub source: ConfigSource,
+}
+
 const CONFIG_FILENAME: &str = ".reliary/config.json";
 
 pub fn global_config_path() -> PathBuf {
@@ -54,86 +89,110 @@ pub fn write_config_file(path: &PathBuf, config: &HashMap<String, String>) -> Re
     crate::heal::atomic_write(path.to_str().unwrap_or("config.json"), &content)
 }
 
-pub fn resolve_mode(workdir: Option<&str>) -> GateMode {
+/// Resolve mode with source tracking.
+pub fn resolve_mode_with_source(workdir: Option<&str>) -> ResolvedMode {
     if let Ok(env_mode) = std::env::var("RELIARY_MODE") {
         if !env_mode.is_empty() {
-            return GateMode::from_str(&env_mode);
+            return ResolvedMode {
+                value: GateMode::from_str(&env_mode),
+                source: ConfigSource::Env,
+            };
         }
     }
 
     if let Some(wd) = workdir {
         let project_cfg = read_config_file(&project_config_path(wd));
         if let Some(mode) = project_cfg.get("mode") {
-            return GateMode::from_str(mode);
+            return ResolvedMode {
+                value: GateMode::from_str(mode),
+                source: ConfigSource::Project,
+            };
         }
     }
 
     let global_cfg = read_config_file(&global_config_path());
     if let Some(mode) = global_cfg.get("mode") {
-        return GateMode::from_str(mode);
+        return ResolvedMode {
+            value: GateMode::from_str(mode),
+            source: ConfigSource::Global,
+        };
     }
 
-    GateMode::Reactive
+    ResolvedMode {
+        value: GateMode::Reactive,
+        source: ConfigSource::Default,
+    }
 }
 
-/// Resolve feature flags with the same cascade as mode.
-/// Returns Vec of (feature_name, enabled).
-pub fn resolve_features(workdir: Option<&str>) -> Vec<(String, bool)> {
-    let defaults: Vec<(String, bool)> = vec![
-        ("compress".into(), true),
-        ("convWindow".into(), true),
-        ("readEnrichment".into(), true),
-        ("editMerge".into(), false),
-        ("healEdit".into(), true),
-        ("priorInjection".into(), false),
+/// Resolve mode (simple API, no source tracking).
+pub fn resolve_mode(workdir: Option<&str>) -> GateMode {
+    resolve_mode_with_source(workdir).value
+}
+
+/// Resolve feature flags with source tracking.
+pub fn resolve_features_with_source(workdir: Option<&str>) -> Vec<ResolvedFeature> {
+    let defaults: Vec<(&str, bool)> = vec![
+        ("compress", true),
+        ("convWindow", true),
+        ("readEnrichment", true),
+        ("editMerge", false),
+        ("healEdit", true),
+        ("priorInjection", false),
     ];
 
-    // Parse env var: RELIARY_FEATURES=+compress,-convWindow format
-    let mut overrides: HashMap<String, bool> = HashMap::new();
+    // Parse env var
+    let mut env_overrides: HashMap<String, bool> = HashMap::new();
     if let Ok(env_features) = std::env::var("RELIARY_FEATURES") {
         for part in env_features.split(',') {
             let part = part.trim();
             if let Some(feat) = part.strip_prefix('+') {
-                overrides.insert(feat.to_string(), true);
+                env_overrides.insert(feat.to_string(), true);
             } else if let Some(feat) = part.strip_prefix('-') {
-                overrides.insert(feat.to_string(), false);
+                env_overrides.insert(feat.to_string(), false);
             }
         }
     }
 
     // Read config files
-    let mut config_map: HashMap<String, bool> = HashMap::new();
+    let mut project_features: HashMap<String, bool> = HashMap::new();
+    let mut global_features: HashMap<String, bool> = HashMap::new();
+
     if let Some(wd) = workdir {
         let project_cfg = read_config_file(&project_config_path(wd));
         if let Some(features_val) = project_cfg.get("features") {
-            if let Ok(features_obj) = serde_json::from_str::<HashMap<String, bool>>(features_val) {
-                for (k, v) in features_obj {
-                    config_map.insert(k, v);
-                }
+            if let Ok(obj) = serde_json::from_str::<HashMap<String, bool>>(features_val) {
+                project_features = obj;
             }
         }
     }
     let global_cfg = read_config_file(&global_config_path());
     if let Some(features_val) = global_cfg.get("features") {
-        if let Ok(features_obj) = serde_json::from_str::<HashMap<String, bool>>(features_val) {
-            for (k, v) in features_obj {
-                config_map.entry(k).or_insert(v);
-            }
+        if let Ok(obj) = serde_json::from_str::<HashMap<String, bool>>(features_val) {
+            global_features = obj;
         }
     }
 
-    // Layer: defaults <- global config <- project config <- env overrides
-    let mut result = defaults;
-    for (k, v) in &mut result {
-        if let Some(gv) = config_map.get(k) {
-            *v = *gv;
+    // Resolve each feature with source priority
+    defaults.into_iter().map(|(name, default_val)| {
+        if let Some(val) = env_overrides.get(name) {
+            ResolvedFeature { name: name.to_string(), enabled: *val, source: ConfigSource::Env }
+        } else if let Some(val) = project_features.get(name) {
+            ResolvedFeature { name: name.to_string(), enabled: *val, source: ConfigSource::Project }
+        } else if let Some(val) = global_features.get(name) {
+            ResolvedFeature { name: name.to_string(), enabled: *val, source: ConfigSource::Global }
+        } else {
+            ResolvedFeature { name: name.to_string(), enabled: default_val, source: ConfigSource::Default }
         }
-        if let Some(ov) = overrides.get(k) {
-            *v = *ov;
-        }
-    }
+    }).collect()
+}
 
-    result
+/// Resolve features (simple API, no source tracking).
+#[allow(dead_code)]
+pub fn resolve_features(workdir: Option<&str>) -> Vec<(String, bool)> {
+    resolve_features_with_source(workdir)
+        .into_iter()
+        .map(|f| (f.name, f.enabled))
+        .collect()
 }
 
 pub fn set_config(key: &str, value: &str, project: bool, root: Option<&str>) -> String {
@@ -156,5 +215,53 @@ pub fn set_config(key: &str, value: &str, project: bool, root: Option<&str>) -> 
             format!("Set {} = {} in {}{}", key, value, location, root_msg)
         }
         Err(e) => format!("Error: {}", e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_mode_default() {
+        let result = resolve_mode_with_source(Some("/nonexistent"));
+        assert_eq!(result.value, GateMode::Reactive);
+        assert_eq!(result.source, ConfigSource::Default);
+    }
+
+    #[test]
+    fn test_resolve_mode_env() {
+        std::env::set_var("RELIARY_MODE", "fast");
+        let result = resolve_mode_with_source(None);
+        assert_eq!(result.value, GateMode::Fast);
+        assert_eq!(result.source, ConfigSource::Env);
+        std::env::remove_var("RELIARY_MODE");
+    }
+
+    #[test]
+    fn test_resolve_features_default() {
+        std::env::remove_var("RELIARY_FEATURES");
+        let features = resolve_features_with_source(Some("/nonexistent"));
+        let compress = features.iter().find(|f| f.name == "compress").unwrap();
+        assert!(compress.enabled);
+        assert_eq!(compress.source, ConfigSource::Default);
+
+        let edit_merge = features.iter().find(|f| f.name == "editMerge").unwrap();
+        assert!(!edit_merge.enabled);
+        assert_eq!(edit_merge.source, ConfigSource::Default);
+    }
+
+    #[test]
+    fn test_resolve_features_env_override() {
+        std::env::set_var("RELIARY_FEATURES", "-compress,+editMerge");
+        let features = resolve_features_with_source(Some("/nonexistent"));
+        let compress = features.iter().find(|f| f.name == "compress").unwrap();
+        assert!(!compress.enabled);
+        assert_eq!(compress.source, ConfigSource::Env);
+
+        let edit_merge = features.iter().find(|f| f.name == "editMerge").unwrap();
+        assert!(edit_merge.enabled);
+        assert_eq!(edit_merge.source, ConfigSource::Env);
+        std::env::remove_var("RELIARY_FEATURES");
     }
 }

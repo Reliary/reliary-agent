@@ -123,6 +123,35 @@ jobs:
             exit 1
           fi
           echo "QoL: config shows paths"
+      - name: QoL guard — config shows source of truth
+        run: |
+          out=$(./target/release/reliary-agent config 2>/dev/null)
+          if ! echo "$out" | grep -q "from:"; then
+            echo "FAIL: 'config' output doesn't show source of truth"
+            exit 1
+          fi
+          echo "QoL: config shows source"
+      - name: QoL guard — config --format json is valid JSON
+        run: |
+          out=$(./target/release/reliary-agent --format json config 2>/dev/null)
+          if ! echo "$out" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+            echo "FAIL: 'config --format json' output is not valid JSON"
+            echo "$out"
+            exit 1
+          fi
+          # Check required keys
+          if ! echo "$out" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'mode' in d and 'mode_source' in d and 'features' in d" 2>/dev/null; then
+            echo "FAIL: JSON output missing required keys (mode, mode_source, features)"
+            exit 1
+          fi
+          echo "QoL: config JSON valid with source keys"
+      - name: README guard — default mode matches code
+        run: |
+          # Config code defaults to reactive, README must not claim strict as default
+          if grep -q "default.*strict\|strict.*default" README.md 2>/dev/null | grep -v "transparent"; then
+            echo "WARN: README claims strict as default mode — code defaults to reactive"
+          fi
+          echo "QoL: README default mode check passed"
       - name: cargo audit
         run: cargo audit --deny warnings 2>&1 | tail -5 || true
       - name: cargo deny

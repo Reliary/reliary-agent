@@ -17,7 +17,7 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
     "convWindow": true,
     "readEnrichment": true,
     "editMerge": false,
-    "taskTargets": false,
+    "healEdit": true,
     "priorInjection": false
   }
 }
@@ -28,8 +28,8 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
 | Mode | Bash/write/grep | Safety escalation | Best for |
 |------|----------------|-------------------|----------|
 | `fast` | Pass through | None | Efficient models (Qwen, Nemotron) |
-| `reactive` | Pass through until trigger | Escalates on unsafe behavior | Lower-variance models |
-| `strict` (default) | Transparent redirect | Redirects to sandbox tools (auto-deescalates) | High-variance models (DeepSeek) |
+| `reactive` (default) | Pass through until trigger | Escalates on unsafe behavior | Most models |
+| `strict` | Transparent redirect | Redirects to sandbox tools (auto-deescalates) | High-variance models (DeepSeek) |
 
 ## Features
 
@@ -39,7 +39,7 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
 | `convWindow` | true | Drop old verbose tool results from conversation at 10+ messages |
 | `readEnrichment` | true | Compress non-target file reads with zone truncation |
 | `editMerge` | false | Combine sequential edits to same file into one operation (regresses on high-variance models) |
-| `taskTargets` | false | Preserve full content of task-targeted files |
+| `healEdit` | true | Self-healing: shadow-apply edits, run tests, revert on failure |
 | `priorInjection` | false | Inject chronicle edit history into system prompt (adds prompt overhead) |
 
 ## Environment Variables
@@ -47,13 +47,12 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
 | Variable | Values | Description |
 |----------|--------|-------------|
 | `RELIARY_MODE` | `fast`, `reactive`, `strict` | Override safety mode |
-| `RELIARY_FEATURES` | `+editMerge,-taskTargets` | Enable/disable individual features |
+| `RELIARY_FEATURES` | `+editMerge,-healEdit` | Enable/disable individual features |
 | `RELIARY_REPLAY` | `record`, `replay` | Deterministic benchmark mode |
-| `RELIARY_UPSTREAM_URL` | URL | Override auth-based routing. Default: resolved from `Authorization` header |
+| `RELIARY_UPSTREAM_URL` | URL | Fallback upstream URL for unknown API keys |
 | `RELIARY_PROXY_GUARD_DISABLE` | `1` | Disable guard (cross-file edit safety). On by default. |
-| `RELIARY_PROXY_ANTI_DISABLE` | `1` | Disable anti-decision (sticky identifier failure memory) in proxy. On by default. |
-| `RELIARY_PROXY_OUTPUT_COMPRESS` | `1` | Enable first-appearance freeze compression in proxy. On by default. |
-| `RELIARY_UPSTREAM_URL` | _(none)_ | Fallback upstream URL for unknown API keys. All unrecognized auth headers route here instead of returning 403. Useful when your provider isn't discovered from agent configs (e.g. a LiteLLM proxy). |
+| `RELIARY_PROXY_ANTI_DISABLE` | `1` | Disable anti-decision (sticky identifier failure memory). On by default. |
+| `RELIARY_PROXY_OUTPUT_COMPRESS` | `1` | Enable first-appearance freeze compression. On by default. |
 
 ## Agent Setup Examples (Proxy Routing)
 
@@ -70,8 +69,8 @@ To route your agent's API traffic through the proxy for conversation compression
 to config file defaults:
 
 ```bash
-# Enable editMerge (default: off), disable priorInjection (default: off)
-RELIARY_FEATURES=+editMerge,-priorInjection
+# Enable editMerge (default: off), disable healEdit (default: on)
+RELIARY_FEATURES=+editMerge,-healEdit
 
 # Disable read enrichment (default: on)
 RELIARY_FEATURES=-readEnrichment
