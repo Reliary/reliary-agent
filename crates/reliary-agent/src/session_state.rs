@@ -1,5 +1,5 @@
-/// Shared daemon state for multi-threaded operation.
-/// Owned by the daemon, shared across all agents via Arc.
+//! Shared daemon state for multi-threaded operation.
+// Owned by the daemon, shared across all agents via Arc.
 
 use rustc_hash::FxHashMap;
 use std::sync::{atomic::AtomicBool, Mutex};
@@ -17,7 +17,7 @@ pub struct ReadCacheEntry {
     pub len: usize,
 }
 
-/// Per-agent state tracked in memory (persisted to chronicle SQLite on changes)
+// Per-agent state tracked in memory (persisted to chronicle SQLite on changes)
 pub struct SessionState {
     pub scavenger_muzzled: AtomicBool,
     pub muzzle_time: Mutex<Instant>,

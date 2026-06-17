@@ -1,5 +1,5 @@
-/// File walking, tokenization, and index insertion.
-/// Uses Rayon for parallel parsing and FxHashMap for speed.
+//! File walking, tokenization, and index insertion.
+//! Uses Rayon for parallel parsing and FxHashMap for speed.
 
 use rusqlite::{params, Connection};
 use walkdir::WalkDir;
@@ -21,7 +21,7 @@ struct FileResult {
 /// Index all supported files in a directory. Returns file count.
 pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
     let mut paths = Vec::new();
-    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {  // GUARDED: intentional
         let path = entry.path();
         if !path.is_file() { continue; }
 
@@ -108,7 +108,7 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
         db.execute(
             "INSERT OR REPLACE INTO file_stats (file_id, token_len, content_len) VALUES (?1, ?2, ?3)",
             params![file_id, token_len, content_len],
-        ).ok();
+        ).ok();  // GUARDED: intentional
 
         count += 1;
     }

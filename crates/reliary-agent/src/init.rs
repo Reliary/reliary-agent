@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::process::Command;
 use serde_json::Value;
 
-fn ok(msg: &str) { println!("  {} {}", "\x1b[32m✓\x1b[0m", msg); }
+fn ok(msg: &str) { println!("  \x1b[32m✓\x1b[0m {}", msg); }
 
 // Embed gate.js at compile time
 
@@ -22,7 +22,7 @@ fn ask_yes_no(prompt: &str, default: bool) -> bool {
     let _ = io::stdout().flush();
 
     let mut input = String::new();
-    if io::stdin().read_line(&mut input).is_ok() {
+    if io::stdin().read_line(&mut input).is_ok() {  // GUARDED: intentional
         let input = input.trim().to_lowercase();
         if input.is_empty() {
             return default;
@@ -104,26 +104,26 @@ pub fn run() {
                                     if routes_count > 0 {
                                         ok(&format!("{} Pi API keys routed through proxy", routes_count));
                                     } else {
-                                        println!("  {} No Pi API keys found\n                     Set RELIARY_UPSTREAM_URL=http://127.0.0.1:9090/v1\n                     as a fallback (all unknown keys route through proxy)\n", "\x1b[33m-\x1b[0m");
+                                        println!("  \x1b[33m-\x1b[0m No Pi API keys found\n                     Set RELIARY_UPSTREAM_URL=http://127.0.0.1:9090/v1\n                     as a fallback (all unknown keys route through proxy)\n");
                                     }
                                 }
                             } else {
-                                println!("  {} Failed to run `pi install`\n", "\x1b[31m✗\x1b[0m");
+                                println!("  \x1b[31m✗\x1b[0m Failed to run `pi install`\n");
                             }
                         } else {
-                            println!("  {} Failed to run `pi install`\n", "\x1b[31m✗\x1b[0m");
+                            println!("  \x1b[31m✗\x1b[0m Failed to run `pi install`\n");
                         }
                     } else {
-                        println!("  {} Failed to write gate.js\n", "\x1b[31m✗\x1b[0m");
+                        println!("  \x1b[31m✗\x1b[0m Failed to write gate.js\n");
                     }
                 } else {
-                    println!("  {} Failed to create directory {:?}\n", "\x1b[31m✗\x1b[0m", target_dir);
+                    println!("  \x1b[31m✗\x1b[0m Failed to create directory {:?}\n", target_dir);
                 }
             } else {
-                println!("  {} Could not determine data directory\n", "\x1b[31m✗\x1b[0m");
+                println!("  \x1b[31m✗\x1b[0m Could not determine data directory\n");
             }
         } else {
-            println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
+            println!("  \x1b[33m-\x1b[0m Skipped\n");
         }
     }
 
@@ -136,10 +136,10 @@ pub fn run() {
                         ok("Updated ~/.claude.json");
                         configured_agents += 1;
                     } else {
-                        println!("  {} Failed to update ~/.claude.json\n", "\x1b[31m✗\x1b[0m");
+                        println!("  \x1b[31m✗\x1b[0m Failed to update ~/.claude.json\n");
                     }
             } else {
-                println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
+                println!("  \x1b[33m-\x1b[0m Skipped\n");
             }
         }
     }
@@ -166,10 +166,10 @@ pub fn run() {
                         ok("Updated opencode.json (stdio fallback)");
                         configured_agents += 1;
                     } else {
-                        println!("  {} Failed to update opencode.json\n", "\x1b[31m✗\x1b[0m");
+                        println!("  \x1b[31m✗\x1b[0m Failed to update opencode.json\n");
                     }
                 } else {
-                    println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
+                    println!("  \x1b[33m-\x1b[0m Skipped\n");
                 }
 
                 // Proxy routing — after MCP injection, ask to mutate provider baseURLs
@@ -181,10 +181,10 @@ pub fn run() {
                             ok("Generated ~/.reliary/proxy-routes.json");
                         }
                     } else {
-                        println!("  {} No providers found to update\n", "\x1b[33m-\x1b[0m");
+                        println!("  \x1b[33m-\x1b[0m No providers found to update\n");
                     }
                 } else {
-                    println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
+                    println!("  \x1b[33m-\x1b[0m Skipped\n");
                 }
             }
         }
@@ -207,10 +207,10 @@ pub fn run() {
                         ok("Updated cline MCP settings");
                         configured_agents += 1;
                     } else {
-                        println!("  {} Failed to update cline_mcp_settings.json\n", "\x1b[31m✗\x1b[0m");
+                        println!("  \x1b[31m✗\x1b[0m Failed to update cline_mcp_settings.json\n");
                     }
                 } else {
-                    println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
+                    println!("  \x1b[33m-\x1b[0m Skipped\n");
                 }
             }
         }
@@ -225,10 +225,10 @@ pub fn run() {
         if install_daemon() {
             ok("Daemon installed and started");
         } else {
-            println!("  {} Failed to install daemon\n", "\x1b[31m✗\x1b[0m");
+            println!("  \x1b[31m✗\x1b[0m Failed to install daemon\n");
         }
     } else {
-        println!("  {} Skipped\n", "\x1b[33m-\x1b[0m");
+        println!("  \x1b[33m-\x1b[0m Skipped\n");
     }
 
     // ── Summary ──
@@ -746,6 +746,75 @@ fn write_proxy_routes(routes: &HashMap<String, String>) -> bool {
     atomic_write(&routes_path.to_string_lossy(), &content)
 }
 
+/// Restore original OpenCode provider baseURLs from proxy-routes.json backup.
+pub fn restore_opencode_proxy_routes() -> bool {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return false,
+    };
+    let cfg_path = if cfg!(target_os = "windows") {
+        std::env::var("APPDATA").ok()
+            .map(|d| PathBuf::from(d).join("opencode").join("opencode.json"))
+    } else if cfg!(target_os = "macos") {
+        Some(home.join("Library/Application Support/opencode/opencode.json"))
+    } else {
+        Some(home.join(".config/opencode/opencode.json"))
+    };
+    let cfg_path = match cfg_path {
+        Some(p) => p,
+        None => return false,
+    };
+    if !cfg_path.exists() { return false; }
+
+    let routes_path = home.join(".reliary/proxy-routes.json");
+    let routes_content = match std::fs::read_to_string(&routes_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let routes: Value = match serde_json::from_str(&routes_content) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let backups = match routes.get("__backups").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return false,
+    };
+    let backups: HashMap<String, String> = match serde_json::from_str(backups) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+
+    let content = match std::fs::read_to_string(&cfg_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let mut v: Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    let mut restored = 0;
+    if let Some(obj) = v.as_object_mut() {
+        if let Some(providers) = obj.get_mut("provider").and_then(|p| p.as_object_mut()) {
+            for (name, provider) in providers.iter_mut() {
+                if let Some(original_url) = backups.get(name) {
+                    if let Some(options) = provider.get_mut("options").and_then(|o| o.as_object_mut()) {
+                        options.insert("baseURL".to_string(), Value::String(original_url.clone()));
+                        restored += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if restored > 0 {
+        if let Ok(new_content) = serde_json::to_string_pretty(&v) {
+            atomic_write(&cfg_path.to_string_lossy(), &new_content);
+        }
+    }
+    restored > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,13 +824,13 @@ mod tests {
         F: FnOnce(PathBuf),
     {
         let dir = std::env::temp_dir().join(format!("reliary_init_test_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir.join(".reliary"));
-        let old_home = std::env::var("HOME").ok();
+        let _ = std::fs::create_dir_all(dir.join(".reliary"));
+        let old_home = std::env::var("HOME").ok();  // GUARDED: intentional
         std::env::set_var("HOME", dir.to_str().unwrap());
 
         // Clear RELIARY_* env vars to avoid interference
-        let old_pi_key = std::env::var("OPENAI_API_KEY").ok();
-        let old_anthro_key = std::env::var("ANTHROPIC_API_KEY").ok();
+        let old_pi_key = std::env::var("OPENAI_API_KEY").ok();  // GUARDED: intentional
+        let old_anthro_key = std::env::var("ANTHROPIC_API_KEY").ok();  // GUARDED: intentional
         std::env::remove_var("OPENAI_API_KEY");
         std::env::remove_var("ANTHROPIC_API_KEY");
 
@@ -907,73 +976,4 @@ mod tests {
             assert!(servers.contains_key("reliary_new"), "new server should be added");
         });
     }
-}
-
-/// Restore original OpenCode provider baseURLs from proxy-routes.json backup.
-pub fn restore_opencode_proxy_routes() -> bool {
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => return false,
-    };
-    let cfg_path = if cfg!(target_os = "windows") {
-        std::env::var("APPDATA").ok()
-            .map(|d| PathBuf::from(d).join("opencode").join("opencode.json"))
-    } else if cfg!(target_os = "macos") {
-        Some(home.join("Library/Application Support/opencode/opencode.json"))
-    } else {
-        Some(home.join(".config/opencode/opencode.json"))
-    };
-    let cfg_path = match cfg_path {
-        Some(p) => p,
-        None => return false,
-    };
-    if !cfg_path.exists() { return false; }
-
-    let routes_path = home.join(".reliary/proxy-routes.json");
-    let routes_content = match std::fs::read_to_string(&routes_path) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let routes: Value = match serde_json::from_str(&routes_content) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let backups = match routes.get("__backups").and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => return false,
-    };
-    let backups: HashMap<String, String> = match serde_json::from_str(backups) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-
-    let content = match std::fs::read_to_string(&cfg_path) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let mut v: Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-
-    let mut restored = 0;
-    if let Some(obj) = v.as_object_mut() {
-        if let Some(providers) = obj.get_mut("provider").and_then(|p| p.as_object_mut()) {
-            for (name, provider) in providers.iter_mut() {
-                if let Some(original_url) = backups.get(name) {
-                    if let Some(options) = provider.get_mut("options").and_then(|o| o.as_object_mut()) {
-                        options.insert("baseURL".to_string(), Value::String(original_url.clone()));
-                        restored += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    if restored > 0 {
-        if let Ok(new_content) = serde_json::to_string_pretty(&v) {
-            atomic_write(&cfg_path.to_string_lossy(), &new_content);
-        }
-    }
-    restored > 0
 }

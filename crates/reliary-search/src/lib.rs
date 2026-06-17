@@ -1,5 +1,4 @@
 /// Grammar-free phrase search with BM25 scoring and Porter stemming.
-
 pub mod schema;
 pub mod search;
 pub mod ingest;

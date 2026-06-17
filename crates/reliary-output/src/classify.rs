@@ -1,5 +1,4 @@
-/// Command-output line classification + skeleton normalization.
-
+//! Command-output line classification + skeleton normalization.
 use regex::Regex;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,7 +106,7 @@ pub fn classify_output_line(_line: &str, trimmed: &str) -> OutputLineType {
     }
 
     // Prefix detection: leading word followed by separator
-    if let Some(pos) = trimmed.find(|c: char| c == '>' || c == ' ') {
+    if let Some(pos) = trimmed.find(['>', ' ']) {
         let prefix = &trimmed[..pos];
         if (5..=20).contains(&prefix.len()) {
             let after = &trimmed[pos..].trim_start();
@@ -125,7 +124,7 @@ pub fn classify_output_line(_line: &str, trimmed: &str) -> OutputLineType {
 
 /// Classify all lines in command output.
 pub fn classify_output(text: &str) -> Vec<OutputLine> {
-    text.lines().enumerate().map(|(_i, line)| {
+    text.lines().map(|line| {
         let cleaned = strip_ansi(line);
         let trimmed = cleaned.trim();
         let lt = classify_output_line(&cleaned, trimmed);

@@ -1,7 +1,7 @@
-/// replaces raw file reads with structured index output.
-/// Every identifier in the summary is verified against the FTS5 index before reaching the LLM.
-///
-/// Grammar-free design: uses regex identifier scanning, not AST/tree-sitter.
+//! replaces raw file reads with structured index output.
+// Every identifier in the summary is verified against the FTS5 index before reaching the LLM.
+//
+// Grammar-free design: uses regex identifier scanning, not AST/tree-sitter.
 
 use std::path::Path;
 use std::sync::LazyLock;
@@ -29,7 +29,7 @@ fn find_workdir(file: &str) -> String {
         })
 }
 
-/// Build a structured file summary from FTS5 index data.
+// Build a structured file summary from FTS5 index data.
 pub fn build(file: &str) -> String {
     let content = match std::fs::read_to_string(file) {
         Ok(c) => c,
@@ -48,7 +48,7 @@ pub fn build(file: &str) -> String {
     }
 
     // Header
-    let fname = file.split('/').last().unwrap_or(file);
+    let fname = file.split('/').next_back().unwrap_or(file);
     let mut result = format!("[{}] {}L | {} defs", fname, total_lines, defs.len());
 
     // Definitions with caller search (if index exists)
@@ -65,7 +65,7 @@ pub fn build(file: &str) -> String {
                     let name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
                     let callers = reliary_search::search::search_fts5(&db, name, 5);
                     let caller_files: Vec<&str> = callers.iter()
-                        .filter(|r| r.file.split('/').last().unwrap_or("") != fname)
+                        .filter(|r| r.file.split('/').next_back().unwrap_or("") != fname)
                         .take(3)
                         .map(|r| r.file.rsplit('/').next().unwrap_or(&r.file))
                         .collect();
@@ -96,8 +96,8 @@ pub fn build(file: &str) -> String {
     result
 }
 
-/// Load compression dictionary from the nearest FTS5 index.
-/// Returns None if no index is found or query fails.
+// Load compression dictionary from the nearest FTS5 index.
+// Returns None if no index is found or query fails.
 pub fn load_dictionary() -> Option<reliary_compress::CompressionDict> {
     for dir in &[".", ".."] {
         let db_path = format!("{}/.reliary/index.sqlite", dir);

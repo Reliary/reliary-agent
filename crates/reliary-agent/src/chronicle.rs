@@ -1,9 +1,9 @@
-/// Append-only project chronicle stored in SQLite.
-/// Every daemon action is recorded. Queried by risk thresholds and scavenger backoff.
+//! Append-only project chronicle stored in SQLite.
+// Every daemon action is recorded. Queried by risk thresholds and scavenger backoff.
 
 use rusqlite::Connection;
 use tracing::{warn, error};
-/// Initialize chronicle table (idempotent) with schema versioning
+// Initialize chronicle table (idempotent) with schema versioning
 pub fn init(db_path: &str) -> Result<Connection, String> {
     let db = Connection::open(db_path).map_err(|e| format!("chronicle open: {}", e))?;
     // Set WAL mode for crash recovery + concurrent reads
@@ -29,7 +29,7 @@ pub fn init(db_path: &str) -> Result<Connection, String> {
     Ok(db)
 }
 
-/// Append an event to the chronicle
+// Append an event to the chronicle
 pub fn append(db: &Connection, event: &str, file: &str, detail: &str, outcome: &str) {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -43,16 +43,22 @@ pub fn append(db: &Connection, event: &str, file: &str, detail: &str, outcome: &
     }
 }
 
-/// Query events for a file in the last N hours
+// Query events for a file in the last N hours
 pub fn recent_events(db: &Connection, file: &str, hours: i64) -> Vec<ChronicleEvent> {
     let cutoff = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64 - hours * 3600;
-    let mut stmt = db.prepare(
+    let mut stmt = match db.prepare(
         "SELECT t, event, file, detail, outcome FROM chronicle WHERE file = ?1 AND t >= ?2 ORDER BY t DESC LIMIT 50"
-    ).unwrap();
-    let rows = stmt.query_map(rusqlite::params![file, cutoff], |row| {
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("chronicle prepare failed for file '{}': {}", file, e);
+            return Vec::new();
+        }
+    };
+    let rows = match stmt.query_map(rusqlite::params![file, cutoff], |row| {
         Ok(ChronicleEvent {
             t: row.get(0)?,
             event: row.get(1)?,
@@ -60,20 +66,32 @@ pub fn recent_events(db: &Connection, file: &str, hours: i64) -> Vec<ChronicleEv
             detail: row.get(3)?,
             outcome: row.get(4)?,
         })
-    }).unwrap();
+    }) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("chronicle query_map failed for file '{}': {}", file, e);
+            return Vec::new();
+        }
+    };
     rows.filter_map(|r| r.ok()).collect()
 }
 
-/// Query events by type in the last N hours
+// Query events by type in the last N hours
 pub fn recent_events_by_type(db: &Connection, event_type: &str, hours: i64) -> Vec<ChronicleEvent> {
     let cutoff = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64 - hours * 3600;
-    let mut stmt = db.prepare(
+    let mut stmt = match db.prepare(
         "SELECT t, event, file, detail, outcome FROM chronicle WHERE event = ?1 AND t >= ?2 ORDER BY t DESC LIMIT 100"
-    ).unwrap();
-    let rows = stmt.query_map(rusqlite::params![event_type, cutoff], |row| {
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("chronicle prepare by type failed for '{}': {}", event_type, e);
+            return Vec::new();
+        }
+    };
+    let rows = match stmt.query_map(rusqlite::params![event_type, cutoff], |row| {
         Ok(ChronicleEvent {
             t: row.get(0)?,
             event: row.get(1)?,
@@ -81,7 +99,13 @@ pub fn recent_events_by_type(db: &Connection, event_type: &str, hours: i64) -> V
             detail: row.get(3)?,
             outcome: row.get(4)?,
         })
-    }).unwrap();
+    }) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("chronicle query_map by type failed for '{}': {}", event_type, e);
+            return Vec::new();
+        }
+    };
     rows.filter_map(|r| r.ok()).collect()
 }
 

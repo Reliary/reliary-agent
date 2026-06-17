@@ -1,5 +1,4 @@
-/// FTS5 query and BM25 scoring against the inverted index.
-
+//! FTS5 query and BM25 scoring against the inverted index.
 use rusqlite::{params, Connection};
 
 pub struct SearchResult {

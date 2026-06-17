@@ -160,7 +160,7 @@ mod tests {
         assert!(color::yellow("test") == "test", "NO_COLOR should disable yellow");
         assert!(color::bold("test") == "test", "NO_COLOR should disable bold");
         assert!(color::dim("test") == "test", "NO_COLOR should disable dim");
-        assert!(color::reset("") == "", "NO_COLOR should disable reset");
+        assert!(color::reset("").is_empty(), "NO_COLOR should disable reset");
         assert!(!color::is_enabled(), "is_enabled should return false with NO_COLOR");
         std::env::remove_var("NO_COLOR");
 
@@ -410,9 +410,9 @@ fn open_index_or_prompt(path: &str) -> Option<rusqlite::Connection> {
     let db_path = index_db_path(path);
     if !std::path::Path::new(&db_path).exists() {
         eprint!("{} No project index found. Build it now? [Y/n] ", color::yellow("⚠"));
-        std::io::stdout().flush().ok();
+        std::io::stdout().flush().ok();  // GUARDED: intentional
         let mut input = String::new();
-        std::io::stdin().read_line(&mut input).ok();
+        std::io::stdin().read_line(&mut input).ok();  // GUARDED: intentional
         if input.trim().to_lowercase() != "n" {
             run_index(path);
         } else {
@@ -613,6 +613,7 @@ enum Commands {
 }
 
 #[derive(ValueEnum, Clone)]
+#[allow(clippy::enum_variant_names)]
 enum Shell {
     Bash,
     Zsh,
@@ -743,17 +744,17 @@ fn do_update(check_only: bool) {
                         let dl = std::process::Command::new("curl")
                             .args(["-sL", "-o", "/tmp/reliary-update.tar.gz", &download_url])
                             .status();
-                        if dl.map_or(false, |s| s.success()) {
+                        if dl.is_ok_and(|s| s.success()) {
                             // Extract and install
                             let extract = std::process::Command::new("tar")
                                 .args(["-xzf", "/tmp/reliary-update.tar.gz", "-C", "/tmp/"])
                                 .status();
-                            if extract.map_or(false, |s| s.success()) {
+                            if extract.is_ok_and(|s| s.success()) {
                                 let binary = std::env::current_exe().unwrap_or_default();
                                 let install = std::process::Command::new("cp")
                                     .args(["/tmp/reliary-agent", binary.to_string_lossy().as_ref()])
                                     .status();
-                                if install.map_or(false, |s| s.success()) {
+                                if install.is_ok_and(|s| s.success()) {
                                     println!("{} Updated to v{}", color::green("✓"), latest);
                                 } else {
                                     eprintln!("{} Install failed — try manually: cp /tmp/reliary-agent {}", color::red("✗"), binary.display());
@@ -829,7 +830,7 @@ fn main() {
                 if let Some(compressed) = result {
                     println!("{}", cfg.format_output("compressed", &[compressed]));
                 } else {
-                    println!("{}", "no compression possible");
+                    println!("no compression possible");
                 }
             }
         }
@@ -895,7 +896,7 @@ fn main() {
             eprintln!("{}", color::dim(""));
 
             let state = Arc::new(SessionState::new(
-                &std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
+                std::env::current_dir().unwrap_or_default().to_string_lossy().as_ref()
             ));
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async { crate::proxy::start(*port, Some(state)).await })
@@ -910,9 +911,9 @@ fn main() {
         Commands::Clean { global, all } => {
             if !*global && !*all {
                 eprint!("{} Wipe all project state (.reliary)? [y/N] ", color::yellow("⚠"));
-                std::io::stdout().flush().ok();
+                std::io::stdout().flush().ok();  // GUARDED: intentional
                 let mut input = String::new();
-                std::io::stdin().read_line(&mut input).ok();
+                std::io::stdin().read_line(&mut input).ok();  // GUARDED: intentional
                 if input.trim().to_lowercase() != "y" {
                     println!("{} Cancelled.", color::dim("-"));
                     return;
@@ -920,9 +921,9 @@ fn main() {
             }
             if *all {
                 eprint!("{} Wipe ALL state (project + global ~/.reliary)? [y/N] ", color::yellow("⚠"));
-                std::io::stdout().flush().ok();
+                std::io::stdout().flush().ok();  // GUARDED: intentional
                 let mut input = String::new();
-                std::io::stdin().read_line(&mut input).ok();
+                std::io::stdin().read_line(&mut input).ok();  // GUARDED: intentional
                 if input.trim().to_lowercase() != "y" {
                     println!("{} Cancelled.", color::dim("-"));
                     return;
@@ -1052,7 +1053,7 @@ fn main() {
             let output = String::from_utf8_lossy(&buf).to_string();
             if let Some(dir) = outdir {
                 let path = std::path::Path::new(dir);
-                std::fs::create_dir_all(path).ok();
+                std::fs::create_dir_all(path).ok();  // GUARDED: intentional
                 let file_path = path.join(format!("reliary-agent.{}", ext));
                 std::fs::write(&file_path, &output).expect("Failed to write completion file");
                 println!("{} Generated {} completions → {}", color::green("✓"), ext, file_path.display());
@@ -1065,7 +1066,7 @@ fn main() {
             let man = clap_mangen::Man::new(cmd);
             if let Some(dir) = outdir {
                 let path = std::path::Path::new(dir);
-                std::fs::create_dir_all(path).ok();
+                std::fs::create_dir_all(path).ok();  // GUARDED: intentional
                 let file_path = path.join("reliary-agent.1");
                 let mut file = std::fs::File::create(&file_path).expect("Failed to create man page");
                 man.render(&mut file).expect("Failed to render man page");
@@ -1078,7 +1079,7 @@ fn main() {
         }
         Commands::Veto { file } => {
             let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf).ok();
+            std::io::stdin().read_to_string(&mut buf).ok();  // GUARDED: intentional
             let new_text = buf.trim();
             match daemon::find_reliary_root(file) {
                 Some((_root, index_path, _)) => {
@@ -1123,7 +1124,7 @@ fn main() {
         Commands::Daemon => {
             eprintln!("{} 'daemon' is deprecated. Use 'serve' instead.", color::yellow("⚠"));
             let state = Arc::new(SessionState::new(
-                &std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
+                std::env::current_dir().unwrap_or_default().to_string_lossy().as_ref()
             ));
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async { crate::proxy::start(9799, Some(state)).await })

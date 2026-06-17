@@ -168,9 +168,10 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                 "items": top,
             });
             if filtered.len() > limit {
-                let obj = response_obj.as_object_mut().unwrap();
-                obj.insert("truncated".to_string(), serde_json::json!(true));
-                obj.insert("limit".to_string(), serde_json::json!(limit));
+                if let Some(obj) = response_obj.as_object_mut() {
+                    obj.insert("truncated".to_string(), serde_json::json!(true));
+                    obj.insert("limit".to_string(), serde_json::json!(limit));
+                }
             }
             DispatchResult::Success(serde_json::json!({
                 "content": [{ "type": "text", "text": serde_json::to_string(&response_obj).unwrap_or_default() }]

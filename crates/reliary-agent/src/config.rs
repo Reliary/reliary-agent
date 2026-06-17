@@ -1,7 +1,7 @@
 /// Configuration cascade: env var > project config > global config > default
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GateMode {
@@ -81,7 +81,7 @@ fn read_config_file(path: &PathBuf) -> HashMap<String, String> {
     }
 }
 
-pub fn write_config_file(path: &PathBuf, config: &HashMap<String, String>) -> Result<(), String> {
+pub fn write_config_file(path: &Path, config: &HashMap<String, String>) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Cannot create config dir: {}", e))?;
     }
