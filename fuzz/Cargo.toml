@@ -1,0 +1,35 @@
+[package]
+name = "reliary-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[[bin]]
+name = "proxy_fuzz"
+path = "fuzz_targets/proxy_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_fuzz"
+path = "fuzz_targets/config_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tcp_fuzz"
+path = "fuzz_targets/tcp_fuzz.rs"
+test = false
+doc = false
+bench = false

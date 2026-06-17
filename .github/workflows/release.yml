@@ -66,6 +66,9 @@ jobs:
   checksums:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
@@ -76,10 +79,17 @@ jobs:
             sha256sum "$file"
           done > artifacts/SHA256SUMS
           cat artifacts/SHA256SUMS
+      - name: Install cosign
+        uses: sigstore/cosign-installer@c1e9e78737838a88701b0c48e0c332c8b0e3e7d0  # v3.8.2
+      - name: Sign checksums with cosign
+        run: |
+          cosign sign-blob artifacts/SHA256SUMS --bundle artifacts/SHA256SUMS.sig --yes 2>/dev/null || echo "WARN: cosign signing failed (expected on forks)"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: checksums
-          path: artifacts/SHA256SUMS
+          path: |
+            artifacts/SHA256SUMS
+            artifacts/SHA256SUMS.sig
 
   release:
     needs: [build, checksums]
@@ -105,9 +115,17 @@ jobs:
             cd reliary-* && ./install.sh
             ```
 
-            ### Verify
+            ### Verify (SHA256)
             ```bash
             curl -sSfL https://github.com/Reliary/reliary-agent/releases/download/${{ github.ref_name }}/SHA256SUMS
+            sha256sum --ignore-missing -c SHA256SUMS
+            ```
+
+            ### Verify (Sigstore)
+            ```bash
+            curl -sSfL https://github.com/Reliary/reliary-agent/releases/download/${{ github.ref_name }}/SHA256SUMS.sig -o SHA256SUMS.sig
+            curl -sSfL https://github.com/Reliary/reliary-agent/releases/download/${{ github.ref_name }}/SHA256SUMS -o SHA256SUMS
+            cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sig --certificate-identity-regexp "https://github.com/Reliary/reliary-agent/.github/workflows/release.yml" --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
             sha256sum --ignore-missing -c SHA256SUMS
             ```
 
