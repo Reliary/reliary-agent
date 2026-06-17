@@ -96,6 +96,33 @@ jobs:
             exit 1
           fi
           echo "gate.js copies in sync"
+      - name: QoL guard — --version flag exists
+        run: |
+          if ! ./target/release/reliary-agent --version 2>/dev/null | grep -q "reliary-agent"; then
+            echo "FAIL: --version flag not working"
+            exit 1
+          fi
+          echo "QoL: --version works"
+      - name: QoL guard — internal commands hidden from --help
+        run: |
+          cmds=$(./target/release/reliary-agent --help 2>/dev/null)
+          for hidden in fix-file apply-edit session-state memory veto fix-dir mcp; do
+            # Check hidden command is NOT in the Commands: section
+            cmds_section=$(echo "$cmds" | sed -n '/Commands:/,/^$/p')
+            if echo "$cmds_section" | grep -q "\b$hidden\b"; then
+              echo "FAIL: '$hidden' should be hidden from --help"
+              exit 1
+            fi
+          done
+          echo "QoL: internal commands hidden"
+      - name: QoL guard — config shows file paths
+        run: |
+          out=$(./target/release/reliary-agent config 2>/dev/null)
+          if ! echo "$out" | grep -q "Global:"; then
+            echo "FAIL: 'config' output doesn't show file paths"
+            exit 1
+          fi
+          echo "QoL: config shows paths"
       - name: cargo audit
         run: cargo audit --deny warnings 2>&1 | tail -5 || true
       - name: cargo deny

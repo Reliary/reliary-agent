@@ -23,19 +23,19 @@ impl GateMode {
         match s.trim().to_lowercase().as_str() {
             "fast" => GateMode::Fast,
             "strict" => GateMode::Strict,
-            _ => GateMode::Reactive, // default
+            _ => GateMode::Reactive,
         }
     }
 }
 
 const CONFIG_FILENAME: &str = ".reliary/config.json";
 
-fn global_config_path() -> PathBuf {
+pub fn global_config_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(CONFIG_FILENAME)
 }
 
-fn project_config_path(workdir: &str) -> PathBuf {
+pub fn project_config_path(workdir: &str) -> PathBuf {
     PathBuf::from(workdir).join(CONFIG_FILENAME)
 }
 
@@ -55,14 +55,12 @@ pub fn write_config_file(path: &PathBuf, config: &HashMap<String, String>) -> Re
 }
 
 pub fn resolve_mode(workdir: Option<&str>) -> GateMode {
-    // 1. Environment variable (highest priority)
     if let Ok(env_mode) = std::env::var("RELIARY_MODE") {
         if !env_mode.is_empty() {
             return GateMode::from_str(&env_mode);
         }
     }
 
-    // 2. Project-local config
     if let Some(wd) = workdir {
         let project_cfg = read_config_file(&project_config_path(wd));
         if let Some(mode) = project_cfg.get("mode") {
@@ -70,18 +68,74 @@ pub fn resolve_mode(workdir: Option<&str>) -> GateMode {
         }
     }
 
-    // 3. Global config
     let global_cfg = read_config_file(&global_config_path());
     if let Some(mode) = global_cfg.get("mode") {
         return GateMode::from_str(mode);
     }
 
-    // 4. Default
     GateMode::Reactive
 }
 
-/// Get all config (global or project-local)
-/// Set a config key. Returns human-readable confirmation.
+/// Resolve feature flags with the same cascade as mode.
+/// Returns Vec of (feature_name, enabled).
+pub fn resolve_features(workdir: Option<&str>) -> Vec<(String, bool)> {
+    let defaults: Vec<(String, bool)> = vec![
+        ("compress".into(), true),
+        ("convWindow".into(), true),
+        ("readEnrichment".into(), true),
+        ("editMerge".into(), false),
+        ("healEdit".into(), true),
+        ("priorInjection".into(), false),
+    ];
+
+    // Parse env var: RELIARY_FEATURES=+compress,-convWindow format
+    let mut overrides: HashMap<String, bool> = HashMap::new();
+    if let Ok(env_features) = std::env::var("RELIARY_FEATURES") {
+        for part in env_features.split(',') {
+            let part = part.trim();
+            if let Some(feat) = part.strip_prefix('+') {
+                overrides.insert(feat.to_string(), true);
+            } else if let Some(feat) = part.strip_prefix('-') {
+                overrides.insert(feat.to_string(), false);
+            }
+        }
+    }
+
+    // Read config files
+    let mut config_map: HashMap<String, bool> = HashMap::new();
+    if let Some(wd) = workdir {
+        let project_cfg = read_config_file(&project_config_path(wd));
+        if let Some(features_val) = project_cfg.get("features") {
+            if let Ok(features_obj) = serde_json::from_str::<HashMap<String, bool>>(features_val) {
+                for (k, v) in features_obj {
+                    config_map.insert(k, v);
+                }
+            }
+        }
+    }
+    let global_cfg = read_config_file(&global_config_path());
+    if let Some(features_val) = global_cfg.get("features") {
+        if let Ok(features_obj) = serde_json::from_str::<HashMap<String, bool>>(features_val) {
+            for (k, v) in features_obj {
+                config_map.entry(k).or_insert(v);
+            }
+        }
+    }
+
+    // Layer: defaults <- global config <- project config <- env overrides
+    let mut result = defaults;
+    for (k, v) in &mut result {
+        if let Some(gv) = config_map.get(k) {
+            *v = *gv;
+        }
+        if let Some(ov) = overrides.get(k) {
+            *v = *ov;
+        }
+    }
+
+    result
+}
+
 pub fn set_config(key: &str, value: &str, project: bool, root: Option<&str>) -> String {
     let path = if project {
         let base = root.unwrap_or(".");

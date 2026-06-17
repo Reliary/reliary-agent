@@ -13,6 +13,10 @@ cp "${RELIARY_DIR}/bin/reliary-agent" "${BIN_DIR}/reliary-agent"
 chmod +x "${BIN_DIR}/reliary-agent"
 echo "  ✓ binary → ${BIN_DIR}/reliary-agent"
 
+# Create 'rel' symlink for convenience
+ln -sf "${BIN_DIR}/reliary-agent" "${BIN_DIR}/rel"
+echo "  ✓ symlink → ${BIN_DIR}/rel"
+
 # Register Pi extension
 if command -v pi >/dev/null 2>&1; then
   pi install "${RELIARY_DIR}/pi/gate.js" 2>/dev/null || {
@@ -45,6 +49,6 @@ case ":${PATH}:" in
 esac
 
 echo ""
-echo "relary-agent installed successfully."
-echo "  Run: reliary-agent daemon"
-echo "  Or: reliary-agent --help"
+echo "reliary-agent installed successfully."
+echo "  Run: reliary-agent serve"
+echo "  Or:  rel --help"
