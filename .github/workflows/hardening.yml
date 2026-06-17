@@ -31,8 +31,8 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - uses: actions-rust-lang/setup-rust-toolchain@46a9d261ee2ace4b93b3bd6e867168ac38627b38  # v1.12.0
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked 2>/dev/null || true
+      - name: Install tools
+        run: cargo install cargo-audit cargo-deny --locked 2>/dev/null || true
       - name: cargo audit
         continue-on-error: true
         run: 'cargo audit --deny warnings 2>/dev/null || echo "WARN: audit found issues"'
