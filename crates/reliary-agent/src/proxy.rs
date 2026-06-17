@@ -230,11 +230,8 @@ fn compress_messages(messages: &mut Vec<Value>, state: &mut PerKeyState) -> (usi
                 history_saved += content.len().saturating_sub(c.len());
                 state.content_cache.insert(hash, c.clone());
                 msg["content"] = Value::String(c);
-            } else {
-                state.content_cache.insert(hash, content);
             }
-        } else {
-            state.content_cache.insert(hash, content);
+            // Don't cache uncompressed content — it grows without bound
         }
     }
 

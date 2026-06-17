@@ -7,6 +7,10 @@ use std::time::{Duration, Instant};
 use tracing::warn;
 use std::path::PathBuf;
 
+const RISK_CACHE_TTL: Duration = Duration::from_secs(300);
+const RISK_CACHE_MAX: usize = 500;
+const READ_CACHE_MAX: usize = 200;
+
 #[derive(Clone)]
 pub struct ReadCacheEntry {
     pub hash: u64,
@@ -45,15 +49,44 @@ impl SessionState {
     }
 
     pub fn read_cache_set(&self, path: String, entry: ReadCacheEntry) {
-        self.read_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(path, entry);
+        let mut cache = self.read_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.len() >= READ_CACHE_MAX {
+            // Evict oldest half
+            let evict = cache.len() / 2;
+            let mut removed = 0;
+            cache.retain(|_, _| {
+                removed += 1;
+                removed > evict
+            });
+        }
+        cache.insert(path, entry);
     }
 
     pub fn risk_cache_get(&self, path: &str) -> Option<(String, Instant)> {
-        self.risk_cache.lock().unwrap_or_else(|e| e.into_inner()).get(path).cloned()
+        let cache = self.risk_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((risk, time)) = cache.get(path) {
+            if time.elapsed() < RISK_CACHE_TTL {
+                return Some((risk.clone(), *time));
+            }
+        }
+        None
     }
 
     pub fn risk_cache_set(&self, path: String, risk: String) {
-        self.risk_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(path, (risk, Instant::now()));
+        let mut cache = self.risk_cache.lock().unwrap_or_else(|e| e.into_inner());
+        // Evict expired entries
+        let now = Instant::now();
+        cache.retain(|_, (_, t)| now.duration_since(*t) < RISK_CACHE_TTL);
+        // Evict oldest half if still too large
+        if cache.len() >= RISK_CACHE_MAX {
+            let evict = cache.len() / 2;
+            let mut removed = 0;
+            cache.retain(|_, _| {
+                removed += 1;
+                removed > evict
+            });
+        }
+        cache.insert(path, (risk, Instant::now()));
     }
 
     /// Check if scavenger should run (not muzzled, or muzzle expired)
