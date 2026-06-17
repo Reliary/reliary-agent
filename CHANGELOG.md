@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.1
+
+### Bugfix
+- **cargo install from crates.io:** Fixed `include_str!` path for `gate.js`. The old `../../../pi/gate.js` path resolved outside the crate directory and failed when installing via crates.io. Moved `gate.js` into the crate (`crates/reliary-agent/pi/gate.js`) and CI guard added to keep workspace-root and crate copies in sync.
+
 ## v0.5.0
 
 ### Pi Readiness & Transport (June 2026)
