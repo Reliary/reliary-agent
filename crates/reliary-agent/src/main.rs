@@ -42,11 +42,54 @@ fn index_db_path(path: &str) -> String {
     format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
 }
 
-fn open_or_create_index(path: &str) -> Option<rusqlite::Connection> {
+fn run_index(path: &str) {
+    let db_path_str = index_db_path(path);
+    if let Some(parent) = std::path::Path::new(&db_path_str).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::remove_file(&db_path_str);
+    match rusqlite::Connection::open(&db_path_str) {
+        Ok(db) => {
+            let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+            if reliary_search::schema::create_new_db(&db).is_err() {
+                eprintln!("{} Database schema creation failed", color::red("✗"));
+                return;
+            }
+            println!("Building index for {}...", path);
+            match reliary_search::ingest::index_directory(&db, path) {
+                Ok(count) => println!("{} Indexed {} files", color::green("✓"), count),
+                Err(e) => eprintln!("{} Indexing error: {}", color::red("✗"), e),
+            }
+        }
+        Err(e) => eprintln!("{} DB create error: {}", color::red("✗"), e),
+    }
+}
+
+fn open_index_or_prompt(path: &str) -> Option<rusqlite::Connection> {
     let db_path = index_db_path(path);
+    if !std::path::Path::new(&db_path).exists() {
+        eprint!("{} No project index found. Build it now? [Y/n] ", color::yellow("⚠"));
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+        if input.trim().to_lowercase() != "n" {
+            run_index(path);
+        } else {
+            return None;
+        }
+    }
+
     let db = rusqlite::Connection::open(&db_path).ok()?;
     let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
-    reliary_search::schema::open_existing_db(&db).ok()?;
+    if reliary_search::schema::open_existing_db(&db).is_err() {
+        eprintln!("{} Index schema mismatch or corrupt. Rebuilding...", color::yellow("⚠"));
+        run_index(path);
+        let db = rusqlite::Connection::open(&db_path).ok()?;
+        let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+        reliary_search::schema::open_existing_db(&db).ok()?;
+        return Some(db);
+    }
     Some(db)
 }
 
@@ -81,7 +124,7 @@ pub const CLI_COMMANDS: &[&str] = &[
     "init", "uninstall", "doctor", "status",
     "clean", "logs", "config", "veto",
     "apply-edit", "sift", "session-state", "memory",
-    "dead",
+    "dead", "start", "stop",
 ];
 
 #[derive(Subcommand)]
@@ -132,6 +175,10 @@ enum Commands {
         #[arg(long)]
         root: Option<String>,
     },
+    /// Start the daemon in the background
+    Start,
+    /// Stop the background daemon
+    Stop,
     /// Interactive setup for agents (Pi, Claude Code, OpenCode, Cline) and daemon
     Init,
     /// Uninstall integrations and background daemon
@@ -213,7 +260,7 @@ fn main() {
 
     match &cli.command {
         Commands::Search { query, path } => {
-            if let Some(db) = open_or_create_index(path) {
+            if let Some(db) = open_index_or_prompt(path) {
                 let results = reliary_search::search::search_fts5(&db, query, 10);
                 if results.is_empty() {
                     println!("No results found.");
@@ -232,26 +279,7 @@ fn main() {
             }
         }
         Commands::Index { path } => {
-            let db_path_str = index_db_path(path);
-            if let Some(parent) = std::path::Path::new(&db_path_str).parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::remove_file(&db_path_str);
-            match rusqlite::Connection::open(&db_path_str) {
-                Ok(db) => {
-                    let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
-                    if reliary_search::schema::create_new_db(&db).is_err() {
-                        eprintln!("{} Database schema creation failed", color::red("✗"));
-                        return;
-                    }
-                    println!("Building index for {}...", path);
-                    match reliary_search::ingest::index_directory(&db, path) {
-                        Ok(count) => println!("✓ Indexed {} files", count),
-                        Err(e) => eprintln!("✗ Indexing error: {}", e),
-                    }
-                }
-                Err(e) => eprintln!("✗ DB create error: {}", e),
-            }
+            run_index(path);
         }
         Commands::Compress { text, gentle: _ } => {
             let input_buf: String = match text {
@@ -273,8 +301,10 @@ fn main() {
             }
         }
         Commands::Risk { file } => {
-            let content = std::fs::read_to_string(file).unwrap_or_default();
-            let risk_result = reliary_risk::compute_file_risk(file, &content);
+            let content = std::fs::read_to_string(&file).unwrap_or_default();
+            // Just ensure index exists if possible, but don't strictly require it for risk
+            let _ = open_index_or_prompt(".");
+            let risk_result = reliary_risk::compute_file_risk(&file, &content);
             println!("{:?}", risk_result);
         }
         Commands::FixFile { file, old, new } => {
@@ -323,6 +353,55 @@ fn main() {
                     eprintln!("       reliary-agent config (show current)");
                     eprintln!("       reliary-agent config --local mode strict (per-project)");
                 }
+            }
+        }
+        Commands::Start => {
+            #[cfg(unix)]
+            {
+                let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("reliary-agent"));
+                let mut cmd = std::process::Command::new(exe);
+                cmd.arg("serve");
+                
+                // On unix, we can double-fork to fully detach, but simple spawn + setsid equivalent is fine.
+                // We'll just spawn and exit.
+                cmd.stdin(std::process::Stdio::null());
+                cmd.stdout(std::process::Stdio::null());
+                cmd.stderr(std::process::Stdio::null());
+                
+                // Use standard spawn
+                match cmd.spawn() {
+                    Ok(child) => {
+                        println!("{} Daemon started in background (PID {}).", color::green("✓"), child.id());
+                    }
+                    Err(e) => {
+                        eprintln!("{} Failed to start daemon: {}", color::red("✗"), e);
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("{} 'start' is currently only supported on Unix systems. Use 'serve' directly.", color::yellow("⚠"));
+            }
+        }
+        Commands::Stop => {
+            #[cfg(unix)]
+            {
+                let output = std::process::Command::new("pkill")
+                    .arg("-f")
+                    .arg("reliary-agent serve")
+                    .output();
+                match output {
+                    Ok(o) if o.status.success() => {
+                        println!("{} Daemon stopped.", color::green("✓"));
+                    }
+                    _ => {
+                        eprintln!("{} No daemon found running.", color::yellow("-"));
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("{} 'stop' is currently only supported on Unix systems.", color::yellow("⚠"));
             }
         }
         Commands::Init => {

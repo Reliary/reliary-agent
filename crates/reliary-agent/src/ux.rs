@@ -87,38 +87,54 @@ pub fn doctor() {
 }
 
 pub fn status() {
-    println!("\n{}| Project Intelligence Overview |{}\n", color(), reset());
+    println!("\n{}| Reliary Agent Status |{}\n", color(), reset());
 
-    let index_path = PathBuf::from(".reliary/index.sqlite");
-    if !index_path.exists() {
-        println!("{}-{} No index found in current directory.{}", yellow(), reset(), "");
-        println!("  {}→ Run 'reliary-agent index .' to build it{}", dim(), reset());
-        return;
+    // 1. Daemon / Proxy Status
+    print!("{}•{} Proxy: ", blue(), reset());
+    if TcpStream::connect_timeout(&"127.0.0.1:9090".parse().expect("invalid port"), Duration::from_millis(500)).is_ok() {
+        println!("{}✓{} Running on :9090", color(), reset());
+    } else {
+        println!("{}✗{} Stopped", red(), reset());
+        println!("  {}→ Run 'reliary-agent start' to run in background{}", dim(), reset());
     }
 
-    if let Ok(db) = rusqlite::Connection::open(&index_path) {
-        let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
-        let mut file_count = 0;
-        if let Ok(mut stmt) = db.prepare("SELECT COUNT(DISTINCT file_id) FROM file_phrases") {
-            if let Ok(mut rows) = stmt.query([]) {
-                if let Ok(Some(row)) = rows.next() {
-                    file_count = row.get::<_, i64>(0).unwrap_or(0);
-                }
-            }
-        }
-        println!("{}•{} Index: {} files indexed", blue(), reset(), file_count);
+    // 2. Gate Mode
+    print!("{}•{} Mode:  ", blue(), reset());
+    let mode = crate::config::resolve_mode(Some("."));
+    println!("{}", mode.as_str());
 
-        let mut event_count = 0;
-        if let Ok(mut stmt) = db.prepare("SELECT COUNT(*) FROM chronicle") {
-            if let Ok(mut rows) = stmt.query([]) {
-                if let Ok(Some(row)) = rows.next() {
-                    event_count = row.get::<_, i64>(0).unwrap_or(0);
+    // 3. Project Intelligence
+    print!("{}•{} Index: ", blue(), reset());
+    let index_path = PathBuf::from(".reliary/index.sqlite");
+    if !index_path.exists() {
+        println!("{}-{} No index found in current directory{}", yellow(), reset(), "");
+        println!("  {}→ Run 'reliary-agent index .' to build it{}", dim(), reset());
+    } else {
+        if let Ok(db) = rusqlite::Connection::open(&index_path) {
+            let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+            let mut file_count = 0;
+            if let Ok(mut stmt) = db.prepare("SELECT COUNT(DISTINCT file_id) FROM file_phrases") {
+                if let Ok(mut rows) = stmt.query([]) {
+                    if let Ok(Some(row)) = rows.next() {
+                        file_count = row.get::<_, i64>(0).unwrap_or(0);
+                    }
                 }
             }
+            println!("{} files indexed", file_count);
+
+            print!("{}•{} Memory: ", blue(), reset());
+            let mut event_count = 0;
+            if let Ok(mut stmt) = db.prepare("SELECT COUNT(*) FROM chronicle") {
+                if let Ok(mut rows) = stmt.query([]) {
+                    if let Ok(Some(row)) = rows.next() {
+                        event_count = row.get::<_, i64>(0).unwrap_or(0);
+                    }
+                }
+            }
+            println!("{} chronicle events", event_count);
+        } else {
+            println!("{}✗{} Failed to open index", red(), reset());
         }
-        println!("{}•{} Chronicle: {} events recorded", blue(), reset(), event_count);
-    } else {
-        println!("{}✗{} Failed to open index.", red(), reset());
     }
 }
 
