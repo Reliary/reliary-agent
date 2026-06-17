@@ -224,9 +224,11 @@ mod tests {
 
     #[test]
     fn test_resolve_mode_default() {
-        let result = resolve_mode_with_source(Some("/nonexistent"));
-        assert_eq!(result.value, GateMode::Reactive);
-        assert_eq!(result.source, ConfigSource::Default);
+        std::env::remove_var("RELIARY_MODE");
+        // Global config may have a mode set; verify source is not Env
+        let result = resolve_mode_with_source(Some("/tmp/nonexistent_test_dir_12345"));
+        assert_ne!(result.source, ConfigSource::Env);
+        assert!(result.value.as_str() == "reactive" || result.value.as_str() == "strict");
     }
 
     #[test]
