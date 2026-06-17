@@ -38,9 +38,9 @@ jobs:
         run: 'cargo audit --deny warnings 2>/dev/null || echo "WARN: audit found issues"'
       - name: cargo deny
         run: |
-          cargo deny check advisories 2>/dev/null || echo "WARN: deny advisories found issues"
-          cargo deny check sources 2>/dev/null || echo "WARN: deny sources found issues"
-          cargo deny check bans 2>/dev/null || echo "WARN: deny check failed"
+          cargo deny check advisories 2>/dev/null || { echo 'deny advisories FAIL'; exit 1; }
+          cargo deny check sources 2>/dev/null || { echo 'deny sources FAIL'; exit 1; }
+          cargo deny check bans 2>/dev/null || { echo 'deny bans FAIL'; exit 1; }
 
   cargo_outdated:
     runs-on: ubuntu-latest
