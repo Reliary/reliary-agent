@@ -79,12 +79,12 @@ pub fn run() {
                                 configured_agents += 1;
                                 
                                 // After gate.js install, offer proxy routing
-                                if ask_yes_no("\nConfigure proxy routing for Pi?\n(Will set DEEPSEEK_BASE_URL/ANTHROPIC_BASE_URL to localhost:9090\nand write proxy-routes.json for auth-based routing)", true) {
+                                if ask_yes_no("\nConfigure proxy routing for Pi?\n(Scans Pi settings + env for API keys, writes proxy-routes.json\nso the proxy can route your API calls automatically)", true) {
                                     let routes_count = install_pi_proxy_routes();
                                     if routes_count > 0 {
                                         ok(&format!("{} Pi API keys routed through proxy", routes_count));
                                     } else {
-                                        println!("  {} No Pi API keys found\n                     Set DEEPSEEK_BASE_URL=http://127.0.0.1:9090/v1\n                     or ANTHROPIC_BASE_URL=http://127.0.0.1:9090/v1 manually\n", "\x1b[33m-\x1b[0m");
+                                        println!("  {} No Pi API keys found\n                     Set RELIARY_UPSTREAM_URL=http://127.0.0.1:9090/v1\n                     as a fallback (all unknown keys route through proxy)\n", "\x1b[33m-\x1b[0m");
                                     }
                                 }
                             } else {
@@ -301,7 +301,7 @@ fn install_pi_proxy_routes() -> usize {
                 }
 
                 // Check for explicit provider overrides in Pi settings
-                for (env_key, provider) in &[("DEEPSEEK_API_KEY", "https://api.deepseek.com"), ("ANTHROPIC_API_KEY", "https://api.anthropic.com"), ("OPENAI_API_KEY", "https://api.openai.com")] {
+                for (env_key, provider) in &[("OPENAI_API_KEY", "https://api.openai.com"), ("ANTHROPIC_API_KEY", "https://api.anthropic.com")] {
                     let key = settings.get(*env_key).and_then(|v| v.as_str()).unwrap_or("");
                     if !key.is_empty() {
                         routes.insert(key.to_string(), provider.to_string());
@@ -312,7 +312,7 @@ fn install_pi_proxy_routes() -> usize {
     }
 
     // Always check env vars directly (even without Pi settings)
-    for (env_key, provider) in &[("DEEPSEEK_API_KEY", "https://api.deepseek.com"), ("ANTHROPIC_API_KEY", "https://api.anthropic.com"), ("OPENAI_API_KEY", "https://api.openai.com")] {
+    for (env_key, provider) in &[("OPENAI_API_KEY", "https://api.openai.com"), ("ANTHROPIC_API_KEY", "https://api.anthropic.com")] {
         if let Ok(val) = std::env::var(env_key) {
             if !val.is_empty() && !routes.contains_key(&val) {
                 routes.insert(val, provider.to_string());
@@ -735,16 +735,16 @@ mod tests {
         std::env::set_var("HOME", dir.to_str().unwrap());
 
         // Clear RELIARY_* env vars to avoid interference
-        let old_pi_key = std::env::var("DEEPSEEK_API_KEY").ok();
+        let old_pi_key = std::env::var("OPENAI_API_KEY").ok();
         let old_anthro_key = std::env::var("ANTHROPIC_API_KEY").ok();
-        std::env::remove_var("DEEPSEEK_API_KEY");
+        std::env::remove_var("OPENAI_API_KEY");
         std::env::remove_var("ANTHROPIC_API_KEY");
 
         test(dir.clone());
 
         // Restore env
         if let Some(h) = old_home { std::env::set_var("HOME", h); } else { std::env::remove_var("HOME"); }
-        if let Some(k) = old_pi_key { std::env::set_var("DEEPSEEK_API_KEY", k); }
+        if let Some(k) = old_pi_key { std::env::set_var("OPENAI_API_KEY", k); }
         if let Some(k) = old_anthro_key { std::env::set_var("ANTHROPIC_API_KEY", k); }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -760,7 +760,7 @@ mod tests {
     #[test]
     fn test_install_pi_proxy_routes_from_env() {
         with_temp_home(|home| {
-            std::env::set_var("DEEPSEEK_API_KEY", "sk-test-pi-key-12345");
+            std::env::set_var("OPENAI_API_KEY", "sk-test-pi-key-12345");
             let count = install_pi_proxy_routes();
             assert_eq!(count, 1, "1 API key from env");
 
@@ -769,7 +769,7 @@ mod tests {
             assert!(routes_path.exists(), "proxy-routes.json should exist");
             let content = std::fs::read_to_string(&routes_path).unwrap();
             assert!(content.contains("sk-test-pi-key-12345"), "routes should contain the API key");
-            assert!(content.contains("api.deepseek.com"), "routes should contain upstream URL");
+            assert!(content.contains("api.openai.com"), "routes should contain upstream URL");
         });
     }
 
@@ -781,9 +781,9 @@ mod tests {
             let _ = std::fs::create_dir_all(&pi_dir);
             let settings = serde_json::json!({
                 "providers": {
-                    "deepseek": {
+                    "openai": {
                         "apiKey": "sk-pi-settings-key",
-                        "baseUrl": "https://api.deepseek.com"
+                        "baseUrl": "https://api.openai.com"
                     }
                 }
             });
@@ -802,7 +802,7 @@ mod tests {
     #[test]
     fn test_install_pi_proxy_routes_multiple_keys() {
         with_temp_home(|home| {
-            std::env::set_var("DEEPSEEK_API_KEY", "sk-deepseek-key");
+            std::env::set_var("OPENAI_API_KEY", "sk-openai-key");
             std::env::set_var("ANTHROPIC_API_KEY", "sk-anthropic-key");
 
             let count = install_pi_proxy_routes();
@@ -810,7 +810,7 @@ mod tests {
 
             let routes_path = home.join(".reliary/proxy-routes.json");
             let content = std::fs::read_to_string(&routes_path).unwrap();
-            assert!(content.contains("sk-deepseek-key"));
+            assert!(content.contains("sk-openai-key"));
             assert!(content.contains("sk-anthropic-key"));
             assert!(content.contains("api.anthropic.com"));
         });

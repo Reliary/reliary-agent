@@ -22,10 +22,8 @@ pub fn discover_upstream(auth_key: &str) -> Option<String> {
     if let Some(url) = scan_pi_configs(auth_key) {
         return Some(url);
     }
-    // 6. Environment variables (generic fallback)
-    if let Some(url) = scan_env_vars(auth_key) {
-        return Some(url);
-    }
+    // 6. Environment variables via RELIARY_UPSTREAM_URL (global fallback)
+    //    (handled by proxy.rs resolve_upstream fallback)
     None
 }
 
@@ -141,29 +139,7 @@ fn scan_pi_configs(auth_key: &str) -> Option<String> {
     None
 }
 
-/// Scan environment variables for common API key patterns.
-fn scan_env_vars(auth_key: &str) -> Option<String> {
-    let env_key_map: [(&str, &str); 4] = [
-        ("ANTHROPIC_API_KEY", "https://api.anthropic.com/v1/messages"),
-        ("OPENAI_API_KEY", "https://api.openai.com/v1/chat/completions"),
-        ("DEEPSEEK_API_KEY", "https://api.deepseek.com/v1/chat/completions"),
-        ("RELIARY_UPSTREAM_URL", ""),  // Direct URL override, checked below
-    ];
-
-    for (env_var, default_url) in &env_key_map {
-        if let Ok(val) = std::env::var(env_var) {
-            if val == auth_key {
-                if *env_var == "RELIARY_UPSTREAM_URL" {
-                    return Some(auth_key.to_string());
-                }
-                return Some(default_url.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Normalize a base URL: append /chat/completions if missing and not Anthropic-style.
+/// Normalize a base URL: append /v1/chat/completions if missing and not Anthropic-style.
 fn normalize_url(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     if trimmed.ends_with("/chat/completions") || trimmed.ends_with("/v1/messages") || trimmed.contains("/v1/messages") {
@@ -175,11 +151,11 @@ fn normalize_url(base_url: &str) -> String {
             format!("{}/v1/messages", trimmed)
         }
     } else {
-        format!("{}/chat/completions", trimmed)
+        format!("{}/v1/chat/completions", trimmed)
     }
 }
 
-/// Resolve an env var reference like "$DEEPSEEK_API_KEY" to its value.
+/// Resolve an env var reference like "$OPENAI_API_KEY" to its value.
 fn resolve_env_var(val: &str) -> String {
     if val.starts_with('$') {
         std::env::var(&val[1..]).unwrap_or_default()
