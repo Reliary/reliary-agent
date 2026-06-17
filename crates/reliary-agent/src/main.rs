@@ -24,7 +24,7 @@ mod antidecision;
 use clap::{Parser, Subcommand};
 use std::io::Read;
 use std::sync::Arc;
-use tracing::{info, warn, error};
+use tracing::{info, error};
 use crate::session_state::SessionState;
 
 /// Simple ANSI color helpers
@@ -35,6 +35,7 @@ mod color {
     pub fn yellow(s: &str) -> String { format!("\x1b[33m{}\x1b[0m", s) }
     pub fn bold(s: &str) -> String { format!("\x1b[1m{}\x1b[0m", s) }
     pub fn dim(s: &str) -> String { format!("\x1b[2m{}\x1b[0m", s) }
+    pub fn reset(_s: &str) -> String { "\x1b[0m".to_string() }
 }
 
 fn index_db_path(path: &str) -> String {
@@ -240,16 +241,16 @@ fn main() {
                 Ok(db) => {
                     let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
                     if reliary_search::schema::create_new_db(&db).is_err() {
-                        error!("Database schema creation failed");
+                        eprintln!("{} Database schema creation failed", color::red("✗"));
                         return;
                     }
                     println!("Building index for {}...", path);
                     match reliary_search::ingest::index_directory(&db, path) {
                         Ok(count) => println!("✓ Indexed {} files", count),
-                        Err(e) => error!("Indexing error: {}", e),
+                        Err(e) => eprintln!("✗ Indexing error: {}", e),
                     }
                 }
-                Err(e) => error!("DB create error: {}", e),
+                Err(e) => eprintln!("✗ DB create error: {}", e),
             }
         }
         Commands::Compress { text, gentle: _ } => {
@@ -314,7 +315,8 @@ fn main() {
                 (None, None) => {
                     // Show current config
                     let mode = config::resolve_mode(root.as_deref().or(Some(".")));
-                    println!("gate mode: {}", mode.as_str());
+                    println!("\x1b[1m| Current Config |\x1b[0m");
+                    println!("  \x1b[1mgate mode:\x1b[0m {}", mode.as_str());
                 }
                 _ => {
                     eprintln!("Usage: reliary-agent config [key] [value]");
@@ -345,7 +347,7 @@ fn main() {
             exec_sift(command);
         }
         Commands::Daemon => {
-            warn!("'daemon' subcommand is deprecated. Use 'serve' instead.");
+            eprintln!("{}⚠ 'daemon' subcommand is deprecated. Use 'serve' instead.{}", color::yellow(""), color::reset(""));
             let state = Arc::new(SessionState::new(
                 &std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
             ));
@@ -370,7 +372,7 @@ fn main() {
                         println!("{}", reliary_core::build_state_block(&state, state.turn_count));
                     }
                 }
-                Err(e) => error!("{}", e),
+                Err(e) => eprintln!("✗ Session file error: {}", e),
             }
         }
         Commands::Veto { file } => {

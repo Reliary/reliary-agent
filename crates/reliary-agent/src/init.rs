@@ -339,7 +339,7 @@ fn install_daemon() -> bool {
             
             let service_path = service_dir.join("reliary-daemon.service");
             let service_content = format!(
-                "[Unit]\nDescription=Reliary Agent Daemon\n\n[Service]\nExecStart={} daemon\nRestart=always\n\n[Install]\nWantedBy=default.target\n",
+                "[Unit]\nDescription=Reliary Agent Daemon\n\n[Service]\nExecStart={} serve\nRestart=always\n\n[Install]\nWantedBy=default.target\n",
                 exe_str
             );
             
