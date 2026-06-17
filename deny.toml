@@ -33,4 +33,4 @@ skip-tree = []
 [sources]
 allow-git = []
 unknown-git = "deny"
-unknown-registry = "warn"
+unknown-registry = "deny"

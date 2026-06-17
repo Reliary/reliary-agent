@@ -26,9 +26,9 @@ jobs:
             echo "  OK: $f"
           done
       - name: cargo deny check advisories
-        run: 'cargo deny check advisories 2>/dev/null || echo "WARN: deny advisories found issues"'
+        run: cargo deny check advisories 2>/dev/null || { echo 'deny advisories FAIL'; exit 1; }
       - name: cargo deny check sources
-        run: 'cargo deny check sources 2>/dev/null || echo "WARN: deny sources found issues"'
+        run: cargo deny check sources 2>/dev/null || { echo 'deny sources FAIL'; exit 1; }
       - name: actionlint (workflow validation)
         run: |
           actionlint .github/workflows/*.yml 2>/dev/null || echo "WARN: actionlint found issues in workflow files"
