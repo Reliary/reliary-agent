@@ -681,15 +681,20 @@ fn inject_opencode_proxy_routes(cfg_path: &PathBuf) -> (usize, HashMap<String, S
     // Write updated opencode.json
     if count > 0 {
         // Add backup metadata to the routes map
-        let mut routes_with_backups = routes.clone();
-        if !backups.is_empty() {
-            routes_with_backups.insert("__backups".to_string(), serde_json::to_string(&backups).unwrap_or_default());
-        }
+        let routes_with_backups = {
+            let mut r = routes.clone();
+            if !backups.is_empty() {
+                r.insert("__backups".to_string(), serde_json::to_string(&backups).unwrap_or_default());
+            }
+            r
+        };
 
         if let Ok(new_content) = serde_json::to_string_pretty(&v) {
             atomic_write(&cfg_path.to_string_lossy(), &new_content);
         }
-        (count, routes)
+        // Write proxy-routes.json with backup data embedded (for restore)
+        write_proxy_routes(&routes_with_backups);
+        (count, routes_with_backups)
     } else {
         (0, routes)
     }
