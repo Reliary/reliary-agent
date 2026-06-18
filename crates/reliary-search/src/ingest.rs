@@ -27,7 +27,7 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if !SUPPORTED_EXTS.contains(&ext) { continue; }
-        if path.components().any(|c| c.as_os_str().to_str().map(|s| s.starts_with('.')).unwrap_or(false)) { continue; }
+        if path.components().any(|c| c.as_os_str().to_str().map(|s| s.starts_with('.') && s != ".").unwrap_or(false)) { continue; }
         paths.push(path.to_path_buf());
     }
 

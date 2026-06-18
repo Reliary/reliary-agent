@@ -44,7 +44,7 @@ pub fn daemon_pid() -> Option<(u32, bool)> {
     let pid_path = daemon_pid_path();
     let pid_str = std::fs::read_to_string(&pid_path).ok()?;
     let pid: u32 = pid_str.trim().parse().ok()?;
-    let alive = Command::new("kill").arg("-0").arg(pid.to_string()).status().is_ok_and(|s| s.success());
+    let alive = Command::new("kill").arg("-0").arg(pid.to_string()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
     Some((pid, alive))
 }
 
@@ -206,26 +206,27 @@ struct DoctorCheck {
     ok: bool,
     detail: String,
     fixable: bool,
+    optional: bool,
 }
 
 fn doctor_checks() -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
     let daemon_ok = daemon_alive();
-    checks.push(DoctorCheck { name: "daemon", ok: daemon_ok, detail: if daemon_ok { "Active on :9090".into() } else { "Stopped".into() }, fixable: true });
+    checks.push(DoctorCheck { name: "daemon", ok: daemon_ok, detail: if daemon_ok { "Active on :9090".into() } else { "Stopped".into() }, fixable: true, optional: false });
 
     let upstream_ok = has_upstream();
     let upstream_detail = if upstream_ok {
         let count = proxy_routes_count();
         if count > 0 { format!("{} routes", count) } else { "RELIARY_UPSTREAM_URL set".into() }
     } else { "No upstream configured".into() };
-    checks.push(DoctorCheck { name: "upstream", ok: upstream_ok, detail: upstream_detail, fixable: false });
+    checks.push(DoctorCheck { name: "upstream", ok: upstream_ok, detail: upstream_detail, fixable: false, optional: false });
 
     let pi_gate = home_dir().map(|h| h.join(".local/share/reliary/gate.js")).unwrap_or_default();
-    checks.push(DoctorCheck { name: "pi", ok: pi_gate.exists(), detail: if pi_gate.exists() { "gate.js installed".into() } else { "not found (optional)".into() }, fixable: false });
+    checks.push(DoctorCheck { name: "pi", ok: pi_gate.exists(), detail: if pi_gate.exists() { "gate.js installed".into() } else { "not found (optional)".into() }, fixable: false, optional: true });
 
     let claude_cfg = home_dir().map(|h| h.join(".claude.json")).unwrap_or_default();
     let claude_ok = has_mcp_server(&claude_cfg, "reliary");
-    checks.push(DoctorCheck { name: "claude", ok: claude_ok, detail: if claude_ok { "Wired".into() } else { "Not wired".into() }, fixable: false });
+    checks.push(DoctorCheck { name: "claude", ok: claude_ok, detail: if claude_ok { "Wired".into() } else { "Not wired".into() }, fixable: false, optional: true });
 
     let opencode_cfg = if cfg!(target_os = "windows") {
         dirs::config_dir().map(|d| d.join("opencode").join("opencode.json"))
@@ -235,13 +236,13 @@ fn doctor_checks() -> Vec<DoctorCheck> {
         home_dir().map(|h| h.join(".config/opencode/opencode.json"))
     }.unwrap_or_default();
     let opencode_ok = has_mcp_server(&opencode_cfg, "reliary");
-    checks.push(DoctorCheck { name: "opencode", ok: opencode_ok, detail: if opencode_ok { "Wired".into() } else { "Not wired".into() }, fixable: false });
+    checks.push(DoctorCheck { name: "opencode", ok: opencode_ok, detail: if opencode_ok { "Wired".into() } else { "Not wired".into() }, fixable: false, optional: true });
 
     let index_path = PathBuf::from(".reliary/index.sqlite");
-    checks.push(DoctorCheck { name: "index", ok: index_path.exists(), detail: if index_path.exists() { "Index exists".into() } else { "No index found".into() }, fixable: true });
+    checks.push(DoctorCheck { name: "index", ok: index_path.exists(), detail: if index_path.exists() { "Index exists".into() } else { "No index found".into() }, fixable: true, optional: false });
 
     let mode = crate::config::resolve_mode(Some("."));
-    checks.push(DoctorCheck { name: "mode", ok: true, detail: mode.as_str().into(), fixable: false });
+    checks.push(DoctorCheck { name: "mode", ok: true, detail: mode.as_str().into(), fixable: false, optional: false });
 
     // Multi-install check
     let installs = find_installs();
@@ -254,6 +255,7 @@ fn doctor_checks() -> Vec<DoctorCheck> {
                 ok: false,
                 detail: format!("{} installations, {} stale", installs.len(), stale_count),
                 fixable: false,
+                optional: false,
             });
         }
     }
@@ -264,6 +266,7 @@ fn doctor_checks() -> Vec<DoctorCheck> {
             ok: false,
             detail: format!("{} active copies — clutter", installs_count),
             fixable: false,
+            optional: false,
         });
     }
 
@@ -271,7 +274,7 @@ fn doctor_checks() -> Vec<DoctorCheck> {
 }
 
 fn doctor_json(checks: &[DoctorCheck]) -> Value {
-    let all_good = checks.iter().all(|c| c.ok);
+    let all_good = checks.iter().all(|c| c.ok || c.optional);
     json!({
         "ready": all_good,
         "checks": checks.iter().map(|c| json!({
@@ -283,7 +286,7 @@ fn doctor_json(checks: &[DoctorCheck]) -> Value {
 }
 
 pub fn doctor(fix: bool, format: &str) {
-    let checks = doctor_checks();
+    let mut checks = doctor_checks();
     let installs = find_installs();
 
     if format == "json" {
@@ -305,7 +308,13 @@ pub fn doctor(fix: bool, format: &str) {
     let mut needs_index = false;
 
     for c in &checks {
-        let icon = if c.ok { format!("{}✓{}", color(), reset()) } else { format!("{}✗{}", red(), reset()) };
+        let icon = if c.ok {
+            format!("{}✓{}", color(), reset())
+        } else if c.optional {
+            format!("{}-{}", dim(), reset())
+        } else {
+            format!("{}✗{}", red(), reset())
+        };
         println!("  {} {} {}{}", icon, c.name, dim(), c.detail);
         if !c.ok && c.fixable {
             match c.name {
@@ -340,6 +349,8 @@ pub fn doctor(fix: bool, format: &str) {
             let status = Command::new(exe).arg("index").arg(".").stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit()).status();
             if status.is_ok_and(|s| s.success()) { println!("{}done", color()); } else { println!("{}failed", red()); }
         }
+        // Re-evaluate after fixes
+        checks = doctor_checks();
     }
 
     if installs.len() > 1 {
@@ -348,13 +359,26 @@ pub fn doctor(fix: bool, format: &str) {
         print_install_table(&installs);
     }
 
-    let all_good = checks.iter().all(|c| c.ok);
+    let all_good = checks.iter().all(|c| c.ok || c.optional);
     if all_good {
         println!("\n{}✓{} System ready.", color(), reset());
     } else if !fix {
         println!("\n  {}Tip: run 'reliary-agent doctor --fix' to fix issues automatically.{}", dim(), reset());
     } else {
-        println!("\n{}⚠{} Some checks failed.", yellow(), reset());
+        println!("\n{}✓{} System ready after fix.", color(), reset());
+        // Show remaining non-optional failures with hints
+        for c in &checks {
+            if !c.ok && !c.optional {
+                let hint = match c.name {
+                    "daemon" => "Run 'reliary-agent start' to view logs/errors",
+                    "index" => "Run 'reliary-agent index .' to view errors",
+                    "upstream" => "Run 'reliary-agent init' or set RELIARY_UPSTREAM_URL",
+                    "installs" => "Remove stale binary paths manually",
+                    _ => "Check the detail above",
+                };
+                println!("  {} {} {}", dim(), c.name, hint);
+            }
+        }
     }
 }
 
