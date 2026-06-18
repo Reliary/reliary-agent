@@ -493,7 +493,7 @@ pub const CLI_COMMANDS: &[&str] = &[
     "search", "index", "compress", "risk",
     "serve", "init", "uninstall", "doctor", "status",
     "clean", "logs", "config",
-    "dead", "start", "stop", "sift",
+    "dead", "start", "stop", "sift", "proxy-stats",
     "completions", "man", "update", "trust",
 ];
 
@@ -524,6 +524,15 @@ enum Commands {
     },
     /// View proxy status + project intelligence
     Status,
+    /// Show aggregated proxy metrics from /tmp/reliary_proxy.jsonl
+    ProxyStats {
+        /// Show live tail
+        #[arg(long)]
+        live: bool,
+        /// Time window filter (e.g. 1h, 30m, 24h)
+        #[arg(long)]
+        since: Option<String>,
+    },
     /// Clean caches and state
     Clean {
         /// Clean system-wide state
@@ -966,6 +975,9 @@ fn main() {
         }
         Commands::Status => {
             ux::status(match fmt { reliary_core::OutputFormat::Json => "json", _ => "default" });
+        }
+        Commands::ProxyStats { live, since } => {
+            ux::proxy_stats(*live, since.as_deref(), match fmt { reliary_core::OutputFormat::Json => "json", _ => "default" });
         }
         Commands::Clean { global, all } => {
             if !*global && !*all {
