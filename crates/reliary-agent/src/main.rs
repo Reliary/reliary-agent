@@ -761,11 +761,20 @@ fn do_update(check_only: bool) {
                     if check_only {
                         println!("  Run 'reliary-agent update' to install");
                     } else {
-                        // Detect platform
+                        // Detect platform Rust target triple matching release matrix
                         let os = std::env::consts::OS;
                         let arch = std::env::consts::ARCH;
+                        let target = match (os, arch) {
+                            ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+                            ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+                            ("macos", "x86_64") => "x86_64-apple-darwin",
+                            ("macos", "aarch64") => "aarch64-apple-darwin",
+                            ("windows", "x86_64") => "x86_64-pc-windows-msvc",
+                            ("windows", "aarch64") => "aarch64-pc-windows-msvc",
+                            _ => { eprintln!("{} Unsupported platform: {}-{}", color::red("✗"), os, arch); std::process::exit(1); }
+                        };
                         let ext = if os == "windows" { ".zip" } else { ".tar.gz" };
-                        let asset_name = format!("reliary-v{}-{}-{}{}", tag, os, arch, ext);
+                        let asset_name = format!("reliary-{}-{}{}", tag, target, ext);
                         let download_url = format!("https://github.com/Reliary/reliary-agent/releases/download/{}/{}", tag, asset_name);
                         println!("  Downloading {}...", asset_name);
                         let dl = std::process::Command::new("curl")
@@ -1011,6 +1020,19 @@ fn main() {
         Commands::Config { key, value, local, root } => {
             match (key, value) {
                 (Some(k), Some(v)) => {
+                    // Validate known keys
+                    let valid_keys = ["mode", "features.compress", "features.convWindow", "features.readEnrichment",
+                        "features.editMerge", "features.healEdit", "features.priorInjection",
+                        "apiMode", "privacyMode", "apiBaseUrl", "serverUrl"];
+                    if !valid_keys.contains(&k.as_str()) {
+                        eprintln!("{} Unknown config key '{}'", color::yellow("⚠"), k);
+                        std::process::exit(1);
+                    }
+                    // Validate mode values
+                    if k == "mode" && !matches!(v.as_str(), "fast" | "reactive" | "strict") {
+                        eprintln!("{} Invalid mode '{}' — expected fast, reactive, or strict", color::yellow("⚠"), v);
+                        std::process::exit(1);
+                    }
                     let root_str = root.as_deref();
                     println!("{}", config::set_config(k, v, *local, root_str));
                 }
@@ -1067,16 +1089,14 @@ fn main() {
                 let mut files = Vec::new();
                 let path_buf = std::path::PathBuf::from(path);
                 if path_buf.is_dir() {
-                    if let Ok(entries) = std::fs::read_dir(&path_buf) {
-                        for entry in entries.flatten() {
-                            let p = entry.path();
-                            if p.is_file() {
-                                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-                                if matches!(ext, "rs" | "py" | "js" | "ts" | "go" | "java" | "rb" | "c" | "cpp" | "h" | "hpp" | "sh" | "toml" | "yaml" | "yml" | "json" | "md") {
-                                    if let Ok(content) = std::fs::read_to_string(&p) {
-                                        let display = p.strip_prefix(std::env::current_dir().unwrap_or_default()).unwrap_or(&p);
-                                        files.push((display.to_string_lossy().to_string(), content));
-                                    }
+                    for entry in walkdir::WalkDir::new(&path_buf).into_iter().filter_map(|e| e.ok()) {
+                        let p = entry.path();
+                        if p.is_file() {
+                            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                            if matches!(ext, "rs" | "py" | "js" | "ts" | "go" | "java" | "rb" | "c" | "cpp" | "h" | "hpp" | "sh" | "toml" | "yaml" | "yml" | "json" | "md") {
+                                if let Ok(content) = std::fs::read_to_string(p) {
+                                    let display = p.strip_prefix(std::env::current_dir().unwrap_or_default()).unwrap_or(p);
+                                    files.push((display.to_string_lossy().to_string(), content));
                                 }
                             }
                         }
