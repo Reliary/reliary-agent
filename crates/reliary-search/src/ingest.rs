@@ -66,7 +66,7 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
     let mut count = 0;
     
     // Batch inserts
-    let _ = db.execute_batch("BEGIN;");
+    let _ = db.execute_batch(";");
     
     for res in results {
         db.execute("INSERT OR IGNORE INTO file_map (file_path) VALUES (?1)", params![res.file])

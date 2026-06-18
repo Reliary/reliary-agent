@@ -7,10 +7,10 @@ import json, os, subprocess, sys, time, random
 
 PI = os.path.expanduser("~/.local/bin/pi")
 SETTINGS = os.path.expanduser("~/.pi/agent/settings.json")
-GATE = "$HOME/src/context-engine/gate.js"
+GATE = os.path.expanduser("~/src/reliary-agent/pi/gate.js")
 RELIARY_BIN = os.path.expanduser("~/.local/bin/reliary-agent")
 REPO = os.path.expanduser("~/src/stria")
-OUT = "$HOME/src/context-engine/scripts/bench_paired_results.json"
+OUT = os.path.expanduser("~/bench_paired_results.json")
 
 def reset_bug():
     subprocess.run(["git", "stash"], capture_output=True, cwd=REPO)
