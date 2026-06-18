@@ -364,7 +364,7 @@ fn install_daemon() -> bool {
             
             let service_path = service_dir.join("reliary-daemon.service");
             let service_content = format!(
-                "[Unit]\nDescription=Reliary Agent Daemon\n\n[Service]\nExecStart={} daemon\nRestart=always\n\n[Install]\nWantedBy=default.target\n",
+                "[Unit]\nDescription=Reliary Agent Daemon\n\n[Service]\nExecStart={} serve\nRestart=always\n\n[Install]\nWantedBy=default.target\n",
                 exe_str
             );
             
@@ -409,7 +409,7 @@ fn install_daemon() -> bool {
     <key>ProgramArguments</key>
     <array>
         <string>{}</string>
-        <string>daemon</string>
+        <string>serve</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -450,7 +450,7 @@ fn install_daemon() -> bool {
             
             let vbs_path = startup_dir.join("reliary-daemon.vbs");
             let vbs_content = format!(
-                "Set WshShell = CreateObject(\"WScript.Shell\")\nWshShell.Run chr(34) & \"{}\" & chr(34) & \" daemon\", 0\nSet WshShell = Nothing\n",
+                "Set WshShell = CreateObject(\"WScript.Shell\")\nWshShell.Run chr(34) & \"{}\" & chr(34) & \" serve\", 0\nSet WshShell = Nothing\n",
                 exe_str
             );
             

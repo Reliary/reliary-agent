@@ -17,13 +17,10 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
         crate::reindex::incremental_reindex(&workdir);
 
         // 2. Collect file paths then scan for dead code in parallel
-        let entries = match std::fs::read_dir(&workdir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        let file_tasks: Vec<_> = entries.flatten()
-            .map(|e| e.path())
+        let file_tasks: Vec<_> = walkdir::WalkDir::new(&workdir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path().to_path_buf())
             .filter(|fp| {
                 let ext = fp.extension().and_then(|e| e.to_str()).unwrap_or("");
                 matches!(ext, "py" | "rs" | "js")
