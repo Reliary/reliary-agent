@@ -25,6 +25,7 @@ use clap::{Parser, Subcommand, ValueEnum, CommandFactory};
 use clap_complete::generate;
 use std::io::{Read, Write, IsTerminal};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{info, error};
 use crate::session_state::SessionState;
 
@@ -731,6 +732,23 @@ fn do_update(check_only: bool) {
                     println!("{} Already up to date (v{})", color::green("✓"), current);
                 } else {
                     println!("{} Update available: v{} → v{}", color::yellow("!"), current, latest);
+                    // Show upgrade commands per detected install method
+                    let installs = ux::find_installs();
+                    if !installs.is_empty() {
+                        let mut seen_methods = std::collections::HashSet::new();
+                        for inst in &installs {
+                            if seen_methods.insert(inst.method) {
+                                match inst.method {
+                                    "cargo" => println!("  {}: cargo install reliary-agent", inst.method),
+                                    "brew" => println!("  {}: brew upgrade Reliary/homebrew-tap/reliary-agent", inst.method),
+                                    "npm" => println!("  {}: npm update -g @reliary/agent", inst.method),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    } else {
+                        println!("  Run 'reliary-agent update' to auto-update");
+                    }
                     if check_only {
                         println!("  Run 'reliary-agent update' to install");
                     } else {
@@ -738,7 +756,7 @@ fn do_update(check_only: bool) {
                         let os = std::env::consts::OS;
                         let arch = std::env::consts::ARCH;
                         let ext = if os == "windows" { ".zip" } else { ".tar.gz" };
-                        let asset_name = format!("reliary-agent-{}-{}-{}{}", tag, os, arch, ext);
+                        let asset_name = format!("reliary-v{}-{}-{}{}", tag, os, arch, ext);
                         let download_url = format!("https://github.com/Reliary/reliary-agent/releases/download/{}/{}", tag, asset_name);
                         println!("  Downloading {}...", asset_name);
                         let dl = std::process::Command::new("curl")
@@ -852,7 +870,13 @@ fn main() {
                 cmd.stderr(std::process::Stdio::null());
                 match cmd.spawn() {
                     Ok(child) => {
-                        println!("{} Daemon started in background (PID {}).", color::green("✓"), child.id());
+                        println!("{} Daemon spawned (PID {}), waiting for health check...", color::green("✓"), child.id());
+                        if ux::wait_for_daemon(5) {
+                            ux::write_pid_file();
+                            println!("{} Daemon started on :9090", color::green("✓"));
+                        } else {
+                            eprintln!("{} Daemon launched but not responding after 5s — check logs", color::yellow("⚠"));
+                        }
                     }
                     Err(e) => {
                         eprintln!("{} Failed to start daemon: {}", color::red("✗"), e);
@@ -867,12 +891,46 @@ fn main() {
         Commands::Stop => {
             #[cfg(unix)]
             {
+                // Check PID file first
+                if let Some((pid, alive)) = ux::daemon_pid() {
+                    if alive {
+                        let term = std::process::Command::new("kill")
+                            .arg(pid.to_string())
+                            .status();
+                        if term.is_ok_and(|s| s.success()) {
+                            // Wait for process to exit
+                            for _ in 0..20 {
+                                if !ux::daemon_alive() {
+                                    ux::remove_pid_file();
+                                    println!("{} Daemon stopped (PID {}).", color::green("✓"), pid);
+                                    return;
+                                }
+                                std::thread::sleep(Duration::from_millis(250));
+                            }
+                            eprintln!("{} Daemon didn't respond to SIGTERM. Try: kill -9 {}", color::yellow("⚠"), pid);
+                            ux::remove_pid_file();
+                            return;
+                        }
+                    } else {
+                        ux::remove_pid_file();
+                    }
+                }
+                // Fallback to pkill
                 let output = std::process::Command::new("pkill")
                     .arg("-f")
                     .arg("reliary-agent serve")
                     .output();
                 match output {
                     Ok(o) if o.status.success() => {
+                        // Wait for it to actually stop
+                        for _ in 0..20 {
+                            if !ux::daemon_alive() {
+                                ux::remove_pid_file();
+                                println!("{} Daemon stopped.", color::green("✓"));
+                                return;
+                            }
+                            std::thread::sleep(Duration::from_millis(250));
+                        }
                         println!("{} Daemon stopped.", color::green("✓"));
                     }
                     _ => {
@@ -886,6 +944,7 @@ fn main() {
             }
         }
         Commands::Serve { port } => {
+            ux::write_pid_file();
             eprintln!("{} Reliary Agent v{}", color::bold(""), VERSION);
             eprintln!(
                 "  {} Proxy   http://127.0.0.1:{}/v1/chat/completions",
