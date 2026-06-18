@@ -4,7 +4,7 @@
 [![NPM Version](https://img.shields.io/npm/v/@reliary/agent.svg)](https://www.npmjs.com/package/@reliary/agent)
 [![CI (guardrails)](https://github.com/Reliary/reliary-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Reliary/reliary-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Reliary/reliary-agent/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Reliary/reliary-agent)
+[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/Reliary/reliary-agent?label=openssf%20scorecard)](https://securityscorecards.dev/viewer/?uri=github.com/Reliary/reliary-agent)
 
 API proxy, code search, and edit safety. One binary, all local, no server required.
 
