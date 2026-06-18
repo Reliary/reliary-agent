@@ -312,6 +312,9 @@ async fn who_calls_handler(Query(params): Query<HashMap<String, String>>) -> Str
     // Normalize paths: index stores relative paths
     let rel_file = file.trim_start_matches('/').trim_start_matches(root.trim_end_matches('/')).trim_start_matches('/');
     let callers = reliary_search::search::who_calls(&db, identifier, rel_file);
+    if !callers.is_empty() {
+        tracing::info!("who_calls: {} referenced by {} files for {}", identifier, callers.len(), rel_file);
+    }
     serde_json::to_string(&callers).unwrap_or_else(|_| "[]".to_string())
 }
 
@@ -588,6 +591,10 @@ fn preload_next_file(payload: &Value) {
     }
     // Predict next files and pre-load their content into read cache
     let predictions = state.predict_files(3);
+    if !predictions.is_empty() {
+        let names: Vec<&str> = predictions.iter().map(|(f, _)| f.as_str()).collect();
+        tracing::info!("cooccur-predict: pre-loading {} predicted files: {:?}", predictions.len(), names);
+    }
     for (file, _score) in &predictions {
         if state.read_cache_get(file).is_some() { continue; } // already cached
         if let Ok(content) = std::fs::read_to_string(file) {

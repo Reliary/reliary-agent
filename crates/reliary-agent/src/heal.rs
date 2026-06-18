@@ -43,9 +43,12 @@ pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), Str
     let chronicle_path = format!("{}/.reliary/chronicle.sqlite", workdir.trim_end_matches('/'));
     if let Ok(db) = rusqlite::Connection::open(&chronicle_path) {
         if let Some(outcome) = crate::chronicle::edit_cache_get(&db, file_hash, ident_hash) {
+            tracing::info!("edit_cache: hit (outcome={}) for {} ident={}", outcome, file, ident_hash);
             if outcome == "pass" {
                 return Ok(());
             }
+        } else {
+            tracing::info!("edit_cache: miss for {} ident={}", file, ident_hash);
         }
     }
 
