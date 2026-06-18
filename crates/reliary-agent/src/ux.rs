@@ -31,8 +31,141 @@ fn blue() -> &'static str { "\x1b[34m" }
 fn red() -> &'static str { "\x1b[31m" }
 fn yellow() -> &'static str { "\x1b[33m" }
 
-fn daemon_alive() -> bool {
+pub fn daemon_alive() -> bool {
     TcpStream::connect_timeout(&"127.0.0.1:9090".parse().expect("invalid port"), Duration::from_millis(500)).is_ok()
+}
+
+fn daemon_pid_path() -> PathBuf {
+    std::path::Path::new("/tmp/reliary-agent-9090.pid").to_path_buf()
+}
+
+/// Read daemon PID from file, returns (pid, alive) where alive means process exists
+pub fn daemon_pid() -> Option<(u32, bool)> {
+    let pid_path = daemon_pid_path();
+    let pid_str = std::fs::read_to_string(&pid_path).ok()?;
+    let pid: u32 = pid_str.trim().parse().ok()?;
+    let alive = Command::new("kill").arg("-0").arg(pid.to_string()).status().is_ok_and(|s| s.success());
+    Some((pid, alive))
+}
+
+/// Write PID file for daemon
+pub fn write_pid_file() {
+    let pid_path = daemon_pid_path();
+    let _ = std::fs::write(&pid_path, format!("{}\n", std::process::id()));
+}
+
+/// Remove PID file for daemon
+pub fn remove_pid_file() {
+    let pid_path = daemon_pid_path();
+    let _ = std::fs::remove_file(&pid_path);
+}
+
+/// Wait until daemon health check passes, with timeout
+pub fn wait_for_daemon(timeout_secs: u64) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs() < timeout_secs {
+        if daemon_alive() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    false
+}
+
+/// Scan for multiple installations of reliary-agent
+pub struct InstallInfo {
+    pub path: String,
+    pub version: String,
+    pub method: &'static str,
+    pub active: bool,
+}
+
+pub fn find_installs() -> Vec<InstallInfo> {
+    let mut installs: Vec<InstallInfo> = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+
+    // Find active binary via PATH
+    let which = if cfg!(target_os = "windows") { "where" } else { "which" };
+    if let Ok(output) = Command::new(which).arg("-a").arg("reliary-agent").output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for path in stdout.lines() {
+            let p = path.trim();
+            if !p.is_empty() && seen_paths.insert(p.to_string()) {
+                let version = binary_version(p);
+                installs.push(InstallInfo {
+                    path: p.to_string(),
+                    version,
+                    method: "PATH",
+                    active: installs.is_empty(),
+                });
+            }
+        }
+    }
+
+    // Check cargo bin
+    if let Some(home) = home_dir() {
+        let cargo_bin = home.join(".cargo/bin/reliary-agent");
+        let cargo_path = cargo_bin.to_string_lossy().to_string();
+        if cargo_bin.exists() && seen_paths.insert(cargo_path.clone()) {
+            let version = binary_version(&cargo_path);
+            installs.push(InstallInfo { path: cargo_path, version, method: "cargo", active: false });
+        }
+
+        // Check npm global
+        let npm_bin = home.join(".local/share/io.npm/.npm-global/bin/reliary-agent");
+        let npm_path = npm_bin.to_string_lossy().to_string();
+        if npm_bin.exists() && seen_paths.insert(npm_path.clone()) {
+            let version = binary_version(&npm_path);
+            installs.push(InstallInfo { path: npm_path, version, method: "npm", active: false });
+        }
+        // Also check npm's common global dir
+        let npm_bin2 = home.join("node_modules/.bin/reliary-agent");
+        let npm_path2 = npm_bin2.to_string_lossy().to_string();
+        if npm_bin2.exists() && seen_paths.insert(npm_path2.clone()) {
+            let version = binary_version(&npm_path2);
+            installs.push(InstallInfo { path: npm_path2, version, method: "npm", active: false });
+        }
+    }
+
+    // Check Homebrew paths
+    for brew_path in &[
+        "/opt/homebrew/bin/reliary-agent",
+        "/usr/local/bin/reliary-agent",
+        "/home/linuxbrew/.linuxbrew/bin/reliary-agent",
+    ] {
+        let p = std::path::Path::new(brew_path);
+        if p.exists() && seen_paths.insert(brew_path.to_string()) {
+            let version = binary_version(brew_path);
+            installs.push(InstallInfo { path: brew_path.to_string(), version, method: "brew", active: false });
+        }
+    }
+
+    installs
+}
+
+fn binary_version(path: &str) -> String {
+    let output = Command::new(path).arg("--version").output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() { "?".to_string() } else { s }
+        }
+        _ => "?".to_string(),
+    }
+}
+
+/// Print install table to display alongside doctor
+pub fn print_install_table(installs: &[InstallInfo]) {
+    if installs.is_empty() { return; }
+    println!("  {}", "─".repeat(50));
+    for inst in installs {
+        let marker = if inst.active { format!("{}→{}", blue(), reset()) } else { " ".to_string() };
+        println!("  {} {} {}v{}  {}", marker, dim(), dim(), inst.version, inst.path);
+        if inst.active {
+            println!("    {}Active (from PATH){}", dim(), reset());
+        }
+    }
+    println!("  {}", "─".repeat(50));
 }
 
 fn has_upstream() -> bool {
@@ -110,6 +243,30 @@ fn doctor_checks() -> Vec<DoctorCheck> {
     let mode = crate::config::resolve_mode(Some("."));
     checks.push(DoctorCheck { name: "mode", ok: true, detail: mode.as_str().into(), fixable: false });
 
+    // Multi-install check
+    let installs = find_installs();
+    if installs.len() > 1 {
+        let active_version = installs.iter().find(|i| i.active).map(|i| i.version.clone()).unwrap_or_default();
+        let stale_count = installs.iter().filter(|i| !i.active && i.version != active_version).count();
+        if stale_count > 0 {
+            checks.push(DoctorCheck {
+                name: "installs",
+                ok: false,
+                detail: format!("{} installations, {} stale", installs.len(), stale_count),
+                fixable: false,
+            });
+        }
+    }
+    let installs_count = installs.len();
+    if installs_count > 2 {
+        checks.push(DoctorCheck {
+            name: "installs",
+            ok: false,
+            detail: format!("{} active copies — clutter", installs_count),
+            fixable: false,
+        });
+    }
+
     checks
 }
 
@@ -127,9 +284,18 @@ fn doctor_json(checks: &[DoctorCheck]) -> Value {
 
 pub fn doctor(fix: bool, format: &str) {
     let checks = doctor_checks();
+    let installs = find_installs();
 
     if format == "json" {
-        println!("{}", serde_json::to_string_pretty(&doctor_json(&checks)).unwrap_or_else(|_| r#"{"ready":false,"checks":[]}"#.to_string()));
+        let mut j = doctor_json(&checks);
+        let install_json: Vec<Value> = installs.iter().map(|i| json!({
+            "path": i.path,
+            "version": i.version,
+            "method": i.method,
+            "active": i.active,
+        })).collect();
+        j.as_object_mut().unwrap().insert("installations".into(), Value::Array(install_json));
+        println!("{}", serde_json::to_string_pretty(&j).unwrap_or_else(|_| r#"{"ready":false,"checks":[]}"#.to_string()));
         return;
     }
 
@@ -174,6 +340,12 @@ pub fn doctor(fix: bool, format: &str) {
             let status = Command::new(exe).arg("index").arg(".").stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit()).status();
             if status.is_ok_and(|s| s.success()) { println!("{}done", color()); } else { println!("{}failed", red()); }
         }
+    }
+
+    if installs.len() > 1 {
+        println!();
+        println!("  {}| Installations |{}", color(), reset());
+        print_install_table(&installs);
     }
 
     let all_good = checks.iter().all(|c| c.ok);
@@ -249,7 +421,12 @@ pub fn status(format: &str) {
 
     print!("{}•{} Proxy: ", blue(), reset());
     if d.proxy_running {
-        println!("{}✓{} Running on :9090", color(), reset());
+        let pid_info = match daemon_pid() {
+            Some((pid, true)) => format!("PID {}", pid),
+            _ => "".to_string(),
+        };
+        let extra = if pid_info.is_empty() { "".to_string() } else { format!(" ({})", pid_info) };
+        println!("{}✓{} Running on :9090{}", color(), reset(), extra);
     } else {
         println!("{}✗{} Stopped", red(), reset());
         if cfg!(unix) { println!("  {}→ Run 'reliary-agent start' to run in background{}", dim(), reset()); }
