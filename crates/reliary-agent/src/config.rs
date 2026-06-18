@@ -222,48 +222,66 @@ pub fn set_config(key: &str, value: &str, project: bool, root: Option<&str>) -> 
 mod tests {
     use super::*;
 
+    fn isolated_test<F>(f: F)
+    where
+        F: FnOnce(),
+    {
+        std::env::remove_var("RELIARY_MODE");
+        std::env::remove_var("RELIARY_FEATURES");
+        let tmp = std::env::temp_dir().join(format!("reliary_config_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp);
+        let old_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.to_str().unwrap());
+        f();
+        if let Some(h) = old_home { std::env::set_var("HOME", h); } else { std::env::remove_var("HOME"); }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn test_resolve_mode_default() {
-        std::env::remove_var("RELIARY_MODE");
-        // Global config may have a mode set; verify source is not Env
-        let result = resolve_mode_with_source(Some("/tmp/nonexistent_test_dir_12345"));
-        assert_ne!(result.source, ConfigSource::Env);
-        assert!(result.value.as_str() == "reactive" || result.value.as_str() == "strict");
+        isolated_test(|| {
+            let result = resolve_mode_with_source(Some("/tmp/nonexistent_test_dir_12345"));
+            assert_ne!(result.source, ConfigSource::Env);
+            assert!(result.value.as_str() == "reactive" || result.value.as_str() == "strict");
+        });
     }
 
     #[test]
     fn test_resolve_mode_env() {
-        std::env::set_var("RELIARY_MODE", "fast");
-        let result = resolve_mode_with_source(None);
-        assert_eq!(result.value, GateMode::Fast);
-        assert_eq!(result.source, ConfigSource::Env);
-        std::env::remove_var("RELIARY_MODE");
+        isolated_test(|| {
+            std::env::set_var("RELIARY_MODE", "fast");
+            let result = resolve_mode_with_source(None);
+            assert_eq!(result.value, GateMode::Fast);
+            assert_eq!(result.source, ConfigSource::Env);
+        });
     }
 
     #[test]
     fn test_resolve_features_default() {
-        std::env::remove_var("RELIARY_FEATURES");
-        let features = resolve_features_with_source(Some("/nonexistent"));
-        let compress = features.iter().find(|f| f.name == "compress").unwrap();
-        assert!(compress.enabled);
-        assert_eq!(compress.source, ConfigSource::Default);
+        isolated_test(|| {
+            let features = resolve_features_with_source(Some("/nonexistent"));
+            let compress = features.iter().find(|f| f.name == "compress").unwrap();
+            assert!(compress.enabled);
+            assert_eq!(compress.source, ConfigSource::Default);
 
-        let edit_merge = features.iter().find(|f| f.name == "editMerge").unwrap();
-        assert!(!edit_merge.enabled);
-        assert_eq!(edit_merge.source, ConfigSource::Default);
+            let edit_merge = features.iter().find(|f| f.name == "editMerge").unwrap();
+            assert!(!edit_merge.enabled);
+            assert_eq!(edit_merge.source, ConfigSource::Default);
+        });
     }
 
     #[test]
     fn test_resolve_features_env_override() {
-        std::env::set_var("RELIARY_FEATURES", "-compress,+editMerge");
-        let features = resolve_features_with_source(Some("/nonexistent"));
-        let compress = features.iter().find(|f| f.name == "compress").unwrap();
-        assert!(!compress.enabled);
-        assert_eq!(compress.source, ConfigSource::Env);
+        isolated_test(|| {
+            std::env::set_var("RELIARY_FEATURES", "-compress,+editMerge");
+            let features = resolve_features_with_source(Some("/nonexistent"));
+            let compress = features.iter().find(|f| f.name == "compress").unwrap();
+            assert!(!compress.enabled);
+            assert_eq!(compress.source, ConfigSource::Env);
 
-        let edit_merge = features.iter().find(|f| f.name == "editMerge").unwrap();
-        assert!(edit_merge.enabled);
-        assert_eq!(edit_merge.source, ConfigSource::Env);
-        std::env::remove_var("RELIARY_FEATURES");
+            let edit_merge = features.iter().find(|f| f.name == "editMerge").unwrap();
+            assert!(edit_merge.enabled);
+            assert_eq!(edit_merge.source, ConfigSource::Env);
+        });
     }
 }
