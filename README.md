@@ -373,6 +373,9 @@ reliary-agent man                                # Generate man page (stdout)
 reliary-agent man --outdir ./man/man1            # Write man page to directory
 reliary-agent trust .                            # Quick project setup (create .reliary + index)
 reliary-agent update --check                     # Check for updates without installing
+reliary-agent proxy-stats                        # Show proxy metrics (requests, tokens, savings)
+reliary-agent proxy-stats --live                 # Live tail proxy log
+reliary-agent proxy-stats --since 1h             # Filter to last hour
 reliary-agent update                             # Download and install latest release
 
 reliary-agent -v search "query" .                # Verbose output
