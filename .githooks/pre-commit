@@ -5,7 +5,8 @@ set -e
 echo "[guard] Running pre-commit checks..."
 
 # 1. Hardcoded absolute HOME paths (must use $HOME or env vars)
-if git diff --cached --name-only | xargs grep -lnP '/home/[^/]+/' 2>/dev/null | grep -v '.githooks/'; then
+# Exclude ux.rs (contains legitimate Linuxbrew/Homebrew detection paths).
+if git diff --cached --name-only | xargs grep -lnP '/home/[^/]+/' 2>/dev/null | grep -v '.githooks/' | grep -v 'ux\.rs$'; then
     echo "FAIL: Hardcoded /home/user/ path detected. Use \$HOME or env vars."
     exit 1
 fi
