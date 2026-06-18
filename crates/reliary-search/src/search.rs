@@ -91,6 +91,43 @@ pub fn search_fts5(db: &Connection, query: &str, top_n: usize) -> Vec<SearchResu
     results
 }
 
+/// Find all files that reference a given identifier (excluding the source file).
+/// Uses the FTS5 phrase index. Returns (file_path, occurrence_count) pairs.
+pub fn who_calls(db: &Connection, identifier: &str, exclude_file: &str) -> Vec<(String, u64)> {
+    let stemmed = crate::porter_stem(&identifier.to_lowercase());
+    let phrase_id: Option<i64> = db.query_row(
+        "SELECT id FROM phrases WHERE phrase = ?1",
+        params![stemmed],
+        |r| r.get(0),
+    ).ok();
+    let phrase_id = match phrase_id {
+        Some(id) => id,
+        None => return vec![],
+    };
+
+    let mut stmt = match db.prepare(
+        "SELECT f.file_path, COUNT(*) as cnt
+         FROM phrase_occ occ
+         JOIN file_map f ON occ.file_id = f.id
+         WHERE occ.phrase_id = ?1 AND f.file_path != ?2
+         GROUP BY f.file_path
+         ORDER BY cnt DESC
+         LIMIT 20"
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let rows = match stmt.query_map(params![phrase_id, exclude_file], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+    }) {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+
+    rows.filter_map(|r| r.ok()).collect()
+}
+
 /// Get index stats
 pub fn get_index_stats(db: &Connection) -> (i64, i64, i64) {
     let files = db.query_row("SELECT COUNT(*) FROM file_map", [], |r| r.get(0)).unwrap_or(0);
