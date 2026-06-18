@@ -8,6 +8,7 @@ set -e
 VERSION="${1#v}"
 VERSION="${VERSION:-0.6.3}"
 OUTPUT_DIR="${2:-.}"
+mkdir -p "$OUTPUT_DIR"
 BASE_URL="https://github.com/Reliary/reliary-agent/releases/download/v${VERSION}"
 
 declare -A TARBALLS
