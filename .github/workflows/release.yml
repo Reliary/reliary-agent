@@ -93,6 +93,12 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb
 
+      - name: Sign each tarball with cosign
+        run: |
+          find artifacts -type f -name '*.tar.gz' | sort | while read tarball; do
+            cosign sign-blob "$tarball" --bundle "${tarball}.sig" --yes 2>/dev/null || echo "cosign signing skipped for $tarball"
+          done
+
       - name: Sign checksums with cosign
         run: |
           cosign sign-blob artifacts/SHA256SUMS --bundle artifacts/SHA256SUMS.sig --yes 2>/dev/null || echo "cosign signing skipped"
@@ -119,7 +125,9 @@ jobs:
         with:
           files: |
             artifacts/*/*.tar.gz
+            artifacts/*/*.tar.gz.sig
             artifacts/checksums/SHA256SUMS
+            artifacts/checksums/SHA256SUMS.sig
           body: |
             ## reliary-agent ${{ github.ref_name }}
 
