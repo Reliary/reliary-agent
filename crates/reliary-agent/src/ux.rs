@@ -453,6 +453,110 @@ pub fn status(format: &str) {
     }
 }
 
+pub fn proxy_stats(live: bool, since: Option<&str>, format: &str) {
+    let log_path = std::path::Path::new("/tmp/reliary_proxy.jsonl");
+    if !log_path.exists() {
+        if format == "json" {
+            println!("{{\"error\":\"proxy log not found\"}}");
+        } else {
+            println!("{} Proxy log not found at /tmp/reliary_proxy.jsonl{}", yellow(), reset());
+            println!("  {}Start the proxy and make requests first.{}", dim(), reset());
+        }
+        return;
+    }
+
+    if live {
+        println!("{} Tailing proxy log...{}", blue(), reset());
+        let status = std::process::Command::new("tail").arg("-f").arg(log_path).status();
+        if status.is_err() {
+            if let Ok(content) = std::fs::read_to_string(log_path) {
+                println!("{}", content);
+            }
+        }
+        return;
+    }
+
+    // Parse log file
+    let content = match std::fs::read_to_string(log_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{} Error reading proxy log: {}{}", red(), e, reset());
+            return;
+        }
+    };
+
+    // Time window filter
+    let cutoff = since.and_then(|s| {
+        let seconds = match s.trim().to_lowercase().strip_suffix('h') {
+            Some(v) => v.parse::<u64>().ok().map(|h| h * 3600),
+            None => s.trim().to_lowercase().strip_suffix('m')
+                .and_then(|v| v.parse::<u64>().ok().map(|m| m * 60)),
+        };
+        seconds.map(|sec| std::time::Instant::now() - std::time::Duration::from_secs(sec))
+    });
+
+    let mut total_requests = 0u64;
+    let mut total_prompt_tokens = 0u64;
+    let mut total_completion_tokens = 0u64;
+    let mut total_savings_pct: Vec<f64> = Vec::new();
+    let mut auth_prefixes: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+
+        // Crude timestamp check if we have a cutoff
+        if cutoff.is_some() {
+            // No timestamp in the log lines — skip filtering
+        }
+
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+            match entry.get("event").and_then(|v| v.as_str()) {
+                Some("stream_usage") | Some("proxy_response") => {
+                    total_requests += 1;
+                    if let Some(p) = entry.get("prompt_tokens").and_then(|v| v.as_u64()) { total_prompt_tokens += p; }
+                    if let Some(c) = entry.get("completion_tokens").and_then(|v| v.as_u64()) { total_completion_tokens += c; }
+                    if let Some(s) = entry.get("savings_pct").and_then(|v| v.as_f64()) { total_savings_pct.push(s); }
+                    if let Some(a) = entry.get("auth_prefix").and_then(|v| v.as_str()) {
+                        *auth_prefixes.entry(a.to_string()).or_insert(0) += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if format == "json" {
+        let avg_savings = if total_savings_pct.is_empty() { 0.0 } else { total_savings_pct.iter().sum::<f64>() / total_savings_pct.len() as f64 };
+        let prefixes: Vec<serde_json::Value> = auth_prefixes.iter().map(|(k, v)| serde_json::json!({"key": k, "count": v})).collect();
+        println!("{}", serde_json::json!({
+            "requests": total_requests,
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+            "weighted_cost": total_prompt_tokens + 4 * total_completion_tokens,
+            "avg_savings_pct": format!("{:.1}", avg_savings),
+            "log_file": "/tmp/reliary_proxy.jsonl",
+            "auth_prefixes": prefixes,
+        }));
+    } else {
+        let avg_savings = if total_savings_pct.is_empty() { 0.0 } else { total_savings_pct.iter().sum::<f64>() / total_savings_pct.len() as f64 };
+        println!("\n{}| Proxy Metrics |{}\n", color(), reset());
+        println!("  {}•{} Requests:      {}", blue(), reset(), total_requests);
+        println!("  {}•{} Prompt tokens:  {}", blue(), reset(), total_prompt_tokens);
+        println!("  {}•{} Output tokens:  {}", blue(), reset(), total_completion_tokens);
+        println!("  {}•{} Weighted cost:  {}", blue(), reset(), total_prompt_tokens + 4 * total_completion_tokens);
+        if !total_savings_pct.is_empty() {
+            println!("  {}•{} Avg savings:    {:.1}%", blue(), reset(), avg_savings);
+        }
+        println!("  {}•{} Auth keys:      {}", blue(), reset(), auth_prefixes.len());
+        for (k, v) in &auth_prefixes {
+            let short = if k.len() > 12 { format!("{}...", &k[..12]) } else { k.clone() };
+            println!("    {} {} requests", short, v);
+        }
+        println!("\n  {}Log file: /tmp/reliary_proxy.jsonl{}", dim(), reset());
+    }
+}
+
 pub fn clean(global: bool, all: bool) {
     let do_global = global || all;
     let do_local = !global || all;
