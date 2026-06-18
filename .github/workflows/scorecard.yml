@@ -26,6 +26,10 @@ jobs:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
+          repo_token: ${{ secrets.SCORECARD_TOKEN || secrets.GITHUB_TOKEN }}
+          # For full Branch-Protection check, create a fine-grained PAT (metadata: read,
+          # administration: read) and save as SCORECARD_TOKEN secret. Without it the
+          # Branch-Protection check scores -1.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: SARIF
