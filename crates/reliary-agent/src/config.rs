@@ -230,7 +230,7 @@ mod tests {
         std::env::remove_var("RELIARY_FEATURES");
         let tmp = std::env::temp_dir().join(format!("reliary_config_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
-        let old_home = std::env::var("HOME").ok();
+        let old_home = std::env::var("HOME").ok();  // GUARDED: intentional — Option::ok() in test helper
         std::env::set_var("HOME", tmp.to_str().unwrap());
         f();
         if let Some(h) = old_home { std::env::set_var("HOME", h); } else { std::env::remove_var("HOME"); }
