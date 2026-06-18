@@ -99,7 +99,7 @@ pub fn who_calls(db: &Connection, identifier: &str, exclude_file: &str) -> Vec<(
         "SELECT id FROM phrases WHERE phrase = ?1",
         params![stemmed],
         |r| r.get(0),
-    ).ok();
+    ).ok(); // GUARDED: intentional — returns None on absent identifier
     let phrase_id = match phrase_id {
         Some(id) => id,
         None => return vec![],
