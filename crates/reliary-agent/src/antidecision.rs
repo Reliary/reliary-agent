@@ -246,8 +246,8 @@ mod tests {
     use super::*;
 
     fn clean_test_wd() -> String {
-        let wd = "/tmp/antidecision_test".to_string();
-        let _ = std::fs::remove_dir_all(format!("{}/.reliary", wd));
+        let wd = format!("/tmp/antidecision_test_{}", std::process::id());
+        let _ = std::fs::remove_dir_all(&wd);
         wd
     }
 

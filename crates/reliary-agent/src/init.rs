@@ -815,18 +815,27 @@ pub fn restore_opencode_proxy_routes() -> bool {
     restored > 0
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::sync::Mutex;
 
-    fn with_temp_home<F>(test: F)
+        /// Serialize init tests — they share HOME and env vars which are process-global
+        static INIT_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+        fn with_temp_home<F>(test: F)
     where
         F: FnOnce(PathBuf),
     {
-        let dir = std::env::temp_dir().join(format!("reliary_init_test_{}", std::process::id()));
+        let _lock = INIT_TEST_LOCK.lock().unwrap();
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!("reliary_init_test_{}_{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst)));
         let _ = std::fs::create_dir_all(dir.join(".reliary"));
         let old_home = std::env::var("HOME").ok();  // GUARDED: intentional
         std::env::set_var("HOME", dir.to_str().unwrap());
+        let old_xdg = std::env::var("XDG_CONFIG_HOME").ok();  // GUARDED: intentional
+        std::env::remove_var("XDG_CONFIG_HOME");
 
         // Clear RELIARY_* env vars to avoid interference
         let old_pi_key = std::env::var("OPENAI_API_KEY").ok();  // GUARDED: intentional
@@ -838,6 +847,7 @@ mod tests {
 
         // Restore env
         if let Some(h) = old_home { std::env::set_var("HOME", h); } else { std::env::remove_var("HOME"); }
+        if let Some(x) = old_xdg { std::env::set_var("XDG_CONFIG_HOME", x); } else { std::env::remove_var("XDG_CONFIG_HOME"); }
         if let Some(k) = old_pi_key { std::env::set_var("OPENAI_API_KEY", k); }
         if let Some(k) = old_anthro_key { std::env::set_var("ANTHROPIC_API_KEY", k); }
         let _ = std::fs::remove_dir_all(&dir);
