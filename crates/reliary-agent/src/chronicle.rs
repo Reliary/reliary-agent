@@ -39,6 +39,7 @@ pub fn init(db_path: &str) -> Result<Connection, String> {
 
 // Check cached edit outcome. Returns Some(outcome) if cache hit within 24h.
 pub fn edit_cache_get(db: &Connection, file_hash: u64, ident_hash: u64) -> Option<String> {
+    ensure_edit_cache_table(db);
     let cutoff = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -47,11 +48,12 @@ pub fn edit_cache_get(db: &Connection, file_hash: u64, ident_hash: u64) -> Optio
         "SELECT outcome FROM edit_cache WHERE file_hash = ?1 AND ident_hash = ?2 AND timestamp >= ?3",
         rusqlite::params![file_hash as i64, ident_hash as i64, cutoff],
         |r| r.get(0),
-    ).ok()
+    ).ok() // GUARDED: intentional — cache miss is normal
 }
 
 // Store edit outcome in cache.
 pub fn edit_cache_set(db: &Connection, file_hash: u64, ident_hash: u64, outcome: &str) {
+    ensure_edit_cache_table(db);
     let t = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -62,6 +64,18 @@ pub fn edit_cache_set(db: &Connection, file_hash: u64, ident_hash: u64, outcome:
     ) {
         error!("edit_cache_set: {}", e);
     }
+}
+
+fn ensure_edit_cache_table(db: &Connection) {
+    let _ = db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS edit_cache (
+            file_hash INTEGER NOT NULL,
+            ident_hash INTEGER NOT NULL,
+            outcome TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            PRIMARY KEY (file_hash, ident_hash)
+        );"
+    );
 }
 
 // Append an event to the chronicle
