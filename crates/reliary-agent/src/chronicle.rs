@@ -2,6 +2,7 @@
 // Every daemon action is recorded. Queried by risk thresholds and scavenger backoff.
 
 use rusqlite::Connection;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{warn, error};
 // Initialize chronicle table (idempotent) with schema versioning
 pub fn init(db_path: &str) -> Result<Connection, String> {
@@ -24,9 +25,43 @@ pub fn init(db_path: &str) -> Result<Connection, String> {
         CREATE INDEX IF NOT EXISTS idx_chronicle_t ON chronicle(t);
         CREATE INDEX IF NOT EXISTS idx_chronicle_event_t ON chronicle(event, t);
         CREATE INDEX IF NOT EXISTS idx_chronicle_file_t ON chronicle(file, t);
-        PRAGMA user_version = 1;"
+        CREATE TABLE IF NOT EXISTS edit_cache (
+            file_hash INTEGER NOT NULL,
+            ident_hash INTEGER NOT NULL,
+            outcome TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            PRIMARY KEY (file_hash, ident_hash)
+        );
+        PRAGMA user_version = 2;"
     ).map_err(|e| format!("chronicle schema: {}", e))?;
     Ok(db)
+}
+
+// Check cached edit outcome. Returns Some(outcome) if cache hit within 24h.
+pub fn edit_cache_get(db: &Connection, file_hash: u64, ident_hash: u64) -> Option<String> {
+    let cutoff = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64 - 86400;
+    db.query_row(
+        "SELECT outcome FROM edit_cache WHERE file_hash = ?1 AND ident_hash = ?2 AND timestamp >= ?3",
+        rusqlite::params![file_hash as i64, ident_hash as i64, cutoff],
+        |r| r.get(0),
+    ).ok()
+}
+
+// Store edit outcome in cache.
+pub fn edit_cache_set(db: &Connection, file_hash: u64, ident_hash: u64, outcome: &str) {
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    if let Err(e) = db.execute(
+        "INSERT OR REPLACE INTO edit_cache (file_hash, ident_hash, outcome, timestamp) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![file_hash as i64, ident_hash as i64, outcome, t],
+    ) {
+        error!("edit_cache_set: {}", e);
+    }
 }
 
 // Append an event to the chronicle

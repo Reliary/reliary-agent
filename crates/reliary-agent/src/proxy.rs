@@ -292,6 +292,29 @@ async fn read_summary_handler(Query(params): Query<HashMap<String, String>>) -> 
 
 async fn status_handler() -> &'static str { "ok\n" }
 
+async fn who_calls_handler(Query(params): Query<HashMap<String, String>>) -> String {
+    let file = params.get("file").map(|s| s.as_str()).unwrap_or("");
+    let identifier = params.get("identifier").map(|s| s.as_str()).unwrap_or("");
+    if file.is_empty() || identifier.is_empty() {
+        return "[]".to_string();
+    }
+    // Resolve project root from file path
+    let root = if let Some((r, _, _)) = crate::daemon::find_reliary_root(file) {
+        r
+    } else {
+        return "[]".to_string();
+    };
+    let index_path = format!("{}/.reliary/index.sqlite", root);
+    let db = match rusqlite::Connection::open(&index_path) {
+        Ok(d) => d,
+        Err(_) => return "[]".to_string(),
+    };
+    // Normalize paths: index stores relative paths
+    let rel_file = file.trim_start_matches('/').trim_start_matches(root.trim_end_matches('/')).trim_start_matches('/');
+    let callers = reliary_search::search::who_calls(&db, identifier, rel_file);
+    serde_json::to_string(&callers).unwrap_or_else(|_| "[]".to_string())
+}
+
 // ── Proxy POST handler ──
 
 async fn proxy_post(
@@ -493,6 +516,7 @@ async fn proxy_post(
                     }
                 });
                 let mut resp = axum::response::Response::new(axum::body::Body::from_stream(body_stream));
+                preload_next_file(&payload);
                 resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
                 resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
                 if let Ok(hv) = header::HeaderValue::from_str(&hdr_history_saved) {
@@ -522,6 +546,7 @@ async fn proxy_post(
                         }
 
                         let mut resp = (StatusCode::OK, [("content-type", "application/json")], body_str.clone()).into_response();
+                        preload_next_file(&payload);
                         if let Ok(hv) = header::HeaderValue::from_str(&hdr_history_saved) {
                             resp.headers_mut().insert("x-reliaty-history-saved", hv);
                         }
@@ -533,6 +558,45 @@ async fn proxy_post(
         }
         Err(e) => {
             (StatusCode::BAD_GATEWAY, format!("upstream error: {}", e)).into_response()
+        }
+    }
+}
+
+// ── Co-occurrence prediction and pre-load ──
+// After each response, extract file references from the message history,
+// record them in session state, predict the next file, and pre-warm the cache.
+fn preload_next_file(payload: &Value) {
+    let state = get_state();
+    let messages = match payload.get("messages").and_then(|m| m.as_array()) {
+        Some(a) => a,
+        None => return,
+    };
+    // Extract file paths from tool calls and tool results
+    for msg in messages.iter().rev().take(2) {
+        let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        // Look for .rs .py .js .md file paths
+        for word in content.split_whitespace() {
+            if word.ends_with(".rs") || word.ends_with(".py") || word.ends_with(".js")
+                || word.ends_with(".md") || word.ends_with(".ts") || word.ends_with(".go")
+            {
+                let clean = word.trim_matches(|c: char| !c.is_ascii() || c.is_ascii_punctuation());
+                if clean.contains('/') || clean.contains('\\') {
+                    state.record_file_read(clean);
+                }
+            }
+        }
+    }
+    // Predict next files and pre-load their content into read cache
+    let predictions = state.predict_files(3);
+    for (file, _score) in &predictions {
+        if state.read_cache_get(file).is_some() { continue; } // already cached
+        if let Ok(content) = std::fs::read_to_string(file) {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&content, &mut h);
+            state.read_cache_set(file.to_string(), crate::session_state::ReadCacheEntry {
+                hash: h.finish(),
+                len: content.len(),
+            });
         }
     }
 }
@@ -694,6 +758,7 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
         .route("/muzzle", get(muzzle_handler))
         .route("/prior", get(prior_handler))
         .route("/read-summary", get(read_summary_handler))
+        .route("/who-calls", get(who_calls_handler))
         .route("/status", get(status_handler))
         .route("/check-diff", get(check_diff_handler))
         .route("/read-validated", get(read_validated_handler))
