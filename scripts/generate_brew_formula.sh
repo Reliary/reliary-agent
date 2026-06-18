@@ -5,7 +5,8 @@
 #   OUTPUT_DIR - where to write reliary-agent.rb (default: current dir)
 set -e
 
-VERSION="${1:-0.6.3}"
+VERSION="${1#v}"
+VERSION="${VERSION:-0.6.3}"
 OUTPUT_DIR="${2:-.}"
 BASE_URL="https://github.com/Reliary/reliary-agent/releases/download/v${VERSION}"
 
