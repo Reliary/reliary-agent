@@ -56,6 +56,16 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Verify npm version matches release
+        shell: bash
+        run: |
+          NPM_VER=$(node -p "require('./npm/package.json').version")
+          TAG_VER="${{ github.ref_name }}"
+          if [ "$NPM_VER" != "${TAG_VER#v}" ]; then
+            echo "npm/package.json version ($NPM_VER) does not match tag ($TAG_VER)"
+            exit 1
+          fi
+
       - name: Package tarball
         shell: bash
         run: |
