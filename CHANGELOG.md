@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.6.4
+
+### Scorecard Security (June 2026)
+- **CodeQL analysis:** Runs on every push/PR with Rust, JavaScript/TypeScript, Python (SAST: 0→10)
+- **Per-tarball cosign signing:** Each release artifact signed individually (Signed-Releases: 0→10)
+- **Repository Rulesets:** Branch protection migrated from classic rules to Repository Rules (Branch-Protection: -1→10)
+- **SCORECARD_TOKEN wired:** Fine-grained PAT support for Branch-Protection check (fallback to GITHUB_TOKEN)
+- **Docker digest pin:** `FROM ubuntu:24.04@sha256:...` (Pinned-Dependencies: 9→10)
+- **SECURITY.md:** Updated with branch protection, SAST, and security practices documentation
+
+### Quality of Life
+- **Doctor multi-install detection:** Scans PATH + cargo + brew + npm installations. Warns on stale or duplicate copies
+- **Daemon lifecycle polish:** `start` waits for health check, writes PID file, confirms "started on :9090". `stop` uses PID file → graceful SIGTERM → wait → `pkill` fallback. `status` shows daemon PID
+- **Update per-method hints:** `update --check` shows upgrade commands for each install method (`cargo`, `brew`, `npm`)
+
+### CI & Release
+- **NPM trusted publishing:** OIDC provenance via `npm publish --provenance`
+- **brew formula auto-push:** Fixed `mkdir -p` bug, PAT-based push to `Reliary/homebrew-tap`
+- **Release YAML cleanup:** Removed YAML parser corruption from repeated edits
+
 ## v0.6.0
 
 ### UX Polish (June 2026)
