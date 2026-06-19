@@ -574,13 +574,12 @@ async fn proxy_post(
         }
     };
 
-    // Response cache (non-streaming only)
-    if !is_streaming {
-        if let Some(messages) = payload.get("messages") {
-            if let Ok(msg_str) = serde_json::to_string(messages) {
-                if let Some(cached) = cached_response(&auth_key, &msg_str) {
-                    return (StatusCode::OK, [("content-type", "application/json")], cached).into_response();
-                }
+    // Response cache (streaming and non-streaming)
+    if let Some(messages) = payload.get("messages") {
+        if let Ok(msg_str) = serde_json::to_string(messages) {
+            if let Some(cached) = cached_response(&auth_key, &msg_str) {
+                let content_type = if is_streaming { "text/event-stream" } else { "application/json" };
+                return (StatusCode::OK, [("content-type", content_type)], cached).into_response();
             }
         }
     }
@@ -631,6 +630,10 @@ async fn proxy_post(
 
                         // Compress response body (SSE) before returning to agent
                         let compressed_body = compress_response_body(&String::from_utf8_lossy(&body), true);
+                        // Store in response cache for future identical requests
+                        if let Ok(msg_str) = serde_json::to_string(&payload.get("messages").unwrap_or(&Value::Null)) {
+                            store_response(&auth_key, &msg_str, &compressed_body);
+                        }
                         let body_bytes_resp = compressed_body.into_bytes();
                         let body_len = body_bytes_resp.len();
                         let body_stream = futures_util::stream::once(
