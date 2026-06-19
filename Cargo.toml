@@ -32,3 +32,10 @@ reliary-memory = { version = "0.6", path = "crates/reliary-memory" }
 reliary-fix = { version = "0.6", path = "crates/reliary-fix" }
 reliary-dead = { version = "0.6", path = "crates/reliary-dead" }
 reliary-output = { version = "0.6", path = "crates/reliary-output" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+opt-level = 3

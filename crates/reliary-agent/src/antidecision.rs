@@ -21,18 +21,18 @@
 //   - Built-in weak priors for `unwrap`, `legacy`, `hack`, `todo`, `TODO`, `FIXME`,
 //     `debug_`, `temp`, `old_text`, `clone` (1 failure each)
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Mutex;
 
 use serde_json::Value;
 
-type CounterMap = HashMap<String, (usize, usize)>;
+type CounterMap = FxHashMap<String, (usize, usize)>;
 
-pub static ANTI_DB: once_cell::sync::Lazy<Mutex<HashMap<String, CounterMap>>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+pub static ANTI_DB: once_cell::sync::Lazy<Mutex<FxHashMap<String, CounterMap>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(FxHashMap::default()));
 
-static LOADED_WORKDIRS: once_cell::sync::Lazy<Mutex<HashSet<String>>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(HashSet::new()));
+static LOADED_WORKDIRS: once_cell::sync::Lazy<Mutex<FxHashSet<String>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(FxHashSet::default()));
 
 const BUILTIN_PRIORS: &[&str] = &[
     "unwrap", "legacy", "hack", "todo", "TODO", "FIXME",
@@ -139,7 +139,7 @@ pub fn extract_tool_call(msg: &Value) -> Option<(String, String, String, bool)> 
 pub fn record(workdir: &str, file: &str, identifier: &str, operation: &str, success: bool) {
     let key = format!("{}::{}::{}", workdir, file, identifier);
     if let Ok(mut db) = ANTI_DB.lock() {
-        let counters = db.entry(workdir.to_string()).or_insert_with(HashMap::new);
+        let counters = db.entry(workdir.to_string()).or_insert_with(FxHashMap::default);
         let entry = counters.entry(key).or_insert((0, 0));
         if success {
             entry.0 += 1;
@@ -163,7 +163,7 @@ pub fn load_persisted(workdir: &str) {
     };
     if events.is_empty() { return; }
     if let Ok(mut db) = ANTI_DB.lock() {
-        let counters = db.entry(workdir.to_string()).or_insert_with(HashMap::new);
+        let counters = db.entry(workdir.to_string()).or_insert_with(FxHashMap::default);
         for event in &events {
             let parts: Vec<&str> = event.detail.splitn(3, "::").collect();
             if parts.len() != 3 { continue; }
