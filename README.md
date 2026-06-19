@@ -93,8 +93,8 @@ pi --model gpt-4o --print "fix this bug"
 ```
 
 What you get:
-- Proxy compression + edit safety (API calls go through localhost:9090)
-- Gate.js extension (compresses tool outputs, self-healing edits, strict mode)
+- Proxy compression (message compression, response cache, sift pipeline)
+- Gate.js tool safety extension (redirects risky commands, self-healing edits)
 - Transparent strict mode: bash/write/grep are redirected to sandbox tools without
   the LLM seeing errors
 - Self-healing edits: tests run before the LLM sees failures
@@ -414,8 +414,24 @@ system.
 
 ## Architecture
 
+```
+┌──────────┐     proxy (:9090)     ┌───────────┐
+│  Agent    │◄────────────────────►│  API      │
+│  (Pi,     │   compression:       │  Provider │
+│  Claude,  │   • message freeze   │  (DeepSeek)│
+│  Cline,   │   • tool result sift │           │
+│  OpenCode)│   • response cache   │           │
+│           │   • system prompt    │           │
+│  gate.js  │     strip            │           │
+│  (Pi only)│   guard:             │           │
+│   safety  │   • orphan detection │           │
+│   layer   │     (default on)     │           │
+└──────────┘                       └───────────┘
+```
+
 This binary consolidates 9 crates into one executable with a shared tokenizer and
-session state (zero IPC overhead).
+session state (zero IPC overhead). Two-layer architecture: **proxy** owns all
+compression (every agent benefits), **gate.js** owns Pi-specific tool safety.
 
 ```mermaid
 graph TD
@@ -424,7 +440,6 @@ graph TD
     C[API Proxy :9090] --> D
     D --> E[(Search Index)]
     D --> F[(Chronicle Database)]
-    D --> G[(Co-occurrence Matrix)]
 
     C --> H[Upstream API]
     I[Pi Agent] --> C
@@ -434,12 +449,28 @@ graph TD
 
 - **search:** Fast local search using BM25 and stemming
 - **compress:** Reasoning compression
-- **sift:** Terminal output compression and noise reduction
+- **sift:** Grammar-free content classification (byte DFA + entropy)
 - **risk:** Pre-edit risk scoring and blast radius calculation
 - **memory:** Cross-session learning and recall
 - **fix:** Pattern extraction and forgiving signature matching
 - **dead:** Dead code detection via occurrence counting
 - **agent:** The core binary serving the daemon, proxy, CLI, and MCP
+
+### Proxy Compression
+
+The `serve` command starts an OpenAI-compatible proxy on `localhost:9090`. Point your
+agent's `*_BASE_URL` here to route all API calls through the proxy. The proxy discovers
+your upstream from agent configs, or you can set `RELIARY_UPSTREAM_URL` as a fallback.
+
+| Mechanism | What | Effect |
+|-----------|------|--------|
+| Message freeze | First-appearance compress + cache for KV stability | Old messages stay compressed and consistent |
+| Tool result sift | Line-by-line classification preserves errors, collapses code runs | Build/test output shrinks significantly |
+| Response cache | Keyed by (auth_key, messages_hash, is_streaming) | Identical retries cost zero tokens |
+| Context filter | Collapse old tool results at 10+ messages | Prevents conversation bloat |
+| System prompt strip | `[system prompt cached]` on turn 2+ | Saves repeated system prompt tokens |
+| Tool call compaction | JSON minify on large args | Reduces whitespace overhead |
+| Guard | FTS5 orphan detection before edit apply | Prevents broken-function spirals |
 
 ## Troubleshooting
 
