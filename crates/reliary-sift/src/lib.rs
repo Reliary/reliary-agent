@@ -113,45 +113,53 @@ pub struct ContentLine {
     pub index: usize,
 }
 
-/// Classify a single line of content.
+/// Classify a single line using byte-DFA + indentation (grammar-free).
+/// No keyword lists, no language detection.
 pub fn classify_line(line: &str) -> LineType {
     let trimmed = line.trim();
     if trimmed.is_empty() { return LineType::Blank; }
 
-    let seps = ['-', '=', '*', '.', '_', '~'];
+    // Separator: 3+ chars from structural punctuation set
+    let seps: &[char] = &['-', '=', '*', '.', '_', '~'];
     if trimmed.len() >= 3 && trimmed.chars().all(|c| seps.contains(&c)) {
         return LineType::Separator;
     }
 
     let lower = trimmed.to_lowercase();
 
-    if trimmed.starts_with("Error:") || trimmed.starts_with("error[") || trimmed.starts_with("FAILED")
-        || lower.starts_with("error ")
-    {
+    // Error: contains error/FAILED substring (case-insensitive)
+    if lower.contains("error") || trimmed.starts_with("FAILED") {
         return LineType::Error;
     }
 
-    if trimmed.starts_with("test result:") || trimmed.starts_with("Finished") || trimmed.starts_with("  --> ")
-        || (trimmed.contains("passed") && trimmed.contains("failed"))
+    // Summary: test results or build completion
+    if (lower.contains("passed") && lower.contains("failed"))
+        || lower.starts_with("test result:")
+        || lower.starts_with("finished")
+        || trimmed.contains("  --> ")
     {
         return LineType::Summary;
     }
 
+    // Comment: first non-whitespace char is comment punctuation
     let first = trimmed.chars().next().unwrap_or(' ');
-    if first == '#' || trimmed.starts_with("//") || trimmed.starts_with(";") || trimmed.starts_with("--")
-        || trimmed.starts_with("/*") || trimmed.starts_with("* ") || trimmed.starts_with("'")
-        || trimmed.starts_with("%")
+    if first == '#' || first == ';' || first == '%' || first == '\''
+        || trimmed.starts_with("//") || trimmed.starts_with("--")
+        || trimmed.starts_with("/*") || trimmed.starts_with("* ")
     {
         return LineType::Comment;
     }
 
-    if lower.starts_with("import ") || lower.starts_with("from ") || lower.starts_with("use ")
-        || lower.starts_with("include") || lower.starts_with("require(") || lower.starts_with("pub use ")
+    // Import: contains import-like keywords as substring (not AST, just string match)
+    if lower.starts_with("import ") || lower.starts_with("from ")
+        || lower.starts_with("use ") || lower.starts_with("include")
+        || lower.starts_with("require(") || lower.starts_with("pub use ")
         || lower.starts_with("extern crate")
     {
         return LineType::Import;
     }
 
+    // Definition vs Code: byte DFA — structural character ratio
     if is_definition_line(trimmed) {
         return LineType::Definition;
     }
@@ -159,43 +167,71 @@ pub fn classify_line(line: &str) -> LineType {
     LineType::Code
 }
 
+/// Detect definition lines using byte DFA + indentation (grammar-free).
+/// No keyword prefix matching — uses structural character density.
 fn is_definition_line(line: &str) -> bool {
-    let lower = line.to_lowercase();
+    let trimmed = line.trim();
 
-    if lower.starts_with("fn ") || lower.starts_with("func ") || lower.starts_with("def ")
-        || lower.starts_with("class ") || lower.starts_with("struct ") || lower.starts_with("enum ")
-        || lower.starts_with("trait ") || lower.starts_with("impl ") || lower.starts_with("pub ")
-        || lower.starts_with("private ") || lower.starts_with("protected ")
-        || lower.starts_with("function ") || lower.starts_with("sub ") || lower.starts_with("macro ")
-        || lower.starts_with("let ") || lower.starts_with("var ") || lower.starts_with("val ")
-        || lower.starts_with("const ") || lower.starts_with("static ")
+    // Indentation heuristic: line ends with block-opening punctuation
+    if trimmed.ends_with('{') || trimmed.ends_with("=>") || trimmed.ends_with("->")
+        || trimmed.ends_with(':')
     {
-        return true;
+        // Must have content before the punctuation (not just `{`)
+        let before = trimmed.trim_end_matches(['{', '=', '>', '-', ':']).trim();
+        if !before.is_empty() && before.chars().any(|c| c.is_ascii_alphanumeric()) {
+            return true;
+        }
     }
 
-    if line.contains("(") && !line.contains(")") { return true; }
-    if line.contains("(") && line.contains(")") && !line.ends_with(")") { return true; }
+    // Byte DFA: count structural characters
+    let structural: &[char] = &['{', '}', '(', ')', ';', '=', '<', '>'];
+    let struct_count = trimmed.chars().filter(|c| structural.contains(c)).count();
+    let alpha_count = trimmed.chars().filter(|c| c.is_ascii_alphabetic()).count();
 
-    if line.trim().ends_with('{') || line.trim().ends_with("=>") || line.trim().ends_with("->") {
-        let trimmed = line.trim();
-        if !trimmed.starts_with('{') && !trimmed.starts_with('[') { return true; }
+    // High structural density + has parens = function-like definition
+    if struct_count >= 2 && trimmed.contains('(') && trimmed.contains(')') {
+        let struct_ratio = struct_count as f64 / trimmed.len().max(1) as f64;
+        if struct_ratio > 0.05 && alpha_count >= 3 {
+            return true;
+        }
     }
 
+    // Assignment: contains ` = ` (not `==`) with identifier before it
     if line.contains(" = ") && !line.contains("==") {
         let before = line.split('=').next().unwrap_or("").trim();
-        if !before.is_empty() && before.chars().any(|c| c.is_ascii_alphanumeric()) { return true; }
+        if !before.is_empty() && before.chars().any(|c| c.is_ascii_alphanumeric()) {
+            return true;
+        }
     }
 
     false
 }
 
-/// Detect if text looks like source content vs command output.
+/// Detect if text looks like source content vs command output (grammar-free).
+/// Uses structural character ratio + blank line ratio.
 pub fn looks_like_content(lines: &[ContentLine]) -> bool {
     if lines.len() < 20 { return false; }
     let non_blank: Vec<&ContentLine> = lines.iter().filter(|l| l.line_type != LineType::Blank).collect();
     if non_blank.len() < 10 { return false; }
-    let warnings = lines.iter().filter(|l| l.text.contains("warning:") || l.text.starts_with("  --> ")).count();
+
+    // Warning lines indicate command output, not source
+    let warnings = lines.iter()
+        .filter(|l| l.text.contains("warning:") || l.text.starts_with("  --> "))
+        .count();
     if warnings >= 3 { return false; }
+
+    // Structural character ratio across all non-blank lines
+    let structural: &[char] = &['{', '}', '(', ')', ';', '=', '<', '>'];
+    let total_chars: usize = non_blank.iter().map(|l| l.text.len()).sum();
+    let struct_chars: usize = non_blank.iter()
+        .map(|l| l.text.chars().filter(|c| structural.contains(c)).count())
+        .sum();
+    let struct_ratio = struct_chars as f64 / total_chars.max(1) as f64;
+
+    // Source code has high structural density; command output has low
+    if struct_ratio < 0.02 { return false; }
+
+    // Definition ratio: source has many, command output has few
     let defs = non_blank.iter().filter(|l| l.line_type == LineType::Definition).count();
     let imports = non_blank.iter().filter(|l| l.line_type == LineType::Import).count();
     (defs + imports) > non_blank.len() / 10

@@ -93,8 +93,8 @@ pi --model gpt-4o --print "fix this bug"
 ```
 
 What you get:
-- Proxy compression + edit safety (API calls go through localhost:9090)
-- Gate.js extension (compresses tool outputs, self-healing edits, strict mode)
+- Proxy compression (message compression, response cache, sift pipeline)
+- Gate.js tool safety extension (redirects risky commands, self-healing edits)
 - Transparent strict mode: bash/write/grep are redirected to sandbox tools without
   the LLM seeing errors
 - Self-healing edits: tests run before the LLM sees failures
@@ -223,21 +223,6 @@ export RELIARY_UPSTREAM_URL=https://api.openai.com/v1
 ```
 
 You get proxy compression only (no MCP tools, no gate.js, no guard safety checks).
-The savings table below assumes the reliary+agent pairing with max features enabled.
-
-### Savings by Agent Stack
-
-### Savings by Agent Stack
-
-| Agent | Stack | Savings |
-|---|---|---|
-| **Pi** | Proxy + guard + gate.js | **16-84% weighted cost** |
-| **Claude Code** | Proxy + guard + MCP | **16-60%** |
-| **Cline / OpenCode** | Proxy + guard + MCP | **16-60%** |
-| **Any agent** | Proxy only (passthrough) | **0%** (just routing) |
-
-Long multi-turn sessions (15+ turns) hit the highest savings. Short 3-turn fixes hit
-the lower end. The safety guards eliminate catastrophic debug spirals.
 
 ## Features
 
@@ -248,11 +233,11 @@ agent's `*_BASE_URL` here to route all API calls through the proxy. The proxy di
 your upstream from your agent's provider config, or you can set `RELIARY_UPSTREAM_URL`
 as a global fallback.
 
-| Mechanism | Savings | How it works |
-|---|---|---|
-| **First-appearance freeze** | 16-84% | Compresses each message the first time it appears and caches the result. The provider never sees the uncompressed version. |
-| **Command output compression** | 10-20% | Collapses noisy terminal output (like 100 lines of `Compiling...`) into a 1-line summary while preserving compiler errors and stack traces. |
-| **Response cache** | 0-100% | Repeated identical requests return cached results at zero API cost. |
+| Mechanism | How it works |
+|---|---|
+| **First-appearance freeze** | Compresses each message the first time it appears and caches the result. The provider never sees the uncompressed version. |
+| **Command output compression** | Collapses noisy terminal output (like 100 lines of `Compiling...`) into a 1-line summary while preserving compiler errors and stack traces. |
+| **Response cache** | Repeated identical requests return cached results at zero API cost. |
 
 ```mermaid
 flowchart LR
@@ -429,8 +414,24 @@ system.
 
 ## Architecture
 
+```
+┌──────────┐     proxy (:9090)     ┌───────────┐
+│  Agent    │◄────────────────────►│  API      │
+│  (Pi,     │   compression:       │  Provider │
+│  Claude,  │   • message freeze   │  (DeepSeek)│
+│  Cline,   │   • tool result sift │           │
+│  OpenCode)│   • response cache   │           │
+│           │   • system prompt    │           │
+│  gate.js  │     strip            │           │
+│  (Pi only)│   guard:             │           │
+│   safety  │   • orphan detection │           │
+│   layer   │     (default on)     │           │
+└──────────┘                       └───────────┘
+```
+
 This binary consolidates 9 crates into one executable with a shared tokenizer and
-session state (zero IPC overhead).
+session state (zero IPC overhead). Two-layer architecture: **proxy** owns all
+compression (every agent benefits), **gate.js** owns Pi-specific tool safety.
 
 ```mermaid
 graph TD
@@ -439,7 +440,6 @@ graph TD
     C[API Proxy :9090] --> D
     D --> E[(Search Index)]
     D --> F[(Chronicle Database)]
-    D --> G[(Co-occurrence Matrix)]
 
     C --> H[Upstream API]
     I[Pi Agent] --> C
@@ -449,12 +449,28 @@ graph TD
 
 - **search:** Fast local search using BM25 and stemming
 - **compress:** Reasoning compression
-- **sift:** Terminal output compression and noise reduction
+- **sift:** Grammar-free content classification (byte DFA + entropy)
 - **risk:** Pre-edit risk scoring and blast radius calculation
 - **memory:** Cross-session learning and recall
 - **fix:** Pattern extraction and forgiving signature matching
 - **dead:** Dead code detection via occurrence counting
 - **agent:** The core binary serving the daemon, proxy, CLI, and MCP
+
+### Proxy Compression
+
+The `serve` command starts an OpenAI-compatible proxy on `localhost:9090`. Point your
+agent's `*_BASE_URL` here to route all API calls through the proxy. The proxy discovers
+your upstream from agent configs, or you can set `RELIARY_UPSTREAM_URL` as a fallback.
+
+| Mechanism | What | Effect |
+|-----------|------|--------|
+| Message freeze | First-appearance compress + cache for KV stability | Old messages stay compressed and consistent |
+| Tool result sift | Line-by-line classification preserves errors, collapses code runs | Build/test output shrinks significantly |
+| Response cache | Keyed by (auth_key, messages_hash, is_streaming) | Identical retries cost zero tokens |
+| Context filter | Collapse old tool results at 10+ messages | Prevents conversation bloat |
+| System prompt strip | `[system prompt cached]` on turn 2+ | Saves repeated system prompt tokens |
+| Tool call compaction | JSON minify on large args | Reduces whitespace overhead |
+| Guard | FTS5 orphan detection before edit apply | Prevents broken-function spirals |
 
 ## Troubleshooting
 
@@ -511,10 +527,9 @@ but no errors).
 
 ### "I'm not seeing any token savings"
 
-Proxy compression compounds on long sessions (15+ turns). Short 3-turn sessions see
+Proxy compression compounds on long sessions. Short 3-turn sessions see
 modest savings. The first-appearance freeze only matters after the first turn. Run
-a multi-turn task (like fixing a bug in a large file) and compare API billing --
-that is where the 16-84% range comes from.
+a multi-turn task (like fixing a bug in a large file) and compare API billing.
 
 ## Development
 

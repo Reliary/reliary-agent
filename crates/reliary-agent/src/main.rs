@@ -363,7 +363,7 @@ fn pipe_to_pager(text: &str) {
         print!("{}", text);
         return;
     }
-    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less -RF".to_string());
+    let pager = std::env::var("").unwrap_or_else(|_| "less -RF".to_string());
     let parts: Vec<&str> = pager.splitn(2, ' ').collect();
     let prog = parts[0];
     let args: Vec<&str> = if parts.len() > 1 { parts[1].split(' ').collect() } else { vec![] };

@@ -75,10 +75,10 @@ impl CompressionDict {
 /// Returns compressed text if at least 40% smaller, else None.
 pub fn compress_reasoning(text: &str, dict: Option<&CompressionDict>) -> Option<String> {
     let original_len = text.len();
-    if original_len < 300 { return None; }
+    if original_len < 200 { return None; }
     if text.contains("```") || text.contains("//") || text.contains("/*")
         || text.contains("src/") || text.contains(".rs:") || text.contains(".py:")
-        || text.contains("s/") || text.contains(".md")
+        || text.contains(".md")
     { return None; }
 
     let mut t = text.to_string();

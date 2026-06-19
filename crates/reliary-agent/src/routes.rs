@@ -33,7 +33,7 @@ fn scan_proxy_routes(auth_key: &str) -> Option<String> {
     let content = std::fs::read_to_string(routes_path).ok()?;
     let routes: std::collections::HashMap<String, String> =
         serde_json::from_str(&content).ok()?;
-    routes.get(auth_key).cloned()
+    routes.get(auth_key).map(|url| normalize_url(url))
 }
 
 /// Scan OpenCode's opencode.json for provider API keys matching the auth key.
@@ -150,6 +150,8 @@ fn normalize_url(base_url: &str) -> String {
         } else {
             format!("{}/v1/messages", trimmed)
         }
+    } else if trimmed.ends_with("/v1") {
+        format!("{}/chat/completions", trimmed)
     } else {
         format!("{}/v1/chat/completions", trimmed)
     }
