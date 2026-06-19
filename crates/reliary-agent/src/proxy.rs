@@ -240,6 +240,71 @@ fn sift_compress_tool_result(content: &str) -> String {
     working
 }
 
+// Compress the assistant message in an API response body before returning to agent.
+// Parses JSON, finds choices[0].message.content, compresses, re-serializes.
+// For SSE: scans final data chunk for content field, compresses in-place.
+fn compress_response_body(body: &str, is_sse: bool) -> String {
+    if body.len() < 500 { return body.to_string(); }
+
+    if is_sse {
+        // SSE: find the last data: line with content, compress it
+        let mut lines: Vec<String> = body.lines().map(|s| s.to_string()).collect();
+        for i in (0..lines.len()).rev() {
+            let line = &lines[i];
+            if !line.starts_with("data: ") { continue; }
+            let json_str = &line[6..];
+            if json_str == "[DONE]" { continue; }
+            if let Ok(mut v) = serde_json::from_str::<Value>(json_str) {
+                if let Some(choices) = v.get_mut("choices").and_then(|c| c.as_array_mut()) {
+                    if let Some(choice) = choices.first_mut() {
+                        // Try delta first, then message (streaming vs non-streaming format)
+                        let compressed_content: Option<String> = {
+                            let content = choice.get("delta")
+                                .and_then(|d| d.get("content"))
+                                .or_else(|| choice.get("message").and_then(|m| m.get("content")))
+                                .and_then(|c| c.as_str());
+                            if let Some(c) = content {
+                                if c.len() > 300 {
+                                    compress_assistant_text(c, COMPRESSION_DICT.as_ref())
+                                } else { None }
+                            } else { None }
+                        };
+                        if let Some(compressed) = compressed_content {
+                            if let Some(delta) = choice.get_mut("delta") {
+                                delta["content"] = Value::String(compressed);
+                            } else if let Some(msg) = choice.get_mut("message") {
+                                msg["content"] = Value::String(compressed);
+                            }
+                        }
+                    }
+                }
+                lines[i] = format!("data: {}", serde_json::to_string(&v).unwrap_or_else(|_| json_str.to_string()));
+                break;
+            }
+        }
+        return lines.join("\n");
+    }
+
+    // Non-streaming JSON response
+    if let Ok(mut v) = serde_json::from_str::<Value>(body) {
+        if let Some(choices) = v.get_mut("choices").and_then(|c| c.as_array_mut()) {
+            if let Some(choice) = choices.first_mut() {
+                if let Some(msg) = choice.get_mut("message") {
+                    if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                        if content.len() > 300 {
+                            if let Some(compressed) = compress_assistant_text(content, COMPRESSION_DICT.as_ref()) {
+                                msg["content"] = Value::String(compressed);
+                                return serde_json::to_string(&v).unwrap_or_else(|_| body.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    body.to_string()
+}
+
 // First-appearance freeze compression: compress every message on first occurrence,
 // cache the compressed version, and use the cached version forever after.
 // This preserves KV cache stability — the compressed version is what the API/SDK
@@ -564,9 +629,12 @@ async fn proxy_post(
                             tokio::spawn(async move { preload_next_file(&payload_clone); });
                         }
 
-                        let body_len = body.len();
+                        // Compress response body (SSE) before returning to agent
+                        let compressed_body = compress_response_body(&String::from_utf8_lossy(&body), true);
+                        let body_bytes_resp = compressed_body.into_bytes();
+                        let body_len = body_bytes_resp.len();
                         let body_stream = futures_util::stream::once(
-                            async move { Ok::<_, std::convert::Infallible>(body) }
+                            async move { Ok::<_, std::convert::Infallible>(body_bytes_resp) }
                         );
                         let mut resp = axum::response::Response::new(
                             axum::body::Body::from_stream(body_stream)
@@ -590,13 +658,16 @@ async fn proxy_post(
             } else {
                 match upstream_resp.bytes().await {
                     Ok(bytes) => {
-                        let body_str = String::from_utf8_lossy(&bytes).to_string();
+                        let raw_str = String::from_utf8_lossy(&bytes).to_string();
+                        // Compress response body before returning to agent
+                        let body_str = compress_response_body(&raw_str, false);
                         store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str);
 
                         jsonl_log(&serde_json::json!({
                             "event": "proxy_response",
                             "auth_prefix": &auth_key[..auth_key.len().min(12)],
                             "history_saved": history_saved,
+                            "response_compressed": body_str.len() < raw_str.len(),
                             "timestamp": std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.as_secs()).unwrap_or(0),
