@@ -22,6 +22,11 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .expect("reqwest::Client")
 });
 
+// Compression dictionary loaded once from FTS5 index — known project symbols
+// survive compression while unknown fluff gets stripped.
+static COMPRESSION_DICT: LazyLock<Option<reliary_compress::CompressionDict>> =
+    LazyLock::new(crate::read_summary::load_dictionary);
+
 // Synchronization for JSONL logging — prevents interleaved lines from concurrent requests.
 static JSONL_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -264,7 +269,7 @@ fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize,
 
         // First occurrence: compress and cache
         let compressed = match role {
-            "assistant" => compress_assistant_text(&content, None),
+            "assistant" => compress_assistant_text(&content, COMPRESSION_DICT.as_ref()),
             "tool" | "toolResult" => {
                 let sifted = sift_compress_tool_result(&content);
                 if sifted.len() < content.len() { Some(sifted) } else { None }
