@@ -8,7 +8,8 @@ use axum::{
 };
 use bytes::Bytes;
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
+use std::collections::HashMap as StdHashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, LazyLock};
 use std::time::Instant;
@@ -31,8 +32,8 @@ static COMPRESSION_DICT: LazyLock<Option<reliary_compress::CompressionDict>> =
 // Synchronization for JSONL logging — prevents interleaved lines from concurrent requests.
 static JSONL_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-static RESPONSE_CACHE: LazyLock<Mutex<HashMap<u64, String>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static RESPONSE_CACHE: LazyLock<Mutex<FxHashMap<u64, String>>> =
+    LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
 static DAEMON_STATE: LazyLock<Mutex<Option<Arc<crate::session_state::SessionState>>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -43,8 +44,8 @@ struct GuardCacheEntry {
     status: String,
     inserted_at: Instant,
 }
-static GUARD_CACHE: LazyLock<Mutex<HashMap<u64, GuardCacheEntry>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static GUARD_CACHE: LazyLock<Mutex<FxHashMap<u64, GuardCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
 fn get_state() -> Arc<crate::session_state::SessionState> {
     let guard = DAEMON_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -52,7 +53,8 @@ fn get_state() -> Arc<crate::session_state::SessionState> {
 }
 
 fn cache_key(auth: &str, body: &str, is_streaming: bool) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    use rustc_hash::FxHasher;
+    let mut h = FxHasher::default();
     auth.hash(&mut h);
     body.hash(&mut h);
     is_streaming.hash(&mut h);
@@ -111,28 +113,28 @@ fn jsonl_log(entry: &serde_json::Value) {
 // Per-auth-key state — first-appearance freeze cache.
 // `content_cache`: maps content hash → compressed version.
 struct PerKeyState {
-    content_cache: HashMap<u64, String>,
+    content_cache: FxHashMap<u64, String>,
 }
 
 impl PerKeyState {
     fn new() -> Self {
-        Self { content_cache: HashMap::new() }
+        Self { content_cache: FxHashMap::default() }
     }
 
     /// Content hash for cache lookup.
     fn content_hash(content: &str) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
+        use rustc_hash::FxHasher;
+        let mut h = FxHasher::default();
         content.hash(&mut h);
         h.finish()
     }
 }
 
 // Global per-auth-key state store
-static PER_KEY_STATE: LazyLock<Mutex<HashMap<String, PerKeyState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static PER_KEY_STATE: LazyLock<Mutex<FxHashMap<String, PerKeyState>>> =
+    LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
-fn get_or_create_state(auth_key: &str) -> std::sync::MutexGuard<'static, HashMap<String, PerKeyState>> {
+fn get_or_create_state(auth_key: &str) -> std::sync::MutexGuard<'static, FxHashMap<String, PerKeyState>> {
     let mut guard = PER_KEY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     guard.entry(auth_key.to_string()).or_insert_with(PerKeyState::new);
     guard
@@ -380,29 +382,29 @@ async fn ping() -> &'static str { "pong" }
 
 // ── Daemon GET routes ──
 
-async fn search_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn search_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let q = params.get("q").map(|s| s.as_str()).unwrap_or("");
     let p = params.get("path").map(|s| s.as_str()).unwrap_or(".");
     daemon_cmd_str(&format!("search {} {}", q, p))
 }
 
-async fn risk_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn risk_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let f = params.get("file").map(|s| s.as_str()).unwrap_or("");
     daemon_cmd_str(&format!("risk {}", f))
 }
 
-async fn compress_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn compress_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let t = params.get("text").map(|s| s.as_str()).unwrap_or("");
     daemon_cmd_str(&format!("compress {}", t))
 }
 
-async fn veto_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn veto_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let f = params.get("file").map(|s| s.as_str()).unwrap_or("");
     let t = params.get("text").map(|s| s.as_str()).unwrap_or("");
     daemon_cmd_str(&format!("veto {} {}", f, t))
 }
 
-async fn muzzle_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn muzzle_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let st = params.get("state").map(|s| s.as_str()).unwrap_or("");
     let s = get_state();
     match st {
@@ -412,19 +414,19 @@ async fn muzzle_handler(Query(params): Query<HashMap<String, String>>) -> String
     }
 }
 
-async fn prior_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn prior_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let p = params.get("path").map(|s| s.as_str()).unwrap_or(".");
     daemon_cmd_str(&format!("prior {}", p))
 }
 
-async fn read_summary_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn read_summary_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let f = params.get("file").map(|s| s.as_str()).unwrap_or("");
     daemon_cmd_str(&format!("read-summary {}", f))
 }
 
 async fn status_handler() -> &'static str { "ok\n" }
 
-async fn who_calls_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn who_calls_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let file = params.get("file").map(|s| s.as_str()).unwrap_or("");
     let identifier = params.get("identifier").map(|s| s.as_str()).unwrap_or("");
     if file.is_empty() || identifier.is_empty() {
@@ -525,7 +527,7 @@ async fn proxy_post(
                                 let rel_paths = resolve_index_paths(&file_path, &root);
                                 for rp in &rel_paths {
                                     // Guard result cache: skip FTS5 query for repeated same-content edits
-                                    let mut cache_key_hasher = std::collections::hash_map::DefaultHasher::new();
+                                    let mut cache_key_hasher = rustc_hash::FxHasher::default();
                                     rp.hash(&mut cache_key_hasher);
                                     new_text.hash(&mut cache_key_hasher);
                                     let gk = cache_key_hasher.finish();
@@ -632,13 +634,13 @@ async fn proxy_post(
 
     // Dedup identical messages (catches agent duplication bugs)
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
-        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut seen: rustc_hash::FxHashSet<u64> = rustc_hash::FxHashSet::default();
         let mut to_remove: Vec<usize> = Vec::new();
         for (i, msg) in messages.iter().enumerate() {
             let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
             let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
             if role.is_empty() || content.is_empty() { continue; }
-            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let mut h = rustc_hash::FxHasher::default();
             role.hash(&mut h);
             content.hash(&mut h);
             let key = h.finish();
@@ -850,7 +852,7 @@ fn resolve_index_paths(file_path: &str, root: &str) -> Vec<String> {
 }
 
 // GET /check-diff — check a proposed edit for structural issues.
-async fn check_diff_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn check_diff_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let file_path = params.get("file").map(|s| s.as_str()).unwrap_or("");
     let new_content = params.get("content").map(|s| s.as_str()).unwrap_or("");
     if file_path.is_empty() || new_content.is_empty() {
@@ -875,7 +877,7 @@ async fn check_diff_handler(Query(params): Query<HashMap<String, String>>) -> St
 }
 
 // GET /read-validated — warn about externally-referenced identifiers before editing.
-async fn read_validated_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn read_validated_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let file_path = params.get("file").map(|s| s.as_str()).unwrap_or("");
     if file_path.is_empty() {
         return "{\"error\": \"missing file param\"}".to_string();

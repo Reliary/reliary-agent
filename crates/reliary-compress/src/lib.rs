@@ -1,4 +1,25 @@
 use ahash::AHashMap;
+use std::sync::LazyLock;
+use regex::Regex;
+
+/// Pre-compiled reasoning compression patterns — compiled once at startup.
+static COMPRESSION_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"(?i)\b(Let me (analyze|look|check|review|see|think|consider)\b[^.]*\.)",
+        r"(?i)\b(I (?:can|would|will) need to)[^.]*\.",
+        r"(?i)\b(In order to)[^.]*\.",
+        r"(?i)\b(First(?:,|ly)? let me)[^.]*\.",
+        r"(?i)\b(Based on (?:the|this|my|our))[^.]*\.?",
+        r"(?i)\b(This means that)[^.]*\.",
+        r"(?i)\b(The (?:next|final|first) step)[^.]*\.",
+        r"(?i)\b(Now I(?: can| will|'ll| need to| should))[^.,;]*[,;.]?",
+        r"(?i)\b(Alright|Okay|So,?|Well,?|Now,?)\s*",
+        r"(?i)\bessentially|basically|simply|actually|obviously|clearly|currently\b",
+    ]
+    .into_iter()
+    .filter_map(|p| Regex::new(p).ok())
+    .collect()
+});
 
 /// Dictionary entry: a symbol known to the FTS5 index.
 #[derive(Clone, Debug)]
@@ -16,13 +37,15 @@ pub struct CompressionDict {
 /// Simple grammar-free phrase extraction from source text.
 /// Returns top-N key-value candidates found in the text.
 pub fn extract_phrases(text: &str) -> Vec<(String, String)> {
+    static SIG_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^\s*(?:pub\s+)?(?:fn|def|class|fun|function)\s+(\w+)").unwrap()
+    });
     let mut pairs = Vec::new();
     let lines: Vec<&str> = text.lines().take(15).collect();
-    let sig_re = regex_lite::Regex::new(r"^\s*(?:pub\s+)?(?:fn|def|class|fun|function)\s+(\w+)").unwrap();
     let mut last_match = String::new();
     for line in &lines {
         let trimmed = line.trim();
-        if let Some(caps) = sig_re.captures(trimmed) {
+        if let Some(caps) = SIG_RE.captures(trimmed) {
             last_match = caps[1].to_string();
         } else if !last_match.is_empty() && trimmed.len() > 5 && !trimmed.starts_with("use ") {
             pairs.push((last_match.clone(), trimmed.chars().take(40).collect()));
@@ -32,26 +55,15 @@ pub fn extract_phrases(text: &str) -> Vec<(String, String)> {
     pairs
 }
 
-fn phash(text: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut h);
-    h.finish()
-}
-
 /// Build a compression dictionary from a list of symbols.
 pub fn build_dict(symbols: &[String]) -> CompressionDict {
-    let mut seen: AHashMap<u64, u32> = AHashMap::new();
+    let mut seen: AHashMap<String, u32> = AHashMap::new();
     for s in symbols {
-        let h = phash(s);
-        *seen.entry(h).or_insert(0) += 1;
+        *seen.entry(s.clone()).or_insert(0) += 1;
     }
     let mut entries: Vec<DictEntry> = seen.into_iter()
         .filter(|(_, freq)| *freq > 1)
-        .map(|(h, freq)| DictEntry {
-            symbol: symbols.iter().find(|s| phash(s) == h).unwrap_or(&String::new()).clone(),
-            frequency: freq,
-        })
+        .map(|(symbol, frequency)| DictEntry { symbol, frequency })
         .collect();
     entries.sort_by_key(|b| std::cmp::Reverse(b.frequency));
     CompressionDict { entries }
@@ -62,10 +74,9 @@ impl CompressionDict {
     pub fn apply(&self, text: &str) -> String {
         let mut result = text.to_string();
         for entry in &self.entries {
-            if result.len() < 1000
-                && result.contains(&entry.symbol) {
-                    result = result.replace(&entry.symbol, &format!("[{}]", entry.symbol));
-                }
+            if result.contains(&entry.symbol) {
+                result = result.replace(&entry.symbol, &format!("[{}]", entry.symbol));
+            }
         }
         result
     }
@@ -84,21 +95,8 @@ pub fn compress_reasoning(text: &str, dict: Option<&CompressionDict>) -> Option<
     let mut t = text.to_string();
     if let Some(d) = dict { t = d.apply(&t); }
 
-    for pattern in &[
-        r"(?i)\b(Let me (analyze|look|check|review|see|think|consider)\b[^.]*\.)",
-        r"(?i)\b(I (?:can|would|will) need to)[^.]*\.",
-        r"(?i)\b(In order to)[^.]*\.",
-        r"(?i)\b(First(?:,|ly)? let me)[^.]*\.",
-        r"(?i)\b(Based on (?:the|this|my|our))[^.]*\.?",
-        r"(?i)\b(This means that)[^.]*\.",
-        r"(?i)\b(The (?:next|final|first) step)[^.]*\.",
-        r"(?i)\b(Now I(?: can| will|'ll| need to| should))[^.,;]*[,;.]?",
-        r"(?i)\b(Alright|Okay|So,?|Well,?|Now,?)\s*",
-        r"(?i)\bessentially|basically|simply|actually|obviously|clearly|currently\b",
-    ] {
-        if let Ok(re) = regex::Regex::new(pattern) {
-            t = re.replace_all(&t, " ").to_string();
-        }
+    for re in COMPRESSION_PATTERNS.iter() {
+        t = re.replace_all(&t, " ").to_string();
     }
     t = t.split_whitespace().collect::<Vec<_>>().join(" ");
     if (t.len() as f64) < original_len as f64 * 0.6 { Some(t) } else { None }
