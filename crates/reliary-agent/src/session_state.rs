@@ -25,11 +25,6 @@ pub struct SessionState {
     pub chronicle_path: PathBuf,
     read_cache: Mutex<FxHashMap<String, ReadCacheEntry>>,
     risk_cache: Mutex<FxHashMap<String, (String, Instant)>>,
-    // File co-occurrence: tracks which files are read after which other files.
-    // Key: (previous_file, next_file) -> count
-    file_cooccur: Mutex<FxHashMap<(String, String), u64>>,
-    // Last file read in the session, for co-occurrence prediction
-    last_file: Mutex<String>,
 }
 
 impl SessionState {
@@ -46,34 +41,7 @@ impl SessionState {
             workdir: PathBuf::from(workdir),
             read_cache: Mutex::new(FxHashMap::default()),
             risk_cache: Mutex::new(FxHashMap::default()),
-            file_cooccur: Mutex::new(FxHashMap::default()),
-            last_file: Mutex::new(String::new()),
         }
-    }
-
-    /// Record that `file` was read. Updates co-occurrence with the previous file.
-    pub fn record_file_read(&self, file: &str) {
-        let mut last = self.last_file.lock().unwrap_or_else(|e| e.into_inner());
-        if !last.is_empty() && *last != file {
-            let mut co = self.file_cooccur.lock().unwrap_or_else(|e| e.into_inner());
-            *co.entry((last.clone(), file.to_string())).or_insert(0) += 1;
-        }
-        *last = file.to_string();
-    }
-
-    /// Predict next files based on co-occurrence with the last file read.
-    /// Returns file paths sorted by co-occurrence count, descending.
-    pub fn predict_files(&self, top_n: usize) -> Vec<(String, u64)> {
-        let last = self.last_file.lock().unwrap_or_else(|e| e.into_inner());
-        if last.is_empty() { return vec![]; }
-        let co = self.file_cooccur.lock().unwrap_or_else(|e| e.into_inner());
-        let mut results: Vec<(String, u64)> = co.iter()
-            .filter(|((a, _), _)| a == &*last)
-            .map(|((_, b), c)| (b.clone(), *c))
-            .collect();
-        results.sort_by_key(|b| std::cmp::Reverse(b.1));
-        results.truncate(top_n);
-        results
     }
 
     pub fn read_cache_get(&self, path: &str) -> Option<ReadCacheEntry> {

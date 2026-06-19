@@ -683,11 +683,6 @@ async fn proxy_post(
                             }));
                         }
 
-                        if std::env::var("RELIARY_PROXY_FEATURE_COOCCUR").is_ok_and(|v| v == "1") {
-                            let payload_clone = payload.clone();
-                            tokio::spawn(async move { preload_next_file(&payload_clone); });
-                        }
-
                         // Compress response body (SSE) before returning to agent
                         let compressed_body = compress_response_body(&String::from_utf8_lossy(&body), true);
                         // Store in response cache for future identical requests
@@ -737,10 +732,6 @@ async fn proxy_post(
                         }));
 
                         let mut resp = (StatusCode::OK, [("content-type", "application/json")], body_str.clone()).into_response();
-                        if std::env::var("RELIARY_PROXY_FEATURE_COOCCUR").is_ok_and(|v| v == "1") {
-                            let payload_clone = payload.clone();
-                            tokio::spawn(async move { preload_next_file(&payload_clone); });
-                        }
                         if let Ok(hv) = header::HeaderValue::from_str(&hdr_history_saved) {
                             resp.headers_mut().insert("x-reliaty-history-saved", hv);
                         }
@@ -752,49 +743,6 @@ async fn proxy_post(
         }
         Err(e) => {
             (StatusCode::BAD_GATEWAY, format!("upstream error: {}", e)).into_response()
-        }
-    }
-}
-
-// ── Co-occurrence prediction and pre-load ──
-// After each response, extract file references from the message history,
-// record them in session state, predict the next file, and pre-warm the cache.
-fn preload_next_file(payload: &Value) {
-    let state = get_state();
-    let messages = match payload.get("messages").and_then(|m| m.as_array()) {
-        Some(a) => a,
-        None => return,
-    };
-    // Extract file paths from tool calls and tool results
-    for msg in messages.iter().rev().take(2) {
-        let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-        // Look for .rs .py .js .md file paths
-        for word in content.split_whitespace() {
-            if word.ends_with(".rs") || word.ends_with(".py") || word.ends_with(".js")
-                || word.ends_with(".md") || word.ends_with(".ts") || word.ends_with(".go")
-            {
-                let clean = word.trim_matches(|c: char| !c.is_ascii() || c.is_ascii_punctuation());
-                if clean.contains('/') || clean.contains('\\') {
-                    state.record_file_read(clean);
-                }
-            }
-        }
-    }
-    // Predict next files and pre-load their content into read cache
-    let predictions = state.predict_files(3);
-    if !predictions.is_empty() {
-        let names: Vec<&str> = predictions.iter().map(|(f, _)| f.as_str()).collect();
-        tracing::info!("cooccur-predict: pre-loading {} predicted files: {:?}", predictions.len(), names);
-    }
-    for (file, _score) in &predictions {
-        if state.read_cache_get(file).is_some() { continue; } // already cached
-        if let Ok(content) = std::fs::read_to_string(file) {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            std::hash::Hash::hash(&content, &mut h);
-            state.read_cache_set(file.to_string(), crate::session_state::ReadCacheEntry {
-                hash: h.finish(),
-                len: content.len(),
-            });
         }
     }
 }
