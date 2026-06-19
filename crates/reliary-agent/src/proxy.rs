@@ -47,7 +47,7 @@ struct GuardCacheEntry {
 static GUARD_CACHE: LazyLock<Mutex<FxHashMap<u64, GuardCacheEntry>>> =
     LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
-fn get_state() -> Arc<crate::session_state::SessionState> {
+pub fn get_state() -> Arc<crate::session_state::SessionState> {
     let guard = DAEMON_STATE.lock().unwrap_or_else(|e| e.into_inner());
     guard.clone().unwrap_or_else(|| Arc::new(crate::session_state::SessionState::new(".")))
 }
@@ -351,10 +351,34 @@ fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize,
 
         // First occurrence: compress and cache
         let compressed = match role {
-            "assistant" => compress_assistant_text(&content, COMPRESSION_DICT.as_ref()),
+            "assistant" => {
+                // Try existing reasoning compression
+                let existing = compress_assistant_text(&content, COMPRESSION_DICT.as_ref());
+                // Try novel mechanisms (Maxwell, DSL) — keep whichever saves more
+                let maxwell = crate::novel_compress::maxwell_compress(&content, 50.0);
+                let state_dsl = crate::novel_compress::extract_dialogue_state(&content);
+                // Pick best
+                let mut best: Option<(String, usize)> = existing.clone().map(|c| { let s = content.len().saturating_sub(c.len()); (c, s) });
+                if let Some(c) = &maxwell {
+                    let s = content.len().saturating_sub(c.len());
+                    if best.as_ref().is_none_or(|b| s > b.1) { best = Some((c.clone(), s)); }
+                }
+                if let Some(c) = &state_dsl {
+                    let s = content.len().saturating_sub(c.len());
+                    if best.as_ref().is_none_or(|b| s > b.1) { best = Some((c.clone(), s)); }
+                }
+                best.map(|(c, _)| c)
+            }
             "tool" | "toolResult" => {
                 let sifted = sift_compress_tool_result(&content);
-                if sifted.len() < content.len() { Some(sifted) } else { None }
+                let sifted_opt = if sifted.len() < content.len() { Some(sifted) } else { None };
+                let hoisted = crate::novel_compress::hoist_json_invariants(&content);
+                let mut best: Option<(String, usize)> = sifted_opt.clone().map(|c| { let s = content.len().saturating_sub(c.len()); (c, s) });
+                if let Some(c) = &hoisted {
+                    let s = content.len().saturating_sub(c.len());
+                    if best.as_ref().is_none_or(|b| s > b.1) { best = Some((c.clone(), s)); }
+                }
+                best.map(|(c, _)| c)
             }
             _ => None,
         };
@@ -709,64 +733,95 @@ async fn proxy_post(
     let hdr_history_saved = history_saved.to_string();
 
     match req_builder.send().await {
-        Ok(upstream_resp) => {
+        Ok(mut upstream_resp) => {
             if is_streaming {
-                // SSE streaming: buffer the full upstream response, emit as a single chunk.
-                // SSE is line-delimited text — parsers are chunk-agnostic, so sending the
-                // entire body at once works identically to true streaming.
-                // The mpsc channel approach lost the final [DONE] chunk under TCP timing.
+                // True SSE streaming: forward chunks as they arrive.
+                // Uses reqwest::Response::chunk() loop → tokio::mpsc → axum Body::from_stream.
+                // This preserves time-to-first-token (~500ms) instead of buffering.
+                let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::convert::Infallible>>(32);
                 let ak = auth_key.clone();
-                match upstream_resp.bytes().await {
-                    Ok(body) => {
-                        // Parse usage from buffered body
-                        let text = String::from_utf8_lossy(&body);
-                        if text.contains("\"usage\"") {
-                            let pt = text.split("\"prompt_tokens\":").nth(1)
-                                .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
-                                .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-                            let ct = text.split("\"completion_tokens\":").nth(1)
-                                .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
-                                .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-                            jsonl_log(&serde_json::json!({
-                                "event": "stream_usage",
-                                "auth_prefix": &ak[..ak.len().min(12)],
-                                "prompt_tokens": pt,
-                                "completion_tokens": ct,
-                            }));
-                        }
 
-                        // Store in response cache for future identical requests
-                        // Do NOT compress SSE response body — request-side freeze handles
-                        // compression on the next turn, and buffering for compression
-                        // delays time-to-first-token.
-                        if let Ok(msg_str) = serde_json::to_string(&payload.get("messages").unwrap_or(&Value::Null)) {
-                            store_response(&auth_key, &msg_str, &String::from_utf8_lossy(&body), true);
+                tokio::spawn(async move {
+                    let mut total_bytes = Vec::new();
+                    let mut last_chunk_with_usage = String::new();
+                    loop {
+                        match upstream_resp.chunk().await {
+                            Ok(Some(chunk)) => {
+                                // Track for usage parsing and response cache
+                                let chunk_str = String::from_utf8_lossy(&chunk);
+                                // Stream-aware prefetch: extract file paths from live chunks
+                                if !std::env::var("RELIARY_PROXY_PREFETCH").is_ok_and(|v| v == "0") {
+                                    crate::novel_compress::try_prefetch(&chunk_str);
+                                }
+                                if chunk_str.contains("\"usage\"") || chunk_str.contains("\"prompt_tokens\"") {
+                                    last_chunk_with_usage = chunk_str.to_string();
+                                }
+                                total_bytes.extend_from_slice(&chunk);
+                                // Forward immediately
+                                if tx.send(Ok(chunk)).await.is_err() {
+                                    break; // Client disconnected
+                                }
+                            }
+                            Ok(None) => break, // Stream complete
+                            Err(e) => {
+                                tracing::warn!("upstream stream chunk error: {}", e);
+                                break;
+                            }
                         }
-                        let body_bytes_resp = body.to_vec();
-                        let body_len = body_bytes_resp.len();
-                        let mut resp = axum::response::Response::new(
-                            axum::body::Body::from_stream(
-                                futures_util::stream::once(
-                                    async move { Ok::<_, std::convert::Infallible>(body_bytes_resp) }
-                                )
-                            )
-                        );
-                        resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
-                        resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
-                        if let Ok(hv) = header::HeaderValue::from_str(&hdr_history_saved) {
-                            resp.headers_mut().insert("x-reliaty-history-saved", hv);
+                    }
+                    // Channel drop signals stream end to axum
+
+                    // Parse usage from the buffered final chunk (or full body)
+                    let usage_text = if !last_chunk_with_usage.is_empty() {
+                        last_chunk_with_usage.as_str()
+                    } else {
+                        &String::from_utf8_lossy(&total_bytes)
+                    };
+                    if usage_text.contains("\"usage\"") {
+                        let pt = usage_text.split("\"prompt_tokens\":").nth(1)
+                            .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                            .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                        let ct = usage_text.split("\"completion_tokens\":").nth(1)
+                            .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                            .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                        jsonl_log(&serde_json::json!({
+                            "event": "stream_usage",
+                            "auth_prefix": &ak[..ak.len().min(12)],
+                            "prompt_tokens": pt,
+                            "completion_tokens": ct,
+                        }));
+                        // Cache-hit feedback loop
+                        if !std::env::var("RELIARY_PROXY_CACHE_FEEDBACK").is_ok_and(|v| v == "0") {
+                            let hit_tokens = usage_text.split("\"prompt_cache_hit_tokens\":").nth(1)
+                                .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                                .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                            if pt > 0 {
+                                let _paused = crate::novel_compress::feed_cache_metrics(&ak, hit_tokens, pt);
+                            }
                         }
-                        resp.headers_mut().insert(
-                            "x-reliaty-body-bytes",
-                            header::HeaderValue::from_str(&body_len.to_string()).unwrap(),
-                        );
-                        resp
                     }
-                    Err(e) => {
-                        tracing::error!("upstream body error: {}", e);
-                        (StatusCode::BAD_GATEWAY, "upstream body error").into_response()
+
+                    // Cache the full body (best-effort — skips if serialization fails)
+                    if let Ok(msg_str) = serde_json::to_string(&payload.get("messages").unwrap_or(&Value::Null)) {
+                        store_response(&auth_key, &msg_str, &String::from_utf8_lossy(&total_bytes), true);
                     }
+                });
+
+                let body_len_hdr = "streaming".to_string();
+                let mut resp = axum::response::Response::new(
+                    axum::body::Body::from_stream(
+                        tokio_stream::wrappers::ReceiverStream::new(rx)
+                    )
+                );
+                resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
+                resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
+                if let Ok(hv) = header::HeaderValue::from_str(&hdr_history_saved) {
+                    resp.headers_mut().insert("x-reliaty-history-saved", hv);
                 }
+                if let Ok(hv) = header::HeaderValue::from_str(&body_len_hdr) {
+                    let _ = hv; // Header value reserved for future use
+                }
+                resp
             } else {
                 match upstream_resp.bytes().await {
                     Ok(bytes) => {
