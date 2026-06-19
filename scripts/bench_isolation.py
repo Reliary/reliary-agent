@@ -1,29 +1,57 @@
-"""Isolation benchmark: tests each daemon feature individually vs baseline.
+"""Isolation benchmark: tests each daemon feature individually via proxy.
 
-Features under test (each active with gate.js in strict mode, daemon running):
-  - who_calls:   proxy injects caller info into edit responses
-  - edit_cache:  B-Cell cache skips heal-apply on cached passes
-  - cooccur:     co-occurrence prediction pre-loads read cache
+All non-baseline conditions route Pi through :9090 proxy so proxy-level
+features (who_calls, edit_cache, cooccur) actually fire.
 
 Usage: python3 bench_isolation.py [runs=2]
-Output: summary table with per-feature weighted cost delta vs baseline.
+Requires: daemon running on :9090 with RELIARY_UPSTREAM_URL set
 """
-import json, os, subprocess, sys, time, random
+import json, os, subprocess, sys, time, random, shutil
 
 PI = os.path.expanduser("~/.local/bin/pi")
 SETTINGS = os.path.expanduser("~/.pi/agent/settings.json")
+MODELS = os.path.expanduser("~/.pi/agent/models.json")
 GATE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "pi", "gate.js"))
-RELIARY_BIN = os.path.expanduser("~/.local/bin/reliary-agent")
 REPO = os.path.expanduser("~/src/stria")
 
-# Each feature's env toggle (flag gate.js reads)
+# Backups for restore after bench
+SETTINGS_BAK = SETTINGS + ".bak"
+MODELS_BAK = MODELS + ".bak"
+
 FEATURES = {
-    "baseline":   {},  # no gate.js
-    "gate-only":  {"RELIARY_MODE": "fast"},  # inline JS compression only
-    "who_calls":  {"RELIARY_MODE": "strict"},
-    "edit_cache": {"RELIARY_MODE": "strict"},
-    "cooccur":    {"RELIARY_MODE": "strict"},
+    "baseline":    {},                                            # no gate, direct API
+    "gate-only":   {"RELIARY_MODE": "fast"},                      # gate.js only, no proxy
+    "all-on":      {"RELIARY_MODE": "strict"},                    # gate + all proxy features
+    "no-who-calls": {"RELIARY_MODE": "strict",
+                     "RELIARY_PROXY_DISABLE_WHO_CALLS": "1"},     # all except who_calls
+    "no-edit-cache": {"RELIARY_MODE": "strict",
+                      "RELIARY_PROXY_DISABLE_EDIT_CACHE": "1"},   # all except edit_cache
+    "no-cooccur":    {"RELIARY_MODE": "strict",
+                      "RELIARY_PROXY_DISABLE_COOCCUR": "1"},      # all except cooccur
 }
+
+def save_configs():
+    for src, dst in [(SETTINGS, SETTINGS_BAK), (MODELS, MODELS_BAK)]:
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
+
+def restore_configs():
+    for src, dst in [(SETTINGS_BAK, SETTINGS), (MODELS_BAK, MODELS)]:
+        if os.path.exists(src):
+            shutil.move(src, dst)
+
+def route_pi_through_proxy(enable):
+    """Set Pi's DeepSeek baseUrl to proxy or back to direct."""
+    with open(MODELS) as f:
+        cfg = json.load(f)
+    for pname, pdata in cfg.get("providers", {}).items():
+        # Match both "deepseek" and "deepinfra" provider names
+        if enable and "deep" in pname.lower():
+            cfg["providers"][pname]["baseUrl"] = "http://127.0.0.1:9090/v1"
+        elif not enable and "deep" in pname.lower():
+            cfg["providers"][pname]["baseUrl"] = "https://api.deepseek.com/v1"
+    with open(MODELS, "w") as f:
+        json.dump(cfg, f, indent=2)
 
 def reset_repo():
     subprocess.run(["git", "stash"], capture_output=True, cwd=REPO)
@@ -59,6 +87,9 @@ def run_condition(feature_name, run_idx, env_overrides):
     if os.path.exists(sfile): os.remove(sfile)
     reset_repo()
 
+    # Route Pi through proxy for all non-baseline conditions
+    route_pi_through_proxy(feature_name != "baseline")
+
     if feature_name == "baseline":
         set_ext(None)
     else:
@@ -66,16 +97,6 @@ def run_condition(feature_name, run_idx, env_overrides):
 
     env = {**os.environ, "PI_DISABLE_HEARTBEAT": "1"}
     env.update(env_overrides)
-
-    # Disable specific features by excluding them from the RELIARY_FEATURES list.
-    # who_calls depends on guard being active, cooccur depends on proxy preload.
-    # Toggle only what's needed for each isolation test.
-    if feature_name == "who_calls":
-        env["RELIARY_FEATURES"] = "compress,convWindow,readEnrichment"
-    elif feature_name == "edit_cache":
-        env["RELIARY_FEATURES"] = "compress,convWindow,readEnrichment"
-    elif feature_name == "cooccur":
-        env["RELIARY_FEATURES"] = "compress,convWindow,readEnrichment"
 
     prompts = [
         "Read src/zone.rs. Understand the line_zone function — how does it classify prose vs code lines?",
@@ -118,21 +139,39 @@ if __name__ == "__main__":
     runs = int(sys.argv[1]) if len(sys.argv) > 1 else 2
     feature_order = list(FEATURES.keys())
 
-    print(f"Isolation benchmark: {runs} runs × {len(feature_order)} features")
+    # Verify daemon is up
+    import urllib.request
+    try:
+        r = urllib.request.urlopen("http://127.0.0.1:9090/health", timeout=3)
+        assert r.status == 200
+    except Exception as e:
+        print(f"ERROR: Daemon not reachable on :9090 — start it first with RELIARY_UPSTREAM_URL set")
+        sys.exit(1)
+
+    save_configs()
+
+    print(f"Isolation benchmark: {runs} runs × {len(feature_order)} features (proxy-routed)")
     print(f"Repo: {REPO}")
     print()
 
     trials = []
-    # Interleave all conditions within each run
-    for ri in range(runs):
-        shuffled = list(feature_order)
-        random.shuffle(shuffled)
-        for feat in shuffled:
-            print(f"  [r{ri+1}] {feat}...", end=" ", flush=True)
-            r = run_condition(feat, ri, FEATURES[feat])
-            trials.append(r)
-            ok_mark = "+OK" if r["ok"] else "FAIL"
-            print(f"pt={r['pt']} ct={r['ct']} tc={r['tc']} {r['wt']}s wc={r['wc']} {ok_mark}")
+    try:
+        for ri in range(runs):
+            shuffled = list(feature_order)
+            random.shuffle(shuffled)
+            for feat in shuffled:
+                # Feature "baseline" or "gate-only" — disable all proxy features
+                ov = dict(FEATURES[feat])
+                if feat not in ("baseline", "gate-only"):
+                    # Enable all features, then selectively disable one
+                    pass  # all-on already correct
+                print(f"  [r{ri+1}] {feat}...", end=" ", flush=True)
+                r = run_condition(feat, ri, ov)
+                trials.append(r)
+                ok_mark = "+OK" if r["ok"] else "FAIL"
+                print(f"pt={r['pt']} ct={r['ct']} tc={r['tc']} {r['wt']}s wc={r['wc']} {ok_mark}")
+    finally:
+        restore_configs()
 
     # Aggregate
     baselines = [t for t in trials if t["feature"] == "baseline"]
@@ -150,7 +189,8 @@ if __name__ == "__main__":
         ok_count = sum(1 for t in feat_trials if t["ok"])
         delta = ((avg_wc - baseline_wc) / baseline_wc * 100) if baseline_wc else 0
         fix = feat_trials[0].get("fix_lines", [])
-        print(f"  {feat:16s}  pt={avg_pt:<7.0f} ct={avg_ct:<7.0f} wc={avg_wc:<8.0f} wt={avg_wt:<6.1f}s tc={avg_tc:<4.0f} acc={ok_count}/{len(feat_trials)} delta={delta:+.1f}%")
+        fix_str = fix[:2][0] if fix else "(none)"
+        print(f"  {feat:16s}  pt={avg_pt:<7.0f} ct={avg_ct:<7.0f} wc={avg_wc:<8.0f} wt={avg_wt:<6.1f}s tc={avg_tc:<4.0f} acc={ok_count}/{len(feat_trials)} delta={delta:+.1f}%  fix={fix_str}")
 
     print()
     print("Results saved to /tmp/bench_isolation_results.json")
