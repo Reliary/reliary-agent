@@ -41,20 +41,21 @@ fn get_state() -> Arc<crate::session_state::SessionState> {
     guard.clone().unwrap_or_else(|| Arc::new(crate::session_state::SessionState::new(".")))
 }
 
-fn cache_key(auth: &str, body: &str) -> u64 {
+fn cache_key(auth: &str, body: &str, is_streaming: bool) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     auth.hash(&mut h);
     body.hash(&mut h);
+    is_streaming.hash(&mut h);
     h.finish()
 }
 
-fn cached_response(auth: &str, body: &str) -> Option<String> {
-    let key = cache_key(auth, body);
+fn cached_response(auth: &str, body: &str, is_streaming: bool) -> Option<String> {
+    let key = cache_key(auth, body, is_streaming);
     RESPONSE_CACHE.lock().ok().and_then(|c| c.get(&key).cloned())
 }
 
-fn store_response(auth: &str, body: &str, response: &str) {
-    let key = cache_key(auth, body);
+fn store_response(auth: &str, body: &str, response: &str, is_streaming: bool) {
+    let key = cache_key(auth, body, is_streaming);
     if let Ok(mut cache) = RESPONSE_CACHE.lock() {
         cache.insert(key, response.to_string());
         if cache.len() > 120 {
@@ -637,7 +638,7 @@ async fn proxy_post(
     // Response cache (streaming and non-streaming)
     if let Some(messages) = payload.get("messages") {
         if let Ok(msg_str) = serde_json::to_string(messages) {
-            if let Some(cached) = cached_response(&auth_key, &msg_str) {
+            if let Some(cached) = cached_response(&auth_key, &msg_str, is_streaming) {
                 let content_type = if is_streaming { "text/event-stream" } else { "application/json" };
                 return (StatusCode::OK, [("content-type", content_type)], cached).into_response();
             }
@@ -687,7 +688,7 @@ async fn proxy_post(
                         let compressed_body = compress_response_body(&String::from_utf8_lossy(&body), true);
                         // Store in response cache for future identical requests
                         if let Ok(msg_str) = serde_json::to_string(&payload.get("messages").unwrap_or(&Value::Null)) {
-                            store_response(&auth_key, &msg_str, &compressed_body);
+                            store_response(&auth_key, &msg_str, &compressed_body, true);
                         }
                         let body_bytes_resp = compressed_body.into_bytes();
                         let body_len = body_bytes_resp.len();
@@ -719,7 +720,7 @@ async fn proxy_post(
                         let raw_str = String::from_utf8_lossy(&bytes).to_string();
                         // Compress response body before returning to agent
                         let body_str = compress_response_body(&raw_str, false);
-                        store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str);
+                        store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str, false);
 
                         jsonl_log(&serde_json::json!({
                             "event": "proxy_response",
