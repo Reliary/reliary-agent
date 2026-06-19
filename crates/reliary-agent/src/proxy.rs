@@ -198,15 +198,41 @@ fn compress_assistant_text(text: &str, dict: Option<&reliary_compress::Compressi
     }
 }
 
-// Sift-based tool result compression — uses reliary-output for structural collapse.
+// Full sift pipeline: zone truncate → command output collapse → content compress → Maxwell gate.
+// Handles any length, any content type (command output, file reads, search results, logs).
 fn sift_compress_tool_result(content: &str) -> String {
-    if content.len() <= 200 { return content.to_string(); }
-    let compressed = reliary_output::compress_output(content);
-    if compressed.len() < content.len() {
-        compressed
+    if content.len() < 200 { return content.to_string(); }
+
+    // Step 1: Very large content — zone truncate first (keep head + tail, drop middle)
+    let working = if content.lines().count() > 200 {
+        reliary_sift::zone_truncate(content, 30, 15)
     } else {
         content.to_string()
+    };
+
+    // Step 2: Command output (cargo/test/npm) — collapse repeated runs
+    let collapsed = reliary_output::compress_output(&working);
+    if collapsed.len() < working.len() {
+        return collapsed;
     }
+
+    // Step 3: File content — classify + compress (grammar-free byte DFA)
+    let lines = reliary_sift::classify_content(&working);
+    if reliary_sift::looks_like_content(&lines) {
+        let compressed = reliary_sift::compress_content(lines, true);
+        let result = compressed.join("\n");
+        if result.len() < working.len() {
+            return result;
+        }
+    }
+
+    // Step 4: MaxwellGate — if information-dense, don't force compression
+    let gate = reliary_sift::MaxwellGate::default();
+    if gate.score(&working).is_none() {
+        return working;
+    }
+
+    working
 }
 
 // First-appearance freeze compression: compress every message on first occurrence,
