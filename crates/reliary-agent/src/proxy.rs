@@ -561,6 +561,25 @@ async fn proxy_post(
         }
     }
 
+    // Compact tool call arguments: minify JSON content in tool messages
+    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        for msg in messages.iter_mut() {
+            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            if role != "tool" && role != "toolResult" { continue; }
+            if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                if content.len() > 500 && (content.trim_start().starts_with('{') || content.trim_start().starts_with('[')) {
+                    // Try to parse and re-serialize compactly
+                    if let Ok(v) = serde_json::from_str::<Value>(content) {
+                        let compact = serde_json::to_string(&v).unwrap_or_default();
+                        if compact.len() < content.len() {
+                            msg["content"] = Value::String(compact);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Dedup identical messages (catches agent duplication bugs)
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
