@@ -561,6 +561,22 @@ async fn proxy_post(
         }
     }
 
+    // System prompt stripping: on turn 2+, replace system prompt with cached marker.
+    // Providers KV-cache the system prompt after turn 1. Stripping saves ~1000+ tokens/turn.
+    // Default ON. Disable via RELIARY_PROXY_STRIP_SYSTEM_PROMPT=0
+    if !std::env::var("RELIARY_PROXY_STRIP_SYSTEM_PROMPT").is_ok_and(|v| v == "0") {
+        if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+            let turn_count = messages.iter().filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user")).count();
+            if turn_count >= 2 {
+                if let Some(first) = messages.first_mut() {
+                    if first.get("role").and_then(|r| r.as_str()) == Some("system") {
+                        first["content"] = Value::String("[system prompt cached]".to_string());
+                    }
+                }
+            }
+        }
+    }
+
     // First-appearance freeze: compress every message on first occurrence
     let (history_saved, _aggressiveness) = {
         let mut guard = get_or_create_state(&auth_key);
