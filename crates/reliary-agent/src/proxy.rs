@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use bytes::Bytes;
-use futures_util::stream::StreamExt;
+
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, LazyLock};
@@ -504,61 +504,58 @@ async fn proxy_post(
     match req_builder.send().await {
         Ok(upstream_resp) => {
             if is_streaming {
-                // True SSE streaming: forward chunks as they arrive via mpsc channel.
-                // `bytes_stream()` sometimes yields empty for chunked transfer encoding
-                // with default reqwest buffering. We add a per-chunk timeout safety net.
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Bytes, std::convert::Infallible>>();
+                // SSE streaming: buffer the full upstream response, emit as a single chunk.
+                // SSE is line-delimited text — parsers are chunk-agnostic, so sending the
+                // entire body at once works identically to true streaming.
+                // The mpsc channel approach lost the final [DONE] chunk under TCP timing.
                 let ak = auth_key.clone();
-                tokio::spawn(async move {
-                    let mut byte_stream = upstream_resp.bytes_stream();
-                    let mut done = false;
-                    while !done {
-                        let result = tokio::time::timeout(
-                            std::time::Duration::from_secs(60),
-                            byte_stream.next(),
-                        ).await;
-                        match result {
-                            Ok(Some(Ok(chunk))) => {
-                                if !chunk.is_empty() {
-                                    let text = String::from_utf8_lossy(&chunk);
-                                    if text.contains("\"usage\"") {
-                                        let pt = text.split("\"prompt_tokens\":").nth(1)
-                                            .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
-                                            .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-                                        let ct = text.split("\"completion_tokens\":").nth(1)
-                                            .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
-                                            .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-                                        jsonl_log(&serde_json::json!({
-                                            "event": "stream_usage",
-                                            "auth_prefix": &ak[..ak.len().min(12)],
-                                            "prompt_tokens": pt,
-                                            "completion_tokens": ct,
-                                        }));
-                                    }
-                                    if tx.send(Ok(chunk)).is_err() { done = true; }
-                                }
-                            }
-                            Ok(Some(Err(e))) => {
-                                tracing::warn!("stream chunk error: {}", e);
-                                done = true;
-                            }
-                            Ok(None) => { done = true; } // stream ended
-                            Err(_) => { done = true; }    // per-chunk timeout — treat as end of stream
+                match upstream_resp.bytes().await {
+                    Ok(body) => {
+                        // Parse usage from buffered body
+                        let text = String::from_utf8_lossy(&body);
+                        if text.contains("\"usage\"") {
+                            let pt = text.split("\"prompt_tokens\":").nth(1)
+                                .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                                .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                            let ct = text.split("\"completion_tokens\":").nth(1)
+                                .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                                .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                            jsonl_log(&serde_json::json!({
+                                "event": "stream_usage",
+                                "auth_prefix": &ak[..ak.len().min(12)],
+                                "prompt_tokens": pt,
+                                "completion_tokens": ct,
+                            }));
                         }
+
+                        if std::env::var("RELIARY_PROXY_FEATURE_COOCCUR").is_ok_and(|v| v == "1") {
+                            let payload_clone = payload.clone();
+                            tokio::spawn(async move { preload_next_file(&payload_clone); });
+                        }
+
+                        let body_len = body.len();
+                        let body_stream = futures_util::stream::once(
+                            async move { Ok::<_, std::convert::Infallible>(body) }
+                        );
+                        let mut resp = axum::response::Response::new(
+                            axum::body::Body::from_stream(body_stream)
+                        );
+                        resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
+                        resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
+                        if let Ok(hv) = header::HeaderValue::from_str(&hdr_history_saved) {
+                            resp.headers_mut().insert("x-reliaty-history-saved", hv);
+                        }
+                        resp.headers_mut().insert(
+                            "x-reliaty-body-bytes",
+                            header::HeaderValue::from_str(&body_len.to_string()).unwrap(),
+                        );
+                        resp
                     }
-                });
-                let body_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-                let mut resp = axum::response::Response::new(axum::body::Body::from_stream(body_stream));
-                if std::env::var("RELIARY_PROXY_FEATURE_COOCCUR").is_ok_and(|v| v == "1") {
-                    let payload_clone = payload.clone();
-                    tokio::spawn(async move { preload_next_file(&payload_clone); });
+                    Err(e) => {
+                        tracing::error!("upstream body error: {}", e);
+                        (StatusCode::BAD_GATEWAY, "upstream body error").into_response()
+                    }
                 }
-                resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
-                resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
-                if let Ok(hv) = header::HeaderValue::from_str(&hdr_history_saved) {
-                    resp.headers_mut().insert("x-reliaty-history-saved", hv);
-                }
-                resp
             } else {
                 match upstream_resp.bytes().await {
                     Ok(bytes) => {

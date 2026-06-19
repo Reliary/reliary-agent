@@ -246,7 +246,10 @@ mod tests {
     use super::*;
 
     fn clean_test_wd() -> String {
-        let wd = format!("/tmp/antidecision_test_{}", std::process::id());
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TEST_CTR: AtomicU64 = AtomicU64::new(0);
+        let ctr = TEST_CTR.fetch_add(1, Ordering::Relaxed);
+        let wd = format!("/tmp/antidecision_test_{}_{}", std::process::id(), ctr);
         let _ = std::fs::remove_dir_all(&wd);
         wd
     }
@@ -361,12 +364,12 @@ mod tests {
         record(&wd, "src/auth.rs", "unwrap", "edit", false);
         record(&wd, "src/auth.rs", "unwrap", "edit", false);
 
-        // Clear in-memory state
+        // Clear in-memory state (only for this workdir, not other tests')
         if let Ok(mut db) = ANTI_DB.lock() {
-            db.clear();
+            db.remove(&wd);
         }
         if let Ok(mut loaded) = LOADED_WORKDIRS.lock() {
-            loaded.clear();
+            loaded.remove(&wd);
         }
 
         // Query should reload from chronicle

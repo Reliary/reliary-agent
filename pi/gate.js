@@ -692,6 +692,12 @@ function handleBeforeProviderRequest(event) {
     gateLog("info", "safety expired — back to fast mode");
   }
 
+  // When strict mode (proxy active), skip message compression — proxy handles it.
+  if (GATE_MODE === "strict") {
+    // Safety expiry monitoring still needed
+    return { ...payload, messages: msgs };
+  }
+
   // Turn 1: inject chronicled prior (Phase 2)
   if (turnCount === 1 && RELIARY_BIN) {
     const workdir = extractWorkdir(msgs);
