@@ -466,19 +466,21 @@ async fn proxy_post(
         }
     }
 
-    // Context filter: drop old tool results
+    // Context filter: collapse old tool results to 1-line summaries (preserves message sequence for KV cache)
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let mut turn_count = 0;
-        let mut to_keep: Vec<bool> = vec![true; messages.len()];
-        for (i, msg) in messages.iter().enumerate() {
+        for msg in messages.iter_mut() {
             match msg.get("role").and_then(|r| r.as_str()).unwrap_or("") {
                 "user" => { turn_count += 1; }
-                "tool" | "toolResult" if turn_count > 8 => { to_keep[i] = false; }
+                "tool" | "toolResult" if turn_count > 8 => {
+                    let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                    let len = content.len();
+                    if len > 100 {
+                        msg["content"] = Value::String(format!("[tool result: {} chars — collapsed]", len));
+                    }
+                }
                 _ => {}
             }
-        }
-        for i in (0..messages.len()).rev() {
-            if !to_keep[i] { messages.remove(i); }
         }
     }
 
