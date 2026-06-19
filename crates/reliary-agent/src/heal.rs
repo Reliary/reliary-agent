@@ -38,17 +38,20 @@ pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), Str
         return Err(format!("File not found: {}", file));
     }
 
-    // Check B-Cell cache
+    // Check B-Cell cache (opt-out via RELIARY_PROXY_DISABLE_EDIT_CACHE=1)
+    let edit_cache_disabled = std::env::var("RELIARY_PROXY_DISABLE_EDIT_CACHE").is_ok_and(|v| v == "1");
     let (file_hash, ident_hash) = change_hash(file, new_content);
     let chronicle_path = format!("{}/.reliary/chronicle.sqlite", workdir.trim_end_matches('/'));
-    if let Ok(db) = rusqlite::Connection::open(&chronicle_path) {
-        if let Some(outcome) = crate::chronicle::edit_cache_get(&db, file_hash, ident_hash) {
-            tracing::info!("edit_cache: hit (outcome={}) for {} ident={}", outcome, file, ident_hash);
-            if outcome == "pass" {
-                return Ok(());
+    if !edit_cache_disabled {
+        if let Ok(db) = rusqlite::Connection::open(&chronicle_path) {
+            if let Some(outcome) = crate::chronicle::edit_cache_get(&db, file_hash, ident_hash) {
+                tracing::info!("edit_cache: hit (outcome={}) for {} ident={}", outcome, file, ident_hash);
+                if outcome == "pass" {
+                    return Ok(());
+                }
+            } else {
+                tracing::info!("edit_cache: miss for {} ident={}", file, ident_hash);
             }
-        } else {
-            tracing::info!("edit_cache: miss for {} ident={}", file, ident_hash);
         }
     }
 

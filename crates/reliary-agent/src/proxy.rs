@@ -14,6 +14,17 @@ use std::sync::{Arc, Mutex, LazyLock};
 use serde_json::Value;
 use tracing::{info, warn, error};
 
+// Shared HTTP client with connection pooling — eliminates per-request TCP+TLS handshake.
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(10)
+        .build()
+        .expect("reqwest::Client")
+});
+
+// Synchronization for JSONL logging — prevents interleaved lines from concurrent requests.
+static JSONL_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
 static RESPONSE_CACHE: LazyLock<Mutex<HashMap<u64, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -67,6 +78,16 @@ fn extract_auth_key(headers: &HeaderMap) -> String {
 
 fn daemon_cmd_str(cmd: &str) -> String {
     crate::daemon::daemon_handle_cmd_str(cmd, &get_state())
+}
+
+fn jsonl_log(entry: &serde_json::Value) {
+    let _lock = JSONL_LOCK.lock().ok();  // GUARDED: intentional
+    if let Ok(mut fh) = std::fs::OpenOptions::new()
+        .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
+    {
+        use std::io::Write;
+        let _ = writeln!(fh, "{}", serde_json::to_string(entry).unwrap_or_default());  // GUARDED: intentional
+    }
 }
 
 // ── History Compression Components ──
@@ -337,7 +358,8 @@ async fn proxy_post(
 
     let is_streaming = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    // Normalize roles: translate provider-specific roles to API-compatible
+    // Normalize roles: translate provider-specific roles to API-compatible.
+    // Harmless for Anthropic /v1/messages (their roles are user/assistant, not developer).
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         for msg in messages.iter_mut() {
             if let Some(role) = msg.get_mut("role") {
@@ -471,8 +493,7 @@ async fn proxy_post(
 
     let body_bytes = serde_json::to_vec(&payload).unwrap_or_default();
 
-    let client = reqwest::Client::new();
-    let mut req_builder = client.post(&upstream_url)
+    let mut req_builder = HTTP_CLIENT.post(&upstream_url)
         .header("Content-Type", "application/json")
         .body(body_bytes.clone());
 
@@ -485,41 +506,56 @@ async fn proxy_post(
     match req_builder.send().await {
         Ok(upstream_resp) => {
             if is_streaming {
-                let byte_stream = upstream_resp.bytes_stream();
-                let body_stream = byte_stream.map({
-                    let auth_key = auth_key.clone();
-                    let _aggressiveness = 0;
-                    move |chunk| {
-                        if let Ok(bytes) = &chunk {
-                            let text = String::from_utf8_lossy(bytes);
-                            // Log token usage from final SSE chunk
-                            if text.contains("\"usage\"") {
-                                // Extract prompt_tokens and completion_tokens
-                                let pt = text.split("\"prompt_tokens\":").nth(1)
-                                    .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
-                                    .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-                                let ct = text.split("\"completion_tokens\":").nth(1)
-                                    .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
-                                    .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-                                let log_entry = serde_json::json!({
-                                    "event": "stream_usage",
-                                    "auth_prefix": &auth_key[..auth_key.len().min(12)],
-                                    "prompt_tokens": pt,
-                                    "completion_tokens": ct,
-                                });
-                                if let Ok(mut lf) = std::fs::OpenOptions::new()
-                                    .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
-                                {
-                                    use std::io::Write;
-                                    let _ = writeln!(lf, "{}", log_entry);
+                // True SSE streaming: forward chunks as they arrive via mpsc channel.
+                // `bytes_stream()` sometimes yields empty for chunked transfer encoding
+                // with default reqwest buffering. We add a per-chunk timeout safety net.
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Bytes, std::convert::Infallible>>();
+                let ak = auth_key.clone();
+                tokio::spawn(async move {
+                    let mut byte_stream = upstream_resp.bytes_stream();
+                    let mut done = false;
+                    while !done {
+                        let result = tokio::time::timeout(
+                            std::time::Duration::from_secs(60),
+                            byte_stream.next(),
+                        ).await;
+                        match result {
+                            Ok(Some(Ok(chunk))) => {
+                                if !chunk.is_empty() {
+                                    let text = String::from_utf8_lossy(&chunk);
+                                    if text.contains("\"usage\"") {
+                                        let pt = text.split("\"prompt_tokens\":").nth(1)
+                                            .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                                            .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                                        let ct = text.split("\"completion_tokens\":").nth(1)
+                                            .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                                            .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                                        jsonl_log(&serde_json::json!({
+                                            "event": "stream_usage",
+                                            "auth_prefix": &ak[..ak.len().min(12)],
+                                            "prompt_tokens": pt,
+                                            "completion_tokens": ct,
+                                        }));
+                                    }
+                                    if tx.send(Ok(chunk)).is_err() { done = true; }
                                 }
                             }
+                            Ok(Some(Err(e))) => {
+                                tracing::warn!("stream chunk error: {}", e);
+                                done = true;
+                            }
+                            Ok(None) => { done = true; } // stream ended
+                            Err(_) => { done = true; }    // per-chunk timeout — treat as end of stream
                         }
-                        Ok::<Bytes, std::convert::Infallible>(chunk.unwrap_or_else(|_| Bytes::from("[error]\n")))
                     }
                 });
+                let body_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
                 let mut resp = axum::response::Response::new(axum::body::Body::from_stream(body_stream));
-                preload_next_file(&payload);
+                let cooccur_disabled = std::env::var("RELIARY_PROXY_DISABLE_COOCCUR").is_ok_and(|v| v == "1");
+                if !cooccur_disabled {
+                    let payload_clone = payload.clone();
+                    tokio::spawn(async move { preload_next_file(&payload_clone); });
+                }
                 resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
                 resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
                 if let Ok(hv) = header::HeaderValue::from_str(&hdr_history_saved) {
@@ -532,24 +568,21 @@ async fn proxy_post(
                         let body_str = String::from_utf8_lossy(&bytes).to_string();
                         store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str);
 
-                        // Log per-request token data for benchmarking
-                        if let Ok(mut log_fh) = std::fs::OpenOptions::new()
-                            .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
-                        {
-                            use std::io::Write;
-                            let log_entry = serde_json::json!({
-                                "event": "proxy_response",
-                                "auth_prefix": &auth_key[..auth_key.len().min(12)],
-                                "history_saved": history_saved,
-                                "timestamp": std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs()).unwrap_or(0),
-                            });
-                            let _ = writeln!(log_fh, "{}", log_entry);
-                        }
+                        jsonl_log(&serde_json::json!({
+                            "event": "proxy_response",
+                            "auth_prefix": &auth_key[..auth_key.len().min(12)],
+                            "history_saved": history_saved,
+                            "timestamp": std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs()).unwrap_or(0),
+                        }));
 
                         let mut resp = (StatusCode::OK, [("content-type", "application/json")], body_str.clone()).into_response();
-                        preload_next_file(&payload);
+                        let cooccur_disabled = std::env::var("RELIARY_PROXY_DISABLE_COOCCUR").is_ok_and(|v| v == "1");
+                        if !cooccur_disabled {
+                            let payload_clone = payload.clone();
+                            tokio::spawn(async move { preload_next_file(&payload_clone); });
+                        }
                         if let Ok(hv) = header::HeaderValue::from_str(&hdr_history_saved) {
                             resp.headers_mut().insert("x-reliaty-history-saved", hv);
                         }
@@ -772,7 +805,8 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
         .route("/v1/chat/completions", post(proxy_post))
         .route("/v1/messages", post(proxy_post))  // Anthropic/Claude Code compatibility
         .route("/mcp/sse", get(crate::mcp_sse::sse_handler))
-        .route("/mcp/messages", post(crate::mcp_sse::messages_handler));
+        .route("/mcp/messages", post(crate::mcp_sse::messages_handler))
+        .layer(tower_http::cors::CorsLayer::permissive());
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
