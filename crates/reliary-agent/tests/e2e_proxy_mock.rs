@@ -23,7 +23,7 @@ const SSE_CHUNKS: &[&[u8]] = &[
 ];
 
 fn mock_upstream_handle(mut stream: TcpStream) {
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; 8192];
     // Read the HTTP request headers + body
     let n = stream.read(&mut buf).unwrap_or(0);
     let request = String::from_utf8_lossy(&buf[..n]);
@@ -116,7 +116,7 @@ fn e2e_proxy_mock_both() {
     assert!(body.contains("[DONE]"), "expected [DONE] sentinel");
     assert!(body.contains("Hello"), "expected content chunk");
 
-    // ── Non-streaming test ──
+    // ── Non-streaming test (same content as streaming — different is_streaming cache key) ──
     let resp = client
         .post("http://127.0.0.1:9090/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", mock_key))
