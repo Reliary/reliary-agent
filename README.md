@@ -223,21 +223,6 @@ export RELIARY_UPSTREAM_URL=https://api.openai.com/v1
 ```
 
 You get proxy compression only (no MCP tools, no gate.js, no guard safety checks).
-The savings table below assumes the reliary+agent pairing with max features enabled.
-
-### Savings by Agent Stack
-
-### Savings by Agent Stack
-
-| Agent | Stack | Savings |
-|---|---|---|
-| **Pi** | Proxy + guard + gate.js | **16-84% weighted cost** |
-| **Claude Code** | Proxy + guard + MCP | **16-60%** |
-| **Cline / OpenCode** | Proxy + guard + MCP | **16-60%** |
-| **Any agent** | Proxy only (passthrough) | **0%** (just routing) |
-
-Long multi-turn sessions (15+ turns) hit the highest savings. Short 3-turn fixes hit
-the lower end. The safety guards eliminate catastrophic debug spirals.
 
 ## Features
 
@@ -248,11 +233,11 @@ agent's `*_BASE_URL` here to route all API calls through the proxy. The proxy di
 your upstream from your agent's provider config, or you can set `RELIARY_UPSTREAM_URL`
 as a global fallback.
 
-| Mechanism | Savings | How it works |
-|---|---|---|
-| **First-appearance freeze** | 16-84% | Compresses each message the first time it appears and caches the result. The provider never sees the uncompressed version. |
-| **Command output compression** | 10-20% | Collapses noisy terminal output (like 100 lines of `Compiling...`) into a 1-line summary while preserving compiler errors and stack traces. |
-| **Response cache** | 0-100% | Repeated identical requests return cached results at zero API cost. |
+| Mechanism | How it works |
+|---|---|
+| **First-appearance freeze** | Compresses each message the first time it appears and caches the result. The provider never sees the uncompressed version. |
+| **Command output compression** | Collapses noisy terminal output (like 100 lines of `Compiling...`) into a 1-line summary while preserving compiler errors and stack traces. |
+| **Response cache** | Repeated identical requests return cached results at zero API cost. |
 
 ```mermaid
 flowchart LR
@@ -511,10 +496,9 @@ but no errors).
 
 ### "I'm not seeing any token savings"
 
-Proxy compression compounds on long sessions (15+ turns). Short 3-turn sessions see
+Proxy compression compounds on long sessions. Short 3-turn sessions see
 modest savings. The first-appearance freeze only matters after the first turn. Run
-a multi-turn task (like fixing a bug in a large file) and compare API billing --
-that is where the 16-84% range comes from.
+a multi-turn task (like fixing a bug in a large file) and compare API billing.
 
 ## Development
 

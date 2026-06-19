@@ -19,7 +19,6 @@ gate.js registers three Pi event hooks:
 ### Reasoning Compression (`compressReasoning`)
 Strips LLM fluff patterns ("Let me analyze...", "I need to check...") using
 inline JS regex. Preserves code blocks, file paths, and error messages.
-~42% output token reduction on average.
 
 ### Conversation Window (`applyConversationWindow`)
 Drops verbose tool results from turns older than 8. Keeps assistant reasoning

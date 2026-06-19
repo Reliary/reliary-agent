@@ -27,7 +27,6 @@ FEATURES = {
     "no-edit-cache": {"RELIARY_MODE": "strict",
                       "RELIARY_PROXY_DISABLE_EDIT_CACHE": "1"},   # all except edit_cache
     "no-cooccur":    {"RELIARY_MODE": "strict",
-                      "RELIARY_PROXY_DISABLE_COOCCUR": "1"},      # all except cooccur
 }
 
 def save_configs():
