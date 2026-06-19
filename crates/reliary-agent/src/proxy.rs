@@ -482,8 +482,8 @@ async fn proxy_post(
         }
     }
 
-    // Guard: check edit tool calls for orphaned references / missing identifiers (off by default)
-    if std::env::var("RELIARY_PROXY_FEATURE_GUARD").is_ok_and(|v| v == "1") {
+    // Guard: check edit tool calls for orphaned references (ON by default, disable via RELIARY_PROXY_GUARD_DISABLE=1)
+    if !std::env::var("RELIARY_PROXY_GUARD_DISABLE").is_ok_and(|v| v == "1") {
         if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
             if let Some(last) = messages.last() {
                 if last.get("role").and_then(|r| r.as_str()) == Some("assistant") {
@@ -912,10 +912,9 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
 
     info!(target: "reliary", "v{} ready — daemon + proxy on :{}", env!("CARGO_PKG_VERSION"), port);
     info!(target: "reliary", "Routes: /health /ping /search /risk /compress /veto /muzzle /prior");
-    info!(target: "reliary", "Proxy features: compression=on guard={} anti={} cooccur={} (set RELIARY_PROXY_FEATURE_GUARD=1 etc to enable)",
-        if std::env::var("RELIARY_PROXY_FEATURE_GUARD").is_ok_and(|v| v == "1") { "on" } else { "off" },
-        if std::env::var("RELIARY_PROXY_FEATURE_ANTI").is_ok_and(|v| v == "1") { "on" } else { "off" },
-        if std::env::var("RELIARY_PROXY_FEATURE_COOCCUR").is_ok_and(|v| v == "1") { "on" } else { "off" });
+    info!(target: "reliary", "Proxy features: compression=on guard={} anti={} (set RELIARY_PROXY_GUARD_DISABLE=1 to disable guard)",
+        if std::env::var("RELIARY_PROXY_GUARD_DISABLE").is_ok_and(|v| v == "1") { "off" } else { "on" },
+        if std::env::var("RELIARY_PROXY_FEATURE_ANTI").is_ok_and(|v| v == "1") { "on" } else { "off" });
 
     axum::serve(listener, app)
         .await
