@@ -35,7 +35,7 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
 
 | Feature | Default | What it does |
 |---------|---------|-------------|
-| `compress` | true | IR reasoning compression (~40% token savings, zero daemon needed) |
+| `compress` | true | IR reasoning compression (zero daemon needed) |
 | `convWindow` | true | Drop old verbose tool results from conversation at 10+ messages |
 | `readEnrichment` | true | Compress non-target file reads with zone truncation |
 | `editMerge` | false | Combine sequential edits to same file into one operation (regresses on high-variance models) |

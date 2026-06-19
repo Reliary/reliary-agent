@@ -3,6 +3,8 @@
 
 use std::path::Path;
 use std::fs::{self, File};
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 use std::io::Write;
 use tracing::error;
 use std::process::Command;
@@ -17,11 +19,40 @@ pub fn atomic_write(path: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn change_hash(file: &str, new_content: &str) -> (u64, u64) {
+    let mut h = DefaultHasher::new();
+    file.hash(&mut h);
+    new_content.hash(&mut h);
+    let file_hash = h.finish();
+    let mut h2 = DefaultHasher::new();
+    new_content.hash(&mut h2);
+    let ident_hash = h2.finish();
+    (file_hash, ident_hash)
+}
+
 // Apply a fix in a shadow worktree, run tests, revert on failure.
-// Returns Ok(()) if fix passes tests, Err(error_summary) with first test failure.
+// Checks the B-Cell edit cache first — skips the test if this exact edit
+// was previously verified on the same file content.
 pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), String> {
     if !Path::new(file).exists() {
         return Err(format!("File not found: {}", file));
+    }
+
+    // Check B-Cell cache (opt-out via RELIARY_PROXY_DISABLE_EDIT_CACHE=1)
+    let edit_cache_disabled = std::env::var("RELIARY_PROXY_DISABLE_EDIT_CACHE").is_ok_and(|v| v == "1");
+    let (file_hash, ident_hash) = change_hash(file, new_content);
+    let chronicle_path = format!("{}/.reliary/chronicle.sqlite", workdir.trim_end_matches('/'));
+    if !edit_cache_disabled {
+        if let Ok(db) = rusqlite::Connection::open(&chronicle_path) {
+            if let Some(outcome) = crate::chronicle::edit_cache_get(&db, file_hash, ident_hash) {
+                tracing::info!("edit_cache: hit (outcome={}) for {} ident={}", outcome, file, ident_hash);
+                if outcome == "pass" {
+                    return Ok(());
+                }
+            } else {
+                tracing::info!("edit_cache: miss for {} ident={}", file, ident_hash);
+            }
+        }
     }
 
     let original = fs::read_to_string(file).map_err(|e| format!("Read: {}", e))?;
@@ -35,12 +66,20 @@ pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), Str
         .output()
         .map_err(|e| format!("Test exec: {}", e))?;
 
-    if output.status.success() {
+    let result = if output.status.success() {
+        // Store success in B-Cell cache
+        if let Ok(db) = rusqlite::Connection::open(&chronicle_path) {
+            crate::chronicle::edit_cache_set(&db, file_hash, ident_hash, "pass");
+        }
         Ok(())
     } else {
         // Revert — also atomic; log if revert fails
         if let Err(e) = atomic_write(file, &original) {
             error!("heal revert FAILED for {}: {} — FILE MAY BE CORRUPTED", file, e);
+        }
+        // Store failure in B-Cell cache
+        if let Ok(db) = rusqlite::Connection::open(&chronicle_path) {
+            crate::chronicle::edit_cache_set(&db, file_hash, ident_hash, "fail");
         }
         // Extract first test failure
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -48,7 +87,8 @@ pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), Str
         let combined = format!("{}{}", stdout, stderr);
         let summary = extract_first_failure(&combined);
         Err(summary)
-    }
+    };
+    result
 }
 
 fn extract_first_failure(output: &str) -> String {

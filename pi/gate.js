@@ -580,100 +580,8 @@ function handleToolCall(event) {
   }
 }
 
-// ── Compression: reasoning-level IR compression (grammar-free) ──
-function compressReasoning(text) {
-  if (!text || text.length < 600) return null;
-  if (sessionTurns < 3 && text.length < 1500) return null;
-  if (text.includes("```") || text.includes("//") || text.includes("/*")
-      || text.includes("src/") || text.includes(".rs:") || text.includes(".py:")
-      || text.includes("s/") || text.includes(".md")) return null; // contains code — skip
-
-  // Direct reliary-agent compress call
-  if (RELIARY_BIN) {
-    try {
-      const r = spawnSync(RELIARY_BIN, ["-f", "compact", "compress", "--gentle", "---stdin---"], {
-        encoding: "utf-8", input: text, timeout: 5000, maxBuffer: 8192,
-      });
-      if (r.status === 0 && r.stdout) {
-        const out = r.stdout.trim();
-        if (out && out.length < text.length * 0.85) return out;
-      }
-    } catch {}
-  }
-  return null;
-}
-
-function applyReasoningCompression(msgs) {
-  let count = 0;
-  for (let i = 0; i < msgs.length - 2; i++) {
-    const m = msgs[i];
-    if (m.role !== "assistant") continue;
-    if (!Array.isArray(m.content)) continue;
-    for (const block of m.content) {
-      if (block.type === "thinking" && block.thinking?.length > 300) {
-        const compact = compressReasoning(block.thinking);
-        if (compact) { block.thinking = compact; count++; }
-      }
-      if (block.type === "text" && block.text?.length > 400) {
-        const compact = compressReasoning(block.text);
-        if (compact) { block.text = compact; count++; }
-      }
-    }
-  }
-  return count;
-}
-
-// ── Edit merge: combine sequential edits to same file ──
-function compressEditCalls(msgs) {
-  for (let i = 1; i < msgs.length; i++) {
-    const m = msgs[i];
-    if (m.role !== "assistant") continue;
-    const prev = msgs[i - 1];
-    if (prev.role !== "assistant") continue;
-    let prevEdits = null, curEdits = null;
-    if (Array.isArray(prev.content)) {
-      for (const b of prev.content) {
-        if (b.type === "text" && b.text) {
-          const m2 = b.text.match(/\[(edit|tool_call|apply)\]/);
-        }
-      }
-    }
-  }
-  return msgs;
-}
-
-// ── Conversation window: collapse old turns at 10+ messages ──
-function applyConversationWindow(msgs) {
-  const n = msgs.length;
-  if (n < 10) return msgs;
-  const keepFirst = 2;
-  const keepLast = 6;
-  const middle = msgs.slice(keepFirst, n - keepLast);
-  if (middle.length < 2) return msgs;
-  const summary = middle
-    .filter(m => m.role === "assistant")
-    .map(m => {
-      let text = "";
-      if (Array.isArray(m.content)) {
-        for (const b of m.content) {
-          if (b.type === "text") text += b.text;
-          else if (b.type === "thinking") text += b.thinking;
-          else if (b.type === "toolCall") text += `[${b.name || "tool"}]`;
-        }
-      }
-      const compressed = compressReasoning(text);
-      return compressed || text.slice(0, 100);
-    })
-    .filter(Boolean)
-    .join(" | ");
-  if (!summary) return msgs;
-  gateLog("debug", `conv-window: collapsed ${middle.length} msgs → ${summary.length}c`);
-  return [...msgs.slice(0, keepFirst),
-    { role: "system", content: `[collapsed ${middle.length} prior msgs: ${summary.slice(0, 300)}]` },
-    ...msgs.slice(n - keepLast)];
-}
-
-// ── Hook C: before_provider_request — IR reasoning compression + conv window + prior injection ──
+// ── Hook C: before_provider_request — safety monitoring + prior injection ──
+// Proxy owns ALL message compression. Gate.js owns tool safety only.
 function handleBeforeProviderRequest(event) {
   const payload = event.payload;
   if (!payload || !Array.isArray(payload.messages)) return;
@@ -692,8 +600,8 @@ function handleBeforeProviderRequest(event) {
     gateLog("info", "safety expired — back to fast mode");
   }
 
-  // Turn 1: inject chronicled prior (Phase 2)
-  if (turnCount === 1 && RELIARY_BIN) {
+  // Turn 1: inject chronicled prior (only in fast/reactive mode, not strict where proxy handles it)
+  if (turnCount === 1 && GATE_MODE !== "strict" && RELIARY_BIN) {
     const workdir = extractWorkdir(msgs);
     if (workdir) {
       try {
@@ -709,12 +617,6 @@ function handleBeforeProviderRequest(event) {
     }
   }
 
-  // Compress reasoning in all prior assistant messages
-  const compCount = applyReasoningCompression(msgs);
-  if (compCount > 0) gateLog("debug", `compressed ${compCount} blocks`);
-
-  msgs = applyConversationWindow(msgs);
-  msgs = compressEditCalls(msgs);
   return { ...payload, messages: msgs };
 }
 

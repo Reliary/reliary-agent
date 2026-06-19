@@ -16,7 +16,6 @@ After enough population, the LLM's tool results get ` -identifier`
 annotations (Markov surprise). Value is preventative, not token-saving —
 the LLM avoids repeating known-bad identifier choices.
 
-Disable toggle: RELIARY_PROXY_ANTI_DISABLE=1
 """
 import json, os, subprocess, sys, time, random
 from statistics import mean, stdev
@@ -161,7 +160,6 @@ def run_session(prompts, sfile, anti_disabled, run_label):
     env["PI_DISABLE_HEARTBEAT"] = "1"
     env["DEEPSEEK_BASE_URL"] = f"http://127.0.0.1:{PROXY_PORT}/v1"
     if anti_disabled:
-        env["RELIARY_PROXY_ANTI_DISABLE"] = "1"
 
     total_pt = total_ct = total_tc = total_wt = 0.0
     turn_data = []

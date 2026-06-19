@@ -221,14 +221,22 @@ pub fn set_config(key: &str, value: &str, project: bool, root: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, LazyLock};
+
+    /// Serializes config tests because they mutate process-global env vars.
+    static CONFIG_TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn isolated_test<F>(f: F)
     where
         F: FnOnce(),
     {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TEST_CTR: AtomicU64 = AtomicU64::new(0);
+        let ctr = TEST_CTR.fetch_add(1, Ordering::Relaxed);
+        let _guard = CONFIG_TEST_MUTEX.lock().unwrap();
         std::env::remove_var("RELIARY_MODE");
         std::env::remove_var("RELIARY_FEATURES");
-        let tmp = std::env::temp_dir().join(format!("reliary_config_test_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("reliary_config_test_{}_{}", std::process::id(), ctr));
         let _ = std::fs::create_dir_all(&tmp);
         let old_home = std::env::var("HOME").ok();  // GUARDED: intentional — Option::ok() in test helper
         std::env::set_var("HOME", tmp.to_str().unwrap());
