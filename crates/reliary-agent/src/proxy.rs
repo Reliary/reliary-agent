@@ -11,6 +11,7 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, LazyLock};
+use std::time::Instant;
 use serde_json::Value;
 use tracing::{info, warn, error};
 
@@ -35,6 +36,15 @@ static RESPONSE_CACHE: LazyLock<Mutex<HashMap<u64, String>>> =
 
 static DAEMON_STATE: LazyLock<Mutex<Option<Arc<crate::session_state::SessionState>>>> =
     LazyLock::new(|| Mutex::new(None));
+
+// Guard result cache: keyed by (file_path_hash, content_hash), 60s TTL.
+// Prevents redundant FTS5 queries on retry loops.
+struct GuardCacheEntry {
+    status: String,
+    inserted_at: Instant,
+}
+static GUARD_CACHE: LazyLock<Mutex<HashMap<u64, GuardCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn get_state() -> Arc<crate::session_state::SessionState> {
     let guard = DAEMON_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -312,6 +322,10 @@ fn compress_response_body(body: &str, is_sse: bool) -> String {
 // has cached from the start.
 fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize, usize) {
     let mut history_saved: usize = 0;
+
+    // Turn 1 has only system + user message(s) — nothing to compress
+    if messages.len() <= 2 { return (0, 0); }
+
     for msg in messages.iter_mut() {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
 
@@ -491,19 +505,54 @@ async fn proxy_post(
             if let Some(last) = messages.last() {
                 if last.get("role").and_then(|r| r.as_str()) == Some("assistant") {
                     let content = last.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                    // Scan for edit tool calls in JSON content
-                    if content.contains("\"edit\"") || content.contains("\"apply-edit\"") {
+                    let has_edit = content.contains("\"edit\"") || content.contains("\"apply-edit\"")
+                        || content.contains("\"write\"")
+                        || content.contains("sed -i");
+                    // Check tool_calls array for edit/write function names
+                    let has_edit_tool = last.get("tool_calls")
+                        .and_then(|tc| tc.as_array())
+                        .map(|calls| calls.iter().any(|tc| {
+                            tc.get("function")
+                                .and_then(|f| f.get("name"))
+                                .and_then(|n| n.as_str())
+                                .map(|n| n == "edit" || n == "write" || n == "sed")
+                                .unwrap_or(false)
+                        }))
+                        .unwrap_or(false);
+                    if has_edit || has_edit_tool {
                         if let Some((file_path, new_text)) = extract_edit_from_assistant(content) {
                             if let Some((root, index_path, _)) = crate::daemon::find_reliary_root(&file_path) {
                                 let rel_paths = resolve_index_paths(&file_path, &root);
                                 for rp in &rel_paths {
-                                    let guard_result = crate::guard::check_diff(&index_path, rp, &new_text);
-                                    if guard_result.get("status").and_then(|s| s.as_str()) != Some("clean") {
-                                        // Inject guard warning as user message
-                                        let n_warnings = guard_result.get("warnings").and_then(|w| w.as_array()).map(|a| a.len()).unwrap_or(0);
+                                    // Guard result cache: skip FTS5 query for repeated same-content edits
+                                    let mut cache_key_hasher = std::collections::hash_map::DefaultHasher::new();
+                                    rp.hash(&mut cache_key_hasher);
+                                    new_text.hash(&mut cache_key_hasher);
+                                    let gk = cache_key_hasher.finish();
+                                    let cached_status = GUARD_CACHE.lock().ok().and_then(|mut c| {
+                                        if let Some(entry) = c.get(&gk) {
+                                            if entry.inserted_at.elapsed() < std::time::Duration::from_secs(60) {
+                                                return Some(entry.status.clone());
+                                            }
+                                        }
+                                        c.remove(&gk);
+                                        None
+                                    });
+                                    let guard_status = match cached_status {
+                                        Some(s) => s,
+                                        None => {
+                                            let result = crate::guard::check_diff(&index_path, rp, &new_text);
+                                            let status = result.get("status").and_then(|s| s.as_str()).unwrap_or("error").to_string();
+                                            if let Ok(mut c) = GUARD_CACHE.lock() {
+                                                c.insert(gk, GuardCacheEntry { status: status.clone(), inserted_at: std::time::Instant::now() });
+                                            }
+                                            status
+                                        }
+                                    };
+                                    if guard_status != "clean" {
                                         messages.push(serde_json::json!({
                                             "role": "user",
-                                            "content": format!("[guard: {} potential issues in {} - verify cross-file references]", n_warnings, rp)
+                                            "content": format!("[guard: potential cross-file reference issues in {} - verify]", rp)
                                         }));
                                         break;
                                     }
@@ -684,19 +733,21 @@ async fn proxy_post(
                             }));
                         }
 
-                        // Compress response body (SSE) before returning to agent
-                        let compressed_body = compress_response_body(&String::from_utf8_lossy(&body), true);
                         // Store in response cache for future identical requests
+                        // Do NOT compress SSE response body — request-side freeze handles
+                        // compression on the next turn, and buffering for compression
+                        // delays time-to-first-token.
                         if let Ok(msg_str) = serde_json::to_string(&payload.get("messages").unwrap_or(&Value::Null)) {
-                            store_response(&auth_key, &msg_str, &compressed_body, true);
+                            store_response(&auth_key, &msg_str, &String::from_utf8_lossy(&body), true);
                         }
-                        let body_bytes_resp = compressed_body.into_bytes();
+                        let body_bytes_resp = body.to_vec();
                         let body_len = body_bytes_resp.len();
-                        let body_stream = futures_util::stream::once(
-                            async move { Ok::<_, std::convert::Infallible>(body_bytes_resp) }
-                        );
                         let mut resp = axum::response::Response::new(
-                            axum::body::Body::from_stream(body_stream)
+                            axum::body::Body::from_stream(
+                                futures_util::stream::once(
+                                    async move { Ok::<_, std::convert::Infallible>(body_bytes_resp) }
+                                )
+                            )
                         );
                         resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
                         resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
