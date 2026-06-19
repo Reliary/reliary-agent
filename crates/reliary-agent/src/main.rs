@@ -17,6 +17,7 @@ mod config;
 mod init;
 mod ux;
 mod proxy;
+mod novel_compress;
 mod routes;
 mod guard;
 mod antidecision;
