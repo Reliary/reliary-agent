@@ -386,9 +386,8 @@ async fn proxy_post(
         }
     }
 
-    // Guard: check edit tool calls for orphaned references / missing identifiers (on by default)
-    let guard_activated = !std::env::var("RELIARY_PROXY_GUARD_DISABLE").is_ok_and(|v| v == "1");
-    if guard_activated {
+    // Guard: check edit tool calls for orphaned references / missing identifiers (off by default)
+    if std::env::var("RELIARY_PROXY_FEATURE_GUARD").is_ok_and(|v| v == "1") {
         if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
             if let Some(last) = messages.last() {
                 if last.get("role").and_then(|r| r.as_str()) == Some("assistant") {
@@ -418,10 +417,9 @@ async fn proxy_post(
         }
     }
 
-    // ── Anti-decision: record outcomes from tool results and annotate (on by default) ──
-    let workdir = get_state().workdir.to_string_lossy().to_string();
-    let anti_activated = !std::env::var("RELIARY_PROXY_ANTI_DISABLE").is_ok_and(|v| v == "1");
-    if anti_activated {
+    // ── Anti-decision: record outcomes from tool results and annotate (off by default) ──
+    if std::env::var("RELIARY_PROXY_FEATURE_ANTI").is_ok_and(|v| v == "1") {
+        let workdir = get_state().workdir.to_string_lossy().to_string();
         if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
             for msg in messages.iter() {
                 if let Some((file, identifier, operation, success)) =
@@ -551,8 +549,7 @@ async fn proxy_post(
                 });
                 let body_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
                 let mut resp = axum::response::Response::new(axum::body::Body::from_stream(body_stream));
-                let cooccur_disabled = std::env::var("RELIARY_PROXY_DISABLE_COOCCUR").is_ok_and(|v| v == "1");
-                if !cooccur_disabled {
+                if std::env::var("RELIARY_PROXY_FEATURE_COOCCUR").is_ok_and(|v| v == "1") {
                     let payload_clone = payload.clone();
                     tokio::spawn(async move { preload_next_file(&payload_clone); });
                 }
@@ -578,8 +575,7 @@ async fn proxy_post(
                         }));
 
                         let mut resp = (StatusCode::OK, [("content-type", "application/json")], body_str.clone()).into_response();
-                        let cooccur_disabled = std::env::var("RELIARY_PROXY_DISABLE_COOCCUR").is_ok_and(|v| v == "1");
-                        if !cooccur_disabled {
+                        if std::env::var("RELIARY_PROXY_FEATURE_COOCCUR").is_ok_and(|v| v == "1") {
                             let payload_clone = payload.clone();
                             tokio::spawn(async move { preload_next_file(&payload_clone); });
                         }
@@ -814,6 +810,10 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
 
     info!(target: "reliary", "v{} ready — daemon + proxy on :{}", env!("CARGO_PKG_VERSION"), port);
     info!(target: "reliary", "Routes: /health /ping /search /risk /compress /veto /muzzle /prior");
+    info!(target: "reliary", "Proxy features: compression=on guard={} anti={} cooccur={} (set RELIARY_PROXY_FEATURE_GUARD=1 etc to enable)",
+        if std::env::var("RELIARY_PROXY_FEATURE_GUARD").is_ok_and(|v| v == "1") { "on" } else { "off" },
+        if std::env::var("RELIARY_PROXY_FEATURE_ANTI").is_ok_and(|v| v == "1") { "on" } else { "off" },
+        if std::env::var("RELIARY_PROXY_FEATURE_COOCCUR").is_ok_and(|v| v == "1") { "on" } else { "off" });
 
     axum::serve(listener, app)
         .await

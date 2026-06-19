@@ -1,10 +1,11 @@
-"""Guard-firing benchmark.
+"""Compression-only benchmark.
 
-The trigger: ask LLM to add a shared error-logging function across 6 modules.
-LLM invents function names (log_error, handle_error, etc.) not in the FTS5 index.
-Guard catches each invented reference on the first edit.
+3 conditions:
+1. baseline — direct API, no gate.js
+2. gate-only — direct API, gate.js fast mode (inline JS reasoning compression)
+3. proxy-compression-only — through :9090 proxy, no gate.js, only first-appearance freeze
 
-3 conditions × 3 runs interleaved = 9 sessions, 7 turns each.
+3 runs × 3 conditions = 9 sessions, 10 turns each.
 """
 import json, os, subprocess, sys, time, random, shutil
 
@@ -12,11 +13,11 @@ PI = os.path.expanduser("~/.local/bin/pi")
 SETTINGS = os.path.expanduser("~/.pi/agent/settings.json")
 MODELS = os.path.expanduser("~/.pi/agent/models.json")
 GATE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "pi", "gate.js"))
-REPO = "/tmp/bench_guard"
+REPO = "/tmp/bench_rename"
 RELIARY_BIN = (shutil.which("reliary-agent") or
                os.path.join(os.environ.get("HOME", ""), "src/reliary-agent/target/release/reliary-agent"))
 
-SETTINGS_BAK = SETTINGS + ".grbak"
+SETTINGS_BAK = SETTINGS + ".cpbak"
 
 def read_api_key():
     routes_path = os.path.expanduser("~/.reliary/proxy-routes.json")
@@ -36,20 +37,21 @@ CONDITIONS = [
     {"label": "baseline",    "needs_proxy": False, "needs_gate": False, "env": {}},
     {"label": "gate-only",   "needs_proxy": False, "needs_gate": True,
      "env": {"RELIARY_MODE": "fast"}},
-    {"label": "recommended", "needs_proxy": True,  "needs_gate": True,
-     "env": {"RELIARY_MODE": "strict",
-             "RELIARY_LOG": "debug",
-             "RELIARY_FEATURES": "compress,convWindow,readEnrichment,healEdit"}},
+    {"label": "proxy-comp",  "needs_proxy": True,  "needs_gate": False,
+     "env": {"RELIARY_MODE": "strict"}},
 ]
 
 TURNS = [
     "Read every file in src/ and explain what each module does and how data flows between them.",
     "Run 'python3 -m pytest tests/ -v' and report all results.",
-    "Add a function called log_error(message, module_name) in src/utils.py that prints an error line with module name. Also import it and call log_error once from each of the 5 consumer modules (ingest.py, transform.py, filter.py, export.py, api.py) when an item fails processing or validation.",
-    "For each consumer module, confirm the log_error call handles the actual failure case — when process_item or validate_schema fails, the module should call log_error with a descriptive message and its own module name, then continue to the next item. Edit each module file individually.",
-    "Run 'python3 -m pytest tests/ -v'. If any tests fail, state which ones and why.",
-    "Fix any remaining test failures by editing the affected files.",
-    "Run 'python3 -m pytest tests/ -v' one final time to confirm all tests pass.",
+    "Rename function process_item to transform_item in src/utils.py, updating the function definition and all import statements across the 5 consumer modules.",
+    "Rename function validate_schema to check_schema in src/utils.py and update all imports and call sites.",
+    "Run 'python3 -m pytest tests/ -v'. If any tests fail, state which tests and why.",
+    "Fix test failures by updating any remaining old references to process_item or validate_schema.",
+    "Now rename process_item references again — this time to handle_item. Update utils.py definition and all 5 consumer module imports and call sites.",
+    "Run 'python3 -m pytest tests/ -v'. Report any remaining failures.",
+    "Fix any remaining test failures.",
+    "Run 'python3 -m pytest tests/ -v' final time to confirm all tests pass.",
 ]
 
 def save_configs():
@@ -77,8 +79,6 @@ def reset_repo():
     subprocess.run(["git", "clean", "-fd"], capture_output=True, cwd=REPO)
     subprocess.run(["rm", "-rf", "src/__pycache__", "tests/__pycache__", ".pytest_cache", ".reliary"],
                    capture_output=True, cwd=REPO)
-    if os.path.exists(RELIARY_BIN):
-        subprocess.run([RELIARY_BIN, "index", "."], capture_output=True, timeout=30, cwd=REPO)
 
 def set_ext(ext_path):
     with open(SETTINGS, "w") as f:
@@ -111,7 +111,7 @@ def check_tests(repo):
     return passed, r.stdout
 
 def run_condition(cond, run_idx):
-    sfile = f"/tmp/bench-gr-{cond['label']}-r{run_idx}.json"
+    sfile = f"/tmp/bench-cp-{cond['label']}-r{run_idx}.json"
     if os.path.exists(sfile): os.remove(sfile)
 
     reset_repo()
@@ -123,7 +123,6 @@ def run_condition(cond, run_idx):
 
     total_pt = total_ct = total_tc = 0
     total_wt = 0.0
-    guard_fire_count = 0
     turn_results = []
 
     for ti, prompt in enumerate(TURNS):
@@ -138,22 +137,8 @@ def run_condition(cond, run_idx):
         total_ct += ct
         total_tc += tc
         total_wt += wt
-
-        # Check for guard signals
-        if "[guard:" in r.stdout:
-            guard_fire_count += 1
-
-        # Check for hallucinated identifiers in the response
-        invented_refs = 0
-        for pat in ["log_error(", "handle_error(", "error_log(", "log_failure("]:
-            if pat in r.stdout:
-                invented_refs += 1
-
-        turn_results.append({
-            "turn": ti + 1, "pt": pt, "ct": ct, "tc": tc,
-            "wt": round(wt, 1), "guard_hit": "[guard:" in r.stdout,
-            "invented_refs": invented_refs,
-        })
+        turn_results.append({"turn": ti + 1, "pt": pt, "ct": ct,
+                             "tc": tc, "wt": round(wt, 1)})
 
     all_pass, test_out = check_tests(REPO)
     wc = total_pt + 4 * total_ct
@@ -163,7 +148,6 @@ def run_condition(cond, run_idx):
         "pt": total_pt, "ct": total_ct, "tc": total_tc,
         "wc": wc, "wt": round(total_wt, 1),
         "turns": len(TURNS), "ok": all_pass,
-        "guard_fires": guard_fire_count,
         "per_turn": turn_results,
         "test_output": test_out[:200],
     }
@@ -180,7 +164,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     save_configs()
-    print(f"Guard bench: {runs} runs × {len(CONDITIONS)} conditions = {runs * len(CONDITIONS)} sessions")
+    print(f"Compression bench: {runs} runs × {len(CONDITIONS)} conditions = {runs * len(CONDITIONS)} sessions")
     print(f"Repo: {REPO}  Turns: {len(TURNS)}")
     print()
 
@@ -196,21 +180,20 @@ if __name__ == "__main__":
                 result = run_condition(cond, ri)
                 el = time.time() - t0
                 ok = "+OK" if result["ok"] else "FAIL"
-                g = f" G={result['guard_fires']}" if result["guard_fires"] else ""
-                print(f"pt={result['pt']} ct={result['ct']} wc={result['wc']} {result['wt']:>4.0f}s {ok}{g} ({el:.0f}s)")
+                print(f"pt={result['pt']} ct={result['ct']} wc={result['wc']} {result['wt']:>4.0f}s {ok} ({el:.0f}s)")
                 all_trials.append(result)
     finally:
         restore_configs()
 
     print("\n" + "=" * 110)
-    hdr = f"  {'Condition':<14s} {'PT':>8s} {'CT':>8s} {'WC':>10s} {'WT':>7s} {'TC':>5s} {'Acc':>5s} {'Δ%':>7s}  Guard"
-    print(hdr)
+    print(f"  {'Condition':<14s} {'PT':>8s} {'CT':>8s} {'WC':>10s} {'WT':>7s} {'TC':>5s} {'Acc':>5s} {'Δ%':>7s}")
     print("-" * 110)
 
     b_trials = [t for t in all_trials if t["feature"] == "baseline"]
     bar_wc = sum(t["wc"] for t in b_trials) / len(b_trials) if b_trials else 1
     if b_trials:
-        print(f"  {'baseline':<12s}  {sum(t['pt'] for t in b_trials)//len(b_trials):<8d}  {sum(t['ct'] for t in b_trials)//len(b_trials):<8d}  {bar_wc:<10.0f}  {sum(t['wt'] for t in b_trials)/len(b_trials):<6.1f}s  {sum(t['tc'] for t in b_trials)//len(b_trials):<5d}  {sum(1 for t in b_trials if t['ok'])}/{len(b_trials):<2}  —       {sum(t['guard_fires'] for t in b_trials)}/{len(b_trials)}")
+        bwc = bar_wc
+        print(f"  {'baseline':<12s}  {sum(t['pt'] for t in b_trials)//len(b_trials):<8d}  {sum(t['ct'] for t in b_trials)//len(b_trials):<8d}  {bwc:<10.0f}  {sum(t['wt'] for t in b_trials)/len(b_trials):<6.1f}s  {sum(t['tc'] for t in b_trials)//len(b_trials):<5d}  {sum(1 for t in b_trials if t['ok'])}/{len(b_trials):<2}  —")
 
     for cond in CONDITIONS:
         if cond["label"] == "baseline": continue
@@ -219,14 +202,12 @@ if __name__ == "__main__":
         awc = sum(x["wc"] for x in t) / len(t)
         delta = (awc - bar_wc) / bar_wc * 100
         okc = sum(1 for x in t if x["ok"])
-        gf = sum(x["guard_fires"] for x in t)
-        print(f"  {cond['label']:<12s}  {sum(x['pt'] for x in t)//len(t):<8d}  {sum(x['ct'] for x in t)//len(t):<8d}  {awc:<10.0f}  {sum(x['wt'] for x in t)/len(t):<6.1f}s  {sum(x['tc'] for x in t)//len(t):<5d}  {okc}/{len(t):<2}  {delta:>+6.1f}%  {gf}/{len(t)}")
+        print(f"  {cond['label']:<12s}  {sum(x['pt'] for x in t)//len(t):<8d}  {sum(x['ct'] for x in t)//len(t):<8d}  {awc:<10.0f}  {sum(x['wt'] for x in t)/len(t):<6.1f}s  {sum(x['tc'] for x in t)//len(t):<5d}  {okc}/{len(t):<2}  {delta:>+6.1f}%")
 
     print(f"\nPer-run:")
     for t in all_trials:
-        gf = f" guard={t['guard_fires']}" if t["guard_fires"] else ""
-        print(f"  r{t['run']} {t['feature']:<12s} pt={t['pt']} ct={t['ct']} wc={t['wc']} {t['wt']:>4.0f}s ok={'Y' if t['ok'] else 'N'}{gf}")
+        print(f"  r{t['run']} {t['feature']:<12s} pt={t['pt']} ct={t['ct']} wc={t['wc']} {t['wt']:>4.0f}s ok={'Y' if t['ok'] else 'N'}")
 
-    with open("/tmp/bench_guard_results.json", "w") as f:
+    with open("/tmp/bench_cp_results.json", "w") as f:
         json.dump(all_trials, f, indent=2)
-    print(f"\nResults: /tmp/bench_guard_results.json")
+    print(f"\nResults: /tmp/bench_cp_results.json")
