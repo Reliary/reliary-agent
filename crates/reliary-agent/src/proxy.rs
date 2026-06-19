@@ -561,6 +561,29 @@ async fn proxy_post(
         }
     }
 
+    // Dedup identical messages (catches agent duplication bugs)
+    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut to_remove: Vec<usize> = Vec::new();
+        for (i, msg) in messages.iter().enumerate() {
+            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            if role.is_empty() || content.is_empty() { continue; }
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            role.hash(&mut h);
+            content.hash(&mut h);
+            let key = h.finish();
+            if seen.contains(&key) {
+                to_remove.push(i);
+            } else {
+                seen.insert(key);
+            }
+        }
+        for i in to_remove.iter().rev() {
+            messages.remove(*i);
+        }
+    }
+
     // System prompt stripping: on turn 2+, replace system prompt with cached marker.
     // Providers KV-cache the system prompt after turn 1. Stripping saves ~1000+ tokens/turn.
     // Default ON. Disable via RELIARY_PROXY_STRIP_SYSTEM_PROMPT=0
