@@ -99,13 +99,16 @@ fn daemon_cmd_str(cmd: &str) -> String {
 }
 
 fn jsonl_log(entry: &serde_json::Value) {
-    let _lock = JSONL_LOCK.lock().ok();  // GUARDED: intentional
-    if let Ok(mut fh) = std::fs::OpenOptions::new()
-        .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
-    {
-        use std::io::Write;
-        let _ = writeln!(fh, "{}", serde_json::to_string(entry).unwrap_or_default());  // GUARDED: intentional
-    }
+    let entry_str = serde_json::to_string(entry).unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let _lock = JSONL_LOCK.lock().ok();  // GUARDED: intentional
+        if let Ok(mut fh) = std::fs::OpenOptions::new()
+            .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
+        {
+            use std::io::Write;
+            let _ = writeln!(fh, "{}", entry_str);  // GUARDED: intentional
+        }
+    });
 }
 
 // ── History Compression Components ──
@@ -114,11 +117,12 @@ fn jsonl_log(entry: &serde_json::Value) {
 // `content_cache`: maps content hash → compressed version.
 struct PerKeyState {
     content_cache: FxHashMap<u64, String>,
+    paused: bool,
 }
 
 impl PerKeyState {
     fn new() -> Self {
-        Self { content_cache: FxHashMap::default() }
+        Self { content_cache: FxHashMap::default(), paused: false }
     }
 
     /// Content hash for cache lookup.
@@ -253,52 +257,11 @@ fn sift_compress_tool_result(content: &str) -> String {
     working
 }
 
-// Compress the assistant message in an API response body before returning to agent.
+// Compress the assistant message in a non-streaming API response body.
 // Parses JSON, finds choices[0].message.content, compresses, re-serializes.
-// For SSE: scans final data chunk for content field, compresses in-place.
-fn compress_response_body(body: &str, is_sse: bool) -> String {
+fn compress_response_body(body: &str) -> String {
     if body.len() < 500 { return body.to_string(); }
 
-    if is_sse {
-        // SSE: find the last data: line with content, compress it
-        let mut lines: Vec<String> = body.lines().map(|s| s.to_string()).collect();
-        for i in (0..lines.len()).rev() {
-            let line = &lines[i];
-            if !line.starts_with("data: ") { continue; }
-            let json_str = &line[6..];
-            if json_str == "[DONE]" { continue; }
-            if let Ok(mut v) = serde_json::from_str::<Value>(json_str) {
-                if let Some(choices) = v.get_mut("choices").and_then(|c| c.as_array_mut()) {
-                    if let Some(choice) = choices.first_mut() {
-                        // Try delta first, then message (streaming vs non-streaming format)
-                        let compressed_content: Option<String> = {
-                            let content = choice.get("delta")
-                                .and_then(|d| d.get("content"))
-                                .or_else(|| choice.get("message").and_then(|m| m.get("content")))
-                                .and_then(|c| c.as_str());
-                            if let Some(c) = content {
-                                if c.len() > 300 {
-                                    compress_assistant_text(c, COMPRESSION_DICT.as_ref())
-                                } else { None }
-                            } else { None }
-                        };
-                        if let Some(compressed) = compressed_content {
-                            if let Some(delta) = choice.get_mut("delta") {
-                                delta["content"] = Value::String(compressed);
-                            } else if let Some(msg) = choice.get_mut("message") {
-                                msg["content"] = Value::String(compressed);
-                            }
-                        }
-                    }
-                }
-                lines[i] = format!("data: {}", serde_json::to_string(&v).unwrap_or_else(|_| json_str.to_string()));
-                break;
-            }
-        }
-        return lines.join("\n");
-    }
-
-    // Non-streaming JSON response
     if let Ok(mut v) = serde_json::from_str::<Value>(body) {
         if let Some(choices) = v.get_mut("choices").and_then(|c| c.as_array_mut()) {
             if let Some(choice) = choices.first_mut() {
@@ -719,7 +682,9 @@ async fn proxy_post(
     let (history_saved, _aggressiveness) = {
         let mut guard = get_or_create_state(&auth_key);
         if let Some(state) = guard.get_mut(&auth_key) {
-            if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+            if state.paused {
+                (0, 0) // KV cache warming — skip compression to avoid cache busting
+            } else if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
                 compress_messages(messages, state)
             } else {
                 (0, 0)
@@ -820,7 +785,12 @@ async fn proxy_post(
                                 .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
                                 .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
                             if pt > 0 {
-                                let _paused = crate::novel_compress::feed_cache_metrics(&ak, hit_tokens, pt);
+                                let paused = crate::novel_compress::feed_cache_metrics(&ak, hit_tokens, pt);
+                                if let Ok(mut guard) = PER_KEY_STATE.lock() {
+                                    if let Some(psk) = guard.get_mut(&auth_key) {
+                                        psk.paused = paused;
+                                    }
+                                }
                             }
                         }
                     }
@@ -851,7 +821,7 @@ async fn proxy_post(
                     Ok(bytes) => {
                         let raw_str = String::from_utf8_lossy(&bytes).to_string();
                         // Compress response body before returning to agent
-                        let body_str = compress_response_body(&raw_str, false);
+                        let body_str = compress_response_body(&raw_str);
                         store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str, false);
 
                         jsonl_log(&serde_json::json!({
