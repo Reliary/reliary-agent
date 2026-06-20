@@ -352,33 +352,42 @@ fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize,
         // First occurrence: compress and cache
         let compressed = match role {
             "assistant" => {
-                // Try existing reasoning compression
                 let existing = compress_assistant_text(&content, COMPRESSION_DICT.as_ref());
-                // Try novel mechanisms (Maxwell, DSL) — keep whichever saves more
-                let maxwell = crate::novel_compress::maxwell_compress(&content, 50.0);
-                let state_dsl = crate::novel_compress::extract_dialogue_state(&content);
-                // Pick best
-                let mut best: Option<(String, usize)> = existing.clone().map(|c| { let s = content.len().saturating_sub(c.len()); (c, s) });
-                if let Some(c) = &maxwell {
-                    let s = content.len().saturating_sub(c.len());
-                    if best.as_ref().is_none_or(|b| s > b.1) { best = Some((c.clone(), s)); }
+                // Novel mechanisms (Maxwell, DSL) — disabled via RELIARY_PROXY_NOVEL_COMPRESS=0
+                let novel_disabled = std::env::var("RELIARY_PROXY_NOVEL_COMPRESS").is_ok_and(|v| v == "0");
+                if !novel_disabled {
+                    let maxwell = crate::novel_compress::maxwell_compress(&content, 50.0);
+                    let state_dsl = crate::novel_compress::extract_dialogue_state(&content);
+                    let mut best: Option<(String, usize)> = existing.clone().map(|c| { let s = content.len().saturating_sub(c.len()); (c, s) });
+                    if let Some(c) = &maxwell {
+                        let s = content.len().saturating_sub(c.len());
+                        if best.as_ref().is_none_or(|b| s > b.1) { best = Some((c.clone(), s)); }
+                    }
+                    if let Some(c) = &state_dsl {
+                        let s = content.len().saturating_sub(c.len());
+                        if best.as_ref().is_none_or(|b| s > b.1) { best = Some((c.clone(), s)); }
+                    }
+                    best.map(|(c, _)| c)
+                } else {
+                    existing
                 }
-                if let Some(c) = &state_dsl {
-                    let s = content.len().saturating_sub(c.len());
-                    if best.as_ref().is_none_or(|b| s > b.1) { best = Some((c.clone(), s)); }
-                }
-                best.map(|(c, _)| c)
             }
             "tool" | "toolResult" => {
                 let sifted = sift_compress_tool_result(&content);
                 let sifted_opt = if sifted.len() < content.len() { Some(sifted) } else { None };
-                let hoisted = crate::novel_compress::hoist_json_invariants(&content);
-                let mut best: Option<(String, usize)> = sifted_opt.clone().map(|c| { let s = content.len().saturating_sub(c.len()); (c, s) });
-                if let Some(c) = &hoisted {
-                    let s = content.len().saturating_sub(c.len());
-                    if best.as_ref().is_none_or(|b| s > b.1) { best = Some((c.clone(), s)); }
+                // Novel mechanism (invariant hoisting) — disabled via RELIARY_PROXY_NOVEL_COMPRESS=0
+                let novel_disabled = std::env::var("RELIARY_PROXY_NOVEL_COMPRESS").is_ok_and(|v| v == "0");
+                if !novel_disabled {
+                    let hoisted = crate::novel_compress::hoist_json_invariants(&content);
+                    let mut best: Option<(String, usize)> = sifted_opt.clone().map(|c| { let s = content.len().saturating_sub(c.len()); (c, s) });
+                    if let Some(c) = &hoisted {
+                        let s = content.len().saturating_sub(c.len());
+                        if best.as_ref().is_none_or(|b| s > b.1) { best = Some((c.clone(), s)); }
+                    }
+                    best.map(|(c, _)| c)
+                } else {
+                    sifted_opt
                 }
-                best.map(|(c, _)| c)
             }
             _ => None,
         };

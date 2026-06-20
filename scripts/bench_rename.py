@@ -55,6 +55,11 @@ CONDITIONS = [
      "env": {"RELIARY_MODE": "strict",
              "RELIARY_LOG": "debug",
              "RELIARY_FEATURES": "compress,convWindow,readEnrichment,healEdit"}},
+    {"label": "existing-cc", "needs_proxy": True,  "needs_gate": True,
+     "env": {"RELIARY_MODE": "strict",
+             "RELIARY_LOG": "debug",
+             "RELIARY_FEATURES": "compress,convWindow,readEnrichment,healEdit",
+             "RELIARY_PROXY_NOVEL_COMPRESS": "0"}},
 ]
 
 TURNS = [
@@ -199,7 +204,7 @@ def run_condition(cond, run_idx):
     stale_after = count_stale_refs(REPO)
     guard_fired = any(guard_signals)
 
-    wc = total_pt + 4 * total_ct
+    wc = total_pt + 2 * total_ct  # DeepSeek V4 Flash: 1:2 pricing
     return {
         "feature": cond["label"],
         "run": run_idx,
