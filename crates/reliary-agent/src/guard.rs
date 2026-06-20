@@ -287,7 +287,7 @@ mod tests {
             if p.exists() {
                 let count: i64 = rusqlite::Connection::open(&p)
                     .and_then(|db| {
-                        let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+                        let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
                         db.query_row("SELECT COUNT(*) FROM file_map", [], |r| r.get(0))
                     })
                     .unwrap_or(0);

@@ -14,7 +14,7 @@ Conditions:
 import json, os, subprocess, sys, time, random, shutil, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bench_lib import cwd_prefix
+from bench_lib import cwd_prefix, weighted_cost
 
 PI = os.path.expanduser("~/.local/bin/pi")
 SETTINGS = os.path.expanduser("~/.pi/agent/settings.json")
@@ -164,7 +164,7 @@ def run_condition(cond, run_idx):
                              "tc": tc, "wt": round(wt, 1)})
 
     all_pass, test_out = check_tests(REPO)
-    wc = total_pt + 4 * total_ct
+    wc = weighted_cost(total_pt, total_ct)
     stale_refs = 0  # check for stale references in test output
     if "NameError" in test_out or "ImportError" in test_out:
         stale_refs = 1

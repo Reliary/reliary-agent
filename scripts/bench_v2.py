@@ -2,7 +2,7 @@
 import json, os, subprocess, sys, time, re, shutil
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bench_lib import cwd_prefix
+from bench_lib import cwd_prefix, weighted_cost
 
 PI = os.path.expanduser("~/.local/bin/pi")
 GATE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "gate.js"))
@@ -157,7 +157,7 @@ if __name__ == "__main__":
         if not lst:
             continue
         r = lst[0]
-        wc = r["pt"] + 4 * r["ct"]
+        wc = weighted_cost(r["pt"], r["ct"])
         print(f"  {name:<10} pt={r['pt']:<5.0f} ct={r['ct']:<5.0f} wc={wc:<7.0f} wl={r['wall']:<4.0f}s tc={r['tc']:<3.0f} {'OK' if r['ok'] else 'FAIL'}")
 
     out = "$HOME/src/context-engine/scripts/bench_v2_results.json"

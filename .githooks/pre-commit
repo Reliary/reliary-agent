@@ -81,6 +81,37 @@ if [ -n "$stale" ]; then
     exit 1
 fi
 
+# 8b. SQL string corruption guard — catch execute_batch/prepare with truncated
+#     PRAGMA, missing SELECT, or missing DELETE FROM keywords. These strings
+#     were silently truncated by a sed scrubber pass before this guardrail
+#     existed. Scoped to staged .rs files.
+sql_corrupt=$(python3 -c "
+import subprocess, re, sys
+try:
+    files = subprocess.check_output(['git', 'diff', '--cached', '--name-only', '--diff-filter=ACM']).decode().split()
+except: sys.exit(0)
+patterns = [
+    (r'execute_batch\(\"\s*synchronous', 'truncated PRAGMA (missing journal_mode)'),
+    (r'execute_batch\(\"\s*journal_mode', 'truncated PRAGMA (missing NORMAL)'),
+    (r'execute_batch\(\"\s*;', 'empty SQL batch'),
+    (r'prepare\(\"\s+[a-z]', 'prepare() missing SELECT'),
+    (r'execute\(\"\s+FROM', 'execute() missing DELETE/INSERT'),
+]
+for f in files:
+    if not f.endswith('.rs'): continue
+    with open(f) as fh:
+        for i, line in enumerate(fh, 1):
+            for pat, desc in patterns:
+                if re.search(pat, line):
+                    print(f'{f}:{i}: {desc}: {line.rstrip()[:80]}')
+" 2>/dev/null)
+if [ -n "$sql_corrupt" ]; then
+    echo "FAIL: SQL string corruption detected:"
+    echo "$sql_corrupt"
+    exit 1
+fi
+echo "  SQL strings: clean"
+
 # 9. shellcheck (lint shell scripts)
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck scripts/*.sh 2>/dev/null || {

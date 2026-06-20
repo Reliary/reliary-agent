@@ -9,7 +9,7 @@ Guard catches each invented reference on the first edit.
 import json, os, subprocess, sys, time, random, shutil
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bench_lib import cwd_prefix
+from bench_lib import cwd_prefix, weighted_cost
 
 PI = os.path.expanduser("~/.local/bin/pi")
 SETTINGS = os.path.expanduser("~/.pi/agent/settings.json")
@@ -161,7 +161,7 @@ def run_condition(cond, run_idx):
         })
 
     all_pass, test_out = check_tests(REPO)
-    wc = total_pt + 4 * total_ct
+    wc = weighted_cost(total_pt, total_ct)
 
     return {
         "feature": cond["label"], "run": run_idx,

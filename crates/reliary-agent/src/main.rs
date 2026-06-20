@@ -423,12 +423,12 @@ fn open_index_or_prompt(path: &str) -> Option<rusqlite::Connection> {
     }
 
     let db = rusqlite::Connection::open(&db_path).ok()?;
-    let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+    let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
     if reliary_search::schema::open_existing_db(&db).is_err() {
         eprintln!("{} Index schema mismatch or corrupt. Rebuilding...", color::yellow("⚠"));
         run_index(path);
         let db = rusqlite::Connection::open(&db_path).ok()?;
-        let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+        let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         reliary_search::schema::open_existing_db(&db).ok()?;
         return Some(db);
     }
@@ -1186,7 +1186,7 @@ fn main() {
             match daemon::find_reliary_root(file) {
                 Some((_root, index_path, _)) => {
                     if let Ok(db) = rusqlite::Connection::open(&index_path) {
-                        let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+                        let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
                         if reliary_search::schema::open_existing_db(&db).is_ok() {
                             let ids = reliary_search::scan_identifiers(new_text);
                             let mut blocked = Vec::new();

@@ -138,4 +138,16 @@ mod tests {
         assert_eq!(t.len(), 6);
         assert!(t.contains(&"val".to_string()));
     }
+
+    #[test]
+    fn test_pragma_string_intact() {
+        // Asserts the PRAGMA strings in ingest.rs and mcp.rs haven't been
+        // silently truncated by a sed/scrubber pass. Catches the
+        // "synchronous=NORMAL;" corruption where WAL/NORMAL strings were eaten.
+        let src = include_str!("ingest.rs");
+        assert!(src.contains("PRAGMA journal_mode=WAL"),
+                "ingest.rs missing PRAGMA journal_mode=WAL");
+        assert!(src.contains("PRAGMA synchronous=NORMAL"),
+                "ingest.rs missing PRAGMA synchronous=NORMAL");
+    }
 }

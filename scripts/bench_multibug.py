@@ -2,7 +2,7 @@
 import json, os, subprocess, sys, time, re, shutil
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bench_lib import cwd_prefix
+from bench_lib import cwd_prefix, weighted_cost
 
 PI = os.path.expanduser("~/.local/bin/pi")
 GATE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "gate.js"))
@@ -212,9 +212,9 @@ if __name__ == "__main__":
 
     b_pt = avg2(base, "pt"); go_pt = avg2(go, "pt"); gc_pt = avg2(gc, "pt")
     b_ct = avg2(base, "ct"); go_ct = avg2(go, "ct"); gc_ct = avg2(gc, "ct")
-    b_wc = avg2(base, "pt")+4*avg2(base, "ct")
-    go_wc = avg2(go, "pt")+4*avg2(go, "ct")
-    gc_wc = avg2(gc, "pt")+4*avg2(gc, "ct")
+    b_wc = weighted_cost(avg2(base, "pt"), avg2(base, "ct"))
+    go_wc = weighted_cost(avg2(go, "pt"), avg2(go, "ct"))
+    gc_wc = weighted_cost(avg2(gc, "pt"), avg2(gc, "ct"))
     b_tc = avg2(base, "tc"); go_tc = avg2(go, "tc"); gc_tc = avg2(gc, "tc")
     b_wl = avg2(base, "wall"); go_wl = avg2(go, "wall"); gc_wl = avg2(gc, "wall")
 
@@ -225,7 +225,7 @@ if __name__ == "__main__":
 
     print(cell("Prompt tokens", b_pt, go_pt, gc_pt))
     print(cell("Completion tokens", b_ct, go_ct, gc_ct))
-    print(cell("Weighted cost (in+4xout)", b_wc, go_wc, gc_wc))
+    print(cell(f"Weighted cost (in+{int(2)}xout)", b_wc, go_wc, gc_wc))
     print(cell("Tool calls", b_tc, go_tc, gc_tc))
     print(cell("Wall clock (s)", b_wl, go_wl, gc_wl))
 

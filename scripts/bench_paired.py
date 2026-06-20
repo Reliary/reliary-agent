@@ -6,7 +6,7 @@ Usage: python3 bench_paired.py [runs=3]
 import json, os, subprocess, sys, time, random
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bench_lib import cwd_prefix
+from bench_lib import cwd_prefix, weighted_cost
 
 PI = os.path.expanduser("~/.local/bin/pi")
 SETTINGS = os.path.expanduser("~/.pi/agent/settings.json")
@@ -113,7 +113,7 @@ def run_condition(cond, run_idx):
     # Extract edits from session
     edits = extract_edits(sfile)
 
-    wc = total_pt + 4 * total_ct
+    wc = weighted_cost(total_pt, total_ct)
     return {
         "condition": cond,
         "run": run_idx,

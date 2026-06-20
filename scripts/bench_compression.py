@@ -14,6 +14,8 @@ SETTINGS = os.path.expanduser("~/.pi/agent/settings.json")
 MODELS = os.path.expanduser("~/.pi/agent/models.json")
 GATE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "pi", "gate.js"))
 REPO = "/tmp/bench_rename"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from bench_lib import weighted_cost
 RELIARY_BIN = (shutil.which("reliary-agent") or
                os.path.join(os.environ.get("HOME", ""), "src/reliary-agent/target/release/reliary-agent"))
 
@@ -143,7 +145,7 @@ def run_condition(cond, run_idx):
                              "tc": tc, "wt": round(wt, 1)})
 
     all_pass, test_out = check_tests(REPO)
-    wc = total_pt + 4 * total_ct
+    wc = weighted_cost(total_pt, total_ct)
 
     return {
         "feature": cond["label"], "run": run_idx,

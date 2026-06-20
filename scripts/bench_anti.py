@@ -21,7 +21,7 @@ import json, os, subprocess, sys, time, random
 from statistics import mean, stdev
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bench_lib import cwd_prefix
+from bench_lib import cwd_prefix, weighted_cost
 
 PI = os.path.expanduser("~/.local/bin/pi")
 REPO = os.path.expanduser("~/src/stria")
@@ -201,7 +201,7 @@ def run_session(prompts, sfile, anti_disabled, run_label):
 
     return {
         "pt": int(total_pt), "ct": int(total_ct), "tc": int(total_tc),
-        "wc": int(total_pt + 4 * total_ct), "wt": round(total_wt, 1),
+        "wc": weighted_cost(total_pt, total_ct), "wt": round(total_wt, 1),
         "ok": ok, "fix_lines": added, "edit_count": len(edits),
         "edits": edits, "turns": turn_data, "session_file": sfile,
     }
