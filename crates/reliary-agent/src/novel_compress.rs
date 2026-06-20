@@ -3,9 +3,8 @@
 //! 1. Cache-hit feedback loop: adapt compression aggressiveness from API cache metrics.
 //! 2. Stream-aware prefetch: parse SSE chunks for file paths, pre-load reads.
 //! 3. Maxwell's Demon: information-theoretic token erasure (cost = -log2(freq)).
-//! 4. Asymmetric tool-call compression: preserve results, compress requests.
-//! 5. Invariant hoisting: JSON arrays → header + delta rows.
-//! 6. Dialogue State Ledger: extract [STATE] from old reasoning.
+//! 4. Invariant hoisting: JSON arrays → header + delta rows.
+//! 5. Dialogue State Ledger: extract [STATE] from old reasoning.
 
 use rustc_hash::FxHashMap;
 use serde_json::Value;

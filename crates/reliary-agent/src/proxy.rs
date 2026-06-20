@@ -579,6 +579,17 @@ async fn proxy_post(
                                             let result = crate::guard::check_diff(&index_path, rp, &new_text);
                                             let status = result.get("status").and_then(|s| s.as_str()).unwrap_or("error").to_string();
                                             if let Ok(mut c) = GUARD_CACHE.lock() {
+                                                // Evict stale entries (elapsed > 60s) to bound memory.
+                                                c.retain(|_, e| e.inserted_at.elapsed() < std::time::Duration::from_secs(60));
+                                                // Hard cap to prevent unbounded growth.
+                                                if c.len() >= 500 {
+                                                    if let Some(&oldest_key) = c.iter()
+                                                        .min_by_key(|(_, e)| e.inserted_at)
+                                                        .map(|(k, _)| k)
+                                                    {
+                                                        c.remove(&oldest_key);
+                                                    }
+                                                }
                                                 c.insert(gk, GuardCacheEntry { status: status.clone(), inserted_at: std::time::Instant::now() });
                                             }
                                             status
@@ -758,9 +769,13 @@ async fn proxy_post(
                             Ok(Some(chunk)) => {
                                 // Track for usage parsing and response cache
                                 let chunk_str = String::from_utf8_lossy(&chunk);
-                                // Stream-aware prefetch: extract file paths from live chunks
+                                // Stream-aware prefetch: extract file paths from live chunks.
+                                // Run in spawn_blocking to avoid sync fs I/O stalling the async runtime.
                                 if !std::env::var("RELIARY_PROXY_PREFETCH").is_ok_and(|v| v == "0") {
-                                    crate::novel_compress::try_prefetch(&chunk_str);
+                                    let pf_chunk = chunk_str.to_string();
+                                    tokio::task::spawn_blocking(move || {
+                                        crate::novel_compress::try_prefetch(&pf_chunk);
+                                    });
                                 }
                                 if chunk_str.contains("\"usage\"") || chunk_str.contains("\"prompt_tokens\"") {
                                     last_chunk_with_usage = chunk_str.to_string();

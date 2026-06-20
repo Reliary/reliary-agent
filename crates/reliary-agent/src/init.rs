@@ -827,7 +827,7 @@ pub fn restore_opencode_proxy_routes() -> bool {
     where
         F: FnOnce(PathBuf),
     {
-        let _lock = INIT_TEST_LOCK.lock().unwrap();
+        let _lock = INIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!("reliary_init_test_{}_{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst)));
