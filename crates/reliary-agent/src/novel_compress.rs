@@ -160,7 +160,7 @@ impl PrefetchTracker {
                 self.recently_prefetched.pop_front();
             }
             self.prefetch_count += 1;
-            std::fs::read_to_string(pf).ok(); // Warm the OS page cache
+            std::fs::read_to_string(pf).ok(); // GUARDED: intentional — best-effort OS page cache warm
         }
     }
 }
