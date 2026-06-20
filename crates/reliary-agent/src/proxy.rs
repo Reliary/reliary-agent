@@ -220,8 +220,11 @@ fn compress_assistant_text(text: &str, dict: Option<&reliary_compress::Compressi
     }
 }
 
-// Full sift pipeline: zone truncate → command output collapse → content compress → Maxwell gate.
-// Handles any length, any content type (command output, file reads, search results, logs).
+// Full sift pipeline: adaptive content-type-aware compression.
+// 1. Classify lines with skeleton normalization (UUID→{uuid}, hex→{hash}, etc.)
+// 2. Detect output type (JSON/Diff/Tabular/Prefixed/Normal)
+// 3. Apply expert compression per type
+// 4. MaxwellGate entropy guard on result
 fn sift_compress_tool_result(content: &str) -> String {
     if content.len() < 200 { return content.to_string(); }
 
@@ -232,23 +235,40 @@ fn sift_compress_tool_result(content: &str) -> String {
         content.to_string()
     };
 
-    // Step 2: Command output (cargo/test/npm) — collapse repeated runs
-    let collapsed = reliary_output::compress_output(&working);
-    if collapsed.len() < working.len() {
-        return collapsed;
-    }
+    // Step 2: Classify lines (skeleton normalization, error/progress/summary detection)
+    let lines = reliary_sift::classify::classify(&working);
+    if lines.is_empty() { return working; }
 
-    // Step 3: File content — classify + compress (grammar-free byte DFA)
-    let lines = reliary_sift::classify_content(&working);
-    if reliary_sift::looks_like_content(&lines) {
-        let compressed = reliary_sift::compress_content(lines, true);
-        let result = compressed.join("\n");
-        if result.len() < working.len() {
-            return result;
+    // Step 3: Detect compression strategy
+    let raw_lines: Vec<(String, reliary_sift::classify::Line)> = lines.iter()
+        .map(|l| (l.text.clone(), l.clone()))
+        .collect();
+    let strategy = reliary_sift::classify::detect_strategy(&raw_lines);
+
+    // Step 4: Apply expert compression per strategy
+    let compressed = reliary_sift::filter::format_output(&lines, strategy);
+
+    // Step 5: If adaptive didn't help, fall through to existing mechanisms
+    if compressed.len() >= working.len() || compressed.is_empty() {
+        // Step 5a: Command output collapse (cargo/test)
+        let collapsed = reliary_output::compress_output(&working);
+        if collapsed.len() < working.len() {
+            return collapsed;
         }
+        // Step 5b: File content classify + compress
+        let clines = reliary_sift::classify_content(&working);
+        if reliary_sift::looks_like_content(&clines) {
+            let cc = reliary_sift::compress_content(clines, true);
+            let result = cc.join("\n");
+            if result.len() < working.len() {
+                return result;
+            }
+        }
+    } else {
+        return compressed;
     }
 
-    // Step 4: MaxwellGate — if information-dense, don't force compression
+    // Step 6: MaxwellGate — if information-dense, don't force compression
     let gate = reliary_sift::MaxwellGate::default();
     if gate.score(&working).is_none() {
         return working;
