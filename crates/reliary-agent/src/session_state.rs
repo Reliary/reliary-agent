@@ -35,7 +35,7 @@ impl SessionState {
             warn!("session_dir create_dir_all: {}", e);
         }
         Self {
-            scavenger_muzzled: AtomicBool::new(false),
+            scavenger_muzzled: AtomicBool::new(true),
             muzzle_time: Mutex::new(Instant::now()),
             chronicle_path,
             workdir: PathBuf::from(workdir),
