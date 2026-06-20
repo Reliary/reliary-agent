@@ -1,3 +1,6 @@
+pub mod classify;
+pub mod filter;
+
 /// Structural output compression + Maxwell information-theoretic gate.
 /// Zone truncation: keep first N lines, omit middle, keep last M
 pub fn zone_truncate(text: &str, head: usize, tail: usize) -> String {
@@ -356,7 +359,7 @@ mod tests {
     #[test]
     fn test_is_definition_line() {
         assert!(is_definition_line("fn hello()"));
-        assert!(is_definition_line("x = y")); // assignment IS a definition
+        assert!(is_definition_line("x = y"));
     }
     #[test]
     fn test_looks_like_content() {
@@ -378,7 +381,7 @@ mod tests {
         let text = "# this is a comment\n# another comment\nfn main() {}";
         let lines = classify_content(text);
         let r = compress_content(lines, false);
-        assert!(r.iter().any(|l| l.contains("this is a comment")), "non-aggressive mode should preserve first comment");
+        assert!(r.iter().any(|l| l.contains("this is a comment")));
     }
     #[test]
     fn test_truncate_long() {

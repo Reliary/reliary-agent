@@ -99,13 +99,16 @@ fn daemon_cmd_str(cmd: &str) -> String {
 }
 
 fn jsonl_log(entry: &serde_json::Value) {
-    let _lock = JSONL_LOCK.lock().ok();  // GUARDED: intentional
-    if let Ok(mut fh) = std::fs::OpenOptions::new()
-        .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
-    {
-        use std::io::Write;
-        let _ = writeln!(fh, "{}", serde_json::to_string(entry).unwrap_or_default());  // GUARDED: intentional
-    }
+    let entry_str = serde_json::to_string(entry).unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let _lock = JSONL_LOCK.lock().ok();  // GUARDED: intentional
+        if let Ok(mut fh) = std::fs::OpenOptions::new()
+            .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
+        {
+            use std::io::Write;
+            let _ = writeln!(fh, "{}", entry_str);  // GUARDED: intentional
+        }
+    });
 }
 
 // ── History Compression Components ──
@@ -114,11 +117,12 @@ fn jsonl_log(entry: &serde_json::Value) {
 // `content_cache`: maps content hash → compressed version.
 struct PerKeyState {
     content_cache: FxHashMap<u64, String>,
+    paused: bool,
 }
 
 impl PerKeyState {
     fn new() -> Self {
-        Self { content_cache: FxHashMap::default() }
+        Self { content_cache: FxHashMap::default(), paused: false }
     }
 
     /// Content hash for cache lookup.
@@ -216,8 +220,11 @@ fn compress_assistant_text(text: &str, dict: Option<&reliary_compress::Compressi
     }
 }
 
-// Full sift pipeline: zone truncate → command output collapse → content compress → Maxwell gate.
-// Handles any length, any content type (command output, file reads, search results, logs).
+// Full sift pipeline: adaptive content-type-aware compression.
+// 1. Classify lines with skeleton normalization (UUID→{uuid}, hex→{hash}, etc.)
+// 2. Detect output type (JSON/Diff/Tabular/Prefixed/Normal)
+// 3. Apply expert compression per type
+// 4. MaxwellGate entropy guard on result
 fn sift_compress_tool_result(content: &str) -> String {
     if content.len() < 200 { return content.to_string(); }
 
@@ -228,23 +235,40 @@ fn sift_compress_tool_result(content: &str) -> String {
         content.to_string()
     };
 
-    // Step 2: Command output (cargo/test/npm) — collapse repeated runs
-    let collapsed = reliary_output::compress_output(&working);
-    if collapsed.len() < working.len() {
-        return collapsed;
-    }
+    // Step 2: Classify lines (skeleton normalization, error/progress/summary detection)
+    let lines = reliary_sift::classify::classify(&working);
+    if lines.is_empty() { return working; }
 
-    // Step 3: File content — classify + compress (grammar-free byte DFA)
-    let lines = reliary_sift::classify_content(&working);
-    if reliary_sift::looks_like_content(&lines) {
-        let compressed = reliary_sift::compress_content(lines, true);
-        let result = compressed.join("\n");
-        if result.len() < working.len() {
-            return result;
+    // Step 3: Detect compression strategy
+    let raw_lines: Vec<(String, reliary_sift::classify::Line)> = lines.iter()
+        .map(|l| (l.text.clone(), l.clone()))
+        .collect();
+    let strategy = reliary_sift::classify::detect_strategy(&raw_lines);
+
+    // Step 4: Apply expert compression per strategy
+    let compressed = reliary_sift::filter::format_output(&lines, strategy);
+
+    // Step 5: If adaptive didn't help, fall through to existing mechanisms
+    if compressed.len() >= working.len() || compressed.is_empty() {
+        // Step 5a: Command output collapse (cargo/test)
+        let collapsed = reliary_output::compress_output(&working);
+        if collapsed.len() < working.len() {
+            return collapsed;
         }
+        // Step 5b: File content classify + compress
+        let clines = reliary_sift::classify_content(&working);
+        if reliary_sift::looks_like_content(&clines) {
+            let cc = reliary_sift::compress_content(clines, true);
+            let result = cc.join("\n");
+            if result.len() < working.len() {
+                return result;
+            }
+        }
+    } else {
+        return compressed;
     }
 
-    // Step 4: MaxwellGate — if information-dense, don't force compression
+    // Step 6: MaxwellGate — if information-dense, don't force compression
     let gate = reliary_sift::MaxwellGate::default();
     if gate.score(&working).is_none() {
         return working;
@@ -253,52 +277,11 @@ fn sift_compress_tool_result(content: &str) -> String {
     working
 }
 
-// Compress the assistant message in an API response body before returning to agent.
+// Compress the assistant message in a non-streaming API response body.
 // Parses JSON, finds choices[0].message.content, compresses, re-serializes.
-// For SSE: scans final data chunk for content field, compresses in-place.
-fn compress_response_body(body: &str, is_sse: bool) -> String {
+fn compress_response_body(body: &str) -> String {
     if body.len() < 500 { return body.to_string(); }
 
-    if is_sse {
-        // SSE: find the last data: line with content, compress it
-        let mut lines: Vec<String> = body.lines().map(|s| s.to_string()).collect();
-        for i in (0..lines.len()).rev() {
-            let line = &lines[i];
-            if !line.starts_with("data: ") { continue; }
-            let json_str = &line[6..];
-            if json_str == "[DONE]" { continue; }
-            if let Ok(mut v) = serde_json::from_str::<Value>(json_str) {
-                if let Some(choices) = v.get_mut("choices").and_then(|c| c.as_array_mut()) {
-                    if let Some(choice) = choices.first_mut() {
-                        // Try delta first, then message (streaming vs non-streaming format)
-                        let compressed_content: Option<String> = {
-                            let content = choice.get("delta")
-                                .and_then(|d| d.get("content"))
-                                .or_else(|| choice.get("message").and_then(|m| m.get("content")))
-                                .and_then(|c| c.as_str());
-                            if let Some(c) = content {
-                                if c.len() > 300 {
-                                    compress_assistant_text(c, COMPRESSION_DICT.as_ref())
-                                } else { None }
-                            } else { None }
-                        };
-                        if let Some(compressed) = compressed_content {
-                            if let Some(delta) = choice.get_mut("delta") {
-                                delta["content"] = Value::String(compressed);
-                            } else if let Some(msg) = choice.get_mut("message") {
-                                msg["content"] = Value::String(compressed);
-                            }
-                        }
-                    }
-                }
-                lines[i] = format!("data: {}", serde_json::to_string(&v).unwrap_or_else(|_| json_str.to_string()));
-                break;
-            }
-        }
-        return lines.join("\n");
-    }
-
-    // Non-streaming JSON response
     if let Ok(mut v) = serde_json::from_str::<Value>(body) {
         if let Some(choices) = v.get_mut("choices").and_then(|c| c.as_array_mut()) {
             if let Some(choice) = choices.first_mut() {
@@ -719,7 +702,9 @@ async fn proxy_post(
     let (history_saved, _aggressiveness) = {
         let mut guard = get_or_create_state(&auth_key);
         if let Some(state) = guard.get_mut(&auth_key) {
-            if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+            if state.paused {
+                (0, 0) // KV cache warming — skip compression to avoid cache busting
+            } else if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
                 compress_messages(messages, state)
             } else {
                 (0, 0)
@@ -820,7 +805,13 @@ async fn proxy_post(
                                 .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
                                 .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
                             if pt > 0 {
-                                let _paused = crate::novel_compress::feed_cache_metrics(&ak, hit_tokens, pt);
+                                let paused = crate::novel_compress::feed_cache_metrics(&ak, hit_tokens, pt);
+                                // Persist pause state to the global per-key store
+                                if let Ok(mut guard) = PER_KEY_STATE.lock() {
+                                    if let Some(psk) = guard.get_mut(&auth_key) {
+                                        psk.paused = paused;
+                                    }
+                                }
                             }
                         }
                     }
@@ -851,7 +842,7 @@ async fn proxy_post(
                     Ok(bytes) => {
                         let raw_str = String::from_utf8_lossy(&bytes).to_string();
                         // Compress response body before returning to agent
-                        let body_str = compress_response_body(&raw_str, false);
+                        let body_str = compress_response_body(&raw_str);
                         store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str, false);
 
                         jsonl_log(&serde_json::json!({
