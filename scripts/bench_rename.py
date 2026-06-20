@@ -40,7 +40,9 @@ def read_api_key():
 API_KEY = read_api_key()
 
 GATE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "pi", "gate.js"))
-RELIARY_BIN = (shutil.which("reliary-agent") or
+RELIARY_BIN = (os.path.join(os.path.dirname(__file__), "..", "target", "release", "reliary-agent") if
+               os.path.exists(os.path.join(os.path.dirname(__file__), "..", "target", "release", "reliary-agent"))
+               else shutil.which("reliary-agent") or
                os.path.join(os.environ.get("HOME", ""), "src/reliary-agent/target/release/reliary-agent"))
 REPO = "/tmp/bench_rename"
 
@@ -74,6 +76,23 @@ TURNS = [
     "Add 'validate_input' calls in ingest.py, transform.py, filter.py, export.py, and api.py before they call 'process_entry'. Also import it in each file. If a validation fails, skip that record.",
     "Run 'python3 -m pytest tests/ -v' one final time and report the full output.",
 ]
+
+def restart_daemon():
+    """Restart the daemon to flush response cache between conditions."""
+    subprocess.run([RELIARY_BIN, "stop"], capture_output=True, timeout=10)
+    time.sleep(1)
+    r = subprocess.run([RELIARY_BIN, "start"], capture_output=True, timeout=30)
+    assert r.returncode == 0, f"Daemon start failed: {r.stderr.decode()}"
+    time.sleep(2)
+    import urllib.request
+    for _ in range(10):
+        try:
+            r = urllib.request.urlopen("http://127.0.0.1:9090/health", timeout=3)
+            assert r.status == 200
+            return
+        except Exception:
+            time.sleep(1)
+    raise RuntimeError("Daemon not healthy after restart")
 
 def save_configs():
     for src, dst in [(SETTINGS, SETTINGS_BAK)]:
@@ -220,13 +239,8 @@ def run_condition(cond, run_idx):
 if __name__ == "__main__":
     runs = 3
 
-    import urllib.request
-    try:
-        r = urllib.request.urlopen("http://127.0.0.1:9090/health", timeout=3)
-        assert r.status == 200
-    except Exception:
-        print("ERROR: Daemon not ready on :9090")
-        sys.exit(1)
+    restart_daemon()
+    # Initial health check already covered by restart_daemon
 
     save_configs()
     print(f"Rename bench: {runs} runs × {len(CONDITIONS)} conditions = {runs * len(CONDITIONS)} sessions")
@@ -239,6 +253,7 @@ if __name__ == "__main__":
             order = list(CONDITIONS)
             random.shuffle(order)
             for cond in order:
+                restart_daemon()  # flush response cache between conditions
                 label = f"[r{ri}] {cond['label']}"
                 print(f"  {label}: ", end="", flush=True)
                 t0 = time.time()
