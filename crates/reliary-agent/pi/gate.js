@@ -32,7 +32,7 @@ function gateLog(level, msg) {
 }
 
 // ── Binary discovery (env var → PATH → hardcoded paths) ──
-let RELIARY_BIN = process.env.RELIARY_BIN_PATH || null;
+let RELIARY_BIN = process.env. || null;
 if (!RELIARY_BIN) {
   // Check PATH first
   try {
@@ -79,7 +79,7 @@ try {
 // ── Feature flags ──
 // Each can be disabled via RELIARY_FEATURES env var (e.g. "-healEdit,-convWindow")
 const FEATURES = {
-  healEdit: true,       // route edit/write/sed through heal-apply
+  healEdit: false,      // route edit/write/sed through heal-apply (+healEdit to enable)
   compress: true,       // inline reasoning compression
   convWindow: true,     // drop old verbose tool results
   readEnrichment: true, // compress non-target read results
@@ -120,7 +120,7 @@ function daemonCmd(cmd) {
 }
 
 // ── Daemon health check: verify binary exists (TCP check would require daemon running) ──
-let DAEMON_HEALTHY = true; // assume healthy — CLI fallback handles gracefully
+let  = true; // assume healthy — CLI fallback handles gracefully
 
 function cacheRead(path, hash, len) {
   return daemonCmd(`cache-read ${path} ${hash} ${len}`);

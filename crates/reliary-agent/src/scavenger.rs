@@ -57,7 +57,7 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
         };
 
         // WAL checkpoint: truncate the WAL file to reclaim disk space (passive mode blocks briefly).
-        let _ = chronicle_db.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        let _ = chronicle_db.execute_batch(" wal_checkpoint();");
 
         // edit_cache TTL sweep: delete entries older than 24h to bound table growth.
         let cutoff = std::time::SystemTime::now()
