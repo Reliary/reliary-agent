@@ -8,6 +8,9 @@ Requires: daemon running on :9090 with RELIARY_UPSTREAM_URL set
 """
 import json, os, subprocess, sys, time, random, shutil
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from bench_lib import cwd_prefix
+
 PI = os.path.expanduser("~/.local/bin/pi")
 SETTINGS = os.path.expanduser("~/.pi/agent/settings.json")
 MODELS = os.path.expanduser("~/.pi/agent/models.json")
@@ -106,6 +109,8 @@ def run_condition(feature_name, run_idx, env_overrides):
 
     total_pt = total_ct = total_tc = total_wt = 0.0
     for ti, task in enumerate(prompts):
+        if ti == 0:
+            task = cwd_prefix(REPO) + task
         t0 = time.time()
         model = os.environ.get("BENCH_MODEL", "deepseek/deepseek-v4-flash")
         r = subprocess.run([PI, "--model", model,

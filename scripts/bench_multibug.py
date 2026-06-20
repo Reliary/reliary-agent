@@ -1,6 +1,9 @@
 """Multi-turn bug-fix benchmark: 6 isolated bugs, interleaved baseline vs gate."""
 import json, os, subprocess, sys, time, re, shutil
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from bench_lib import cwd_prefix
+
 PI = os.path.expanduser("~/.local/bin/pi")
 GATE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "gate.js"))
 CORTEX_BIN = os.path.expanduser("~/.local/bin/cortex")
@@ -115,6 +118,8 @@ def run_turns(condition, run_idx, cortex_db=None):
     turn_data = []
 
     for ti, prompt in enumerate(P):
+        if ti == 0:
+            prompt = cwd_prefix(REPO) + prompt
         args = [PI, "--model", "deepseek/deepseek-v4-flash",
                 "--mode", "json", "--session", sfile, "--print", prompt]
         t0 = time.time()

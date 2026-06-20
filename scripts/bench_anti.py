@@ -20,6 +20,9 @@ the LLM avoids repeating known-bad identifier choices.
 import json, os, subprocess, sys, time, random
 from statistics import mean, stdev
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from bench_lib import cwd_prefix
+
 PI = os.path.expanduser("~/.local/bin/pi")
 REPO = os.path.expanduser("~/src/stria")
 PROXY_PORT = 9090
@@ -160,11 +163,14 @@ def run_session(prompts, sfile, anti_disabled, run_label):
     env["PI_DISABLE_HEARTBEAT"] = "1"
     env["DEEPSEEK_BASE_URL"] = f"http://127.0.0.1:{PROXY_PORT}/v1"
     if anti_disabled:
+        env["RELIARY_PROXY_ANTI_DISABLE"] = "1"
 
     total_pt = total_ct = total_tc = total_wt = 0.0
     turn_data = []
 
     for ti, prompt in enumerate(prompts):
+        if ti == 0:
+            prompt = cwd_prefix(REPO) + prompt
         t0 = time.time()
         args = [PI, "--model", "deepseek/deepseek-v4-flash",
                 "--mode", "json", "--session", sfile, "--print", prompt]

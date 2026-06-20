@@ -5,6 +5,9 @@ Usage: python3 bench_paired.py [runs=3]
 """
 import json, os, subprocess, sys, time, random
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from bench_lib import cwd_prefix
+
 PI = os.path.expanduser("~/.local/bin/pi")
 SETTINGS = os.path.expanduser("~/.pi/agent/settings.json")
 GATE = os.path.expanduser("~/src/reliary-agent/pi/gate.js")
@@ -84,6 +87,8 @@ def run_condition(cond, run_idx):
 
     total_pt = total_ct = total_tc = total_wt = 0.0
     for ti, task in enumerate(prompts):
+        if ti == 0:
+            task = cwd_prefix(REPO) + task
         t0 = time.time()
         model = os.environ.get("BENCH_MODEL", "deepseek/deepseek-v4-flash")
         r = subprocess.run([PI, "--model", model,

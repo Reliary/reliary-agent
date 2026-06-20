@@ -13,6 +13,9 @@ Conditions:
 """
 import json, os, subprocess, sys, time, random, shutil, urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from bench_lib import cwd_prefix
+
 PI = os.path.expanduser("~/.local/bin/pi")
 SETTINGS = os.path.expanduser("~/.pi/agent/settings.json")
 MODELS = os.path.expanduser("~/.pi/agent/models.json")
@@ -143,6 +146,8 @@ def run_condition(cond, run_idx):
     turn_results = []
 
     for ti, prompt in enumerate(TURNS):
+        if ti == 0:
+            prompt = cwd_prefix(REPO) + prompt
         t0 = time.time()
         r = subprocess.run(
             [PI, "--model", "deepseek/deepseek-v4-flash",

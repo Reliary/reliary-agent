@@ -126,6 +126,8 @@ def run_condition(cond, run_idx):
     turn_results = []
 
     for ti, prompt in enumerate(TURNS):
+        if ti == 0:
+            prompt = f"Working directory: {REPO}\nDo not add `cd` to bash commands — the working directory is already set.\n\n{prompt}"
         t0 = time.time()
         r = subprocess.run(
             [PI, "--model", "deepseek/deepseek-v4-flash",

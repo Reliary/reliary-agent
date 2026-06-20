@@ -12,6 +12,9 @@ Requires: daemon running on :9090 with RELIARY_UPSTREAM_URL set
 """
 import json, os, subprocess, sys, time, random, shutil
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from bench_lib import cwd_prefix
+
 PI = os.path.expanduser("~/.local/bin/pi")
 SETTINGS = os.path.expanduser("~/.pi/agent/settings.json")
 MODELS = os.path.expanduser("~/.pi/agent/models.json")
@@ -110,7 +113,9 @@ def check_test_status(repo):
                        capture_output=True, text=True, timeout=60, cwd=repo)
     return "FAILED" not in r.stdout and r.returncode == 0, r.stdout
 
-def run_turn(pid, sfile, prompt, env, cwd):
+def run_turn(pid, sfile, prompt, env, cwd, first_turn=False):
+    if first_turn:
+        prompt = cwd_prefix(cwd) + prompt
     t0 = time.time()
     r = subprocess.run(
         [pid, "--model", "deepseek/deepseek-v4-flash",
@@ -137,7 +142,7 @@ def run_condition(cond, run_idx):
     turn_results = []
 
     for ti, prompt in enumerate(TURNS):
-        pt, ct, tc, wt, texts = run_turn(PI, sfile, prompt, env, REPO)
+        pt, ct, tc, wt, texts = run_turn(PI, sfile, prompt, env, REPO, first_turn=(ti == 0))
         total_pt += pt
         total_ct += ct
         total_tc += tc
