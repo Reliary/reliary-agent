@@ -79,7 +79,7 @@ try {
 // ── Feature flags ──
 // Each can be disabled via RELIARY_FEATURES env var (e.g. "-healEdit,-convWindow")
 const FEATURES = {
-  healEdit: true,       // route edit/write/sed through heal-apply
+  healEdit: false,      // route edit/write/sed through heal-apply (+healEdit to enable)
   compress: true,       // inline reasoning compression
   convWindow: true,     // drop old verbose tool results
   readEnrichment: true, // compress non-target read results
