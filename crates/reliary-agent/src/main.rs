@@ -965,6 +965,10 @@ fn main() {
             }
         }
         Commands::Serve { port } => {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(4)
+                .build_global()
+                .unwrap_or(());  // ok if already initialized
             ux::write_pid_file();
             eprintln!("{} Reliary Agent v{}", color::bold(""), VERSION);
             eprintln!(
@@ -978,7 +982,11 @@ fn main() {
             let state = Arc::new(SessionState::new(
                 std::env::current_dir().unwrap_or_default().to_string_lossy().as_ref()
             ));
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .enable_all()
+                .build()
+                .unwrap();
             rt.block_on(async { crate::proxy::start(*port, Some(state)).await })
                 .unwrap_or_else(|e| error!("Server error: {}", e));
         }
@@ -1220,7 +1228,11 @@ fn main() {
             let state = Arc::new(SessionState::new(
                 std::env::current_dir().unwrap_or_default().to_string_lossy().as_ref()
             ));
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .enable_all()
+                .build()
+                .unwrap();
             rt.block_on(async { crate::proxy::start(9799, Some(state)).await })
                 .unwrap_or_else(|e| error!("Server error: {}", e));
         }

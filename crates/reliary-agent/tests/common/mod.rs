@@ -47,6 +47,7 @@ fn start_daemon_inner() -> DaemonGuard {
     let bin = binary_path();
     let mut child = Command::new(&bin)
         .arg("serve")
+        .env_remove("RELIARY_UPSTREAM_URL")  // Test isolation: don't accept unknown keys
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
