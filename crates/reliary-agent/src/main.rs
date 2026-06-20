@@ -17,6 +17,7 @@ mod config;
 mod init;
 mod ux;
 mod proxy;
+mod novel_compress;
 mod routes;
 mod guard;
 mod antidecision;
@@ -821,9 +822,11 @@ fn main() {
     let fmt = format_config(&cli.format);
     let cfg = reliary_core::FormatConfig::new(fmt);
 
-    // Validate config on startup (except for config/init/doctor commands)
+    // Validate config on startup — only for commands that touch the index or proxy.
+    // Lightweight commands (status, completions, man, --version) skip the disk read.
     match &cli.command {
-        Commands::Config { .. } | Commands::Init | Commands::Doctor { .. } => {}
+        Commands::Config { .. } | Commands::Init | Commands::Doctor { .. }
+        | Commands::Status | Commands::Completions { .. } | Commands::Man { outdir: _ } => {}
         _ => validate_config("."),
     }
 

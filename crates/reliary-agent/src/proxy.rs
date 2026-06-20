@@ -8,9 +8,11 @@ use axum::{
 };
 use bytes::Bytes;
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
+use std::collections::HashMap as StdHashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, LazyLock};
+use std::time::Instant;
 use serde_json::Value;
 use tracing::{info, warn, error};
 
@@ -30,19 +32,29 @@ static COMPRESSION_DICT: LazyLock<Option<reliary_compress::CompressionDict>> =
 // Synchronization for JSONL logging — prevents interleaved lines from concurrent requests.
 static JSONL_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-static RESPONSE_CACHE: LazyLock<Mutex<HashMap<u64, String>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static RESPONSE_CACHE: LazyLock<Mutex<FxHashMap<u64, String>>> =
+    LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
 static DAEMON_STATE: LazyLock<Mutex<Option<Arc<crate::session_state::SessionState>>>> =
     LazyLock::new(|| Mutex::new(None));
 
-fn get_state() -> Arc<crate::session_state::SessionState> {
+// Guard result cache: keyed by (file_path_hash, content_hash), 60s TTL.
+// Prevents redundant FTS5 queries on retry loops.
+struct GuardCacheEntry {
+    status: String,
+    inserted_at: Instant,
+}
+static GUARD_CACHE: LazyLock<Mutex<FxHashMap<u64, GuardCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(FxHashMap::default()));
+
+pub fn get_state() -> Arc<crate::session_state::SessionState> {
     let guard = DAEMON_STATE.lock().unwrap_or_else(|e| e.into_inner());
     guard.clone().unwrap_or_else(|| Arc::new(crate::session_state::SessionState::new(".")))
 }
 
 fn cache_key(auth: &str, body: &str, is_streaming: bool) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    use rustc_hash::FxHasher;
+    let mut h = FxHasher::default();
     auth.hash(&mut h);
     body.hash(&mut h);
     is_streaming.hash(&mut h);
@@ -101,28 +113,28 @@ fn jsonl_log(entry: &serde_json::Value) {
 // Per-auth-key state — first-appearance freeze cache.
 // `content_cache`: maps content hash → compressed version.
 struct PerKeyState {
-    content_cache: HashMap<u64, String>,
+    content_cache: FxHashMap<u64, String>,
 }
 
 impl PerKeyState {
     fn new() -> Self {
-        Self { content_cache: HashMap::new() }
+        Self { content_cache: FxHashMap::default() }
     }
 
     /// Content hash for cache lookup.
     fn content_hash(content: &str) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
+        use rustc_hash::FxHasher;
+        let mut h = FxHasher::default();
         content.hash(&mut h);
         h.finish()
     }
 }
 
 // Global per-auth-key state store
-static PER_KEY_STATE: LazyLock<Mutex<HashMap<String, PerKeyState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static PER_KEY_STATE: LazyLock<Mutex<FxHashMap<String, PerKeyState>>> =
+    LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
-fn get_or_create_state(auth_key: &str) -> std::sync::MutexGuard<'static, HashMap<String, PerKeyState>> {
+fn get_or_create_state(auth_key: &str) -> std::sync::MutexGuard<'static, FxHashMap<String, PerKeyState>> {
     let mut guard = PER_KEY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     guard.entry(auth_key.to_string()).or_insert_with(PerKeyState::new);
     guard
@@ -312,6 +324,10 @@ fn compress_response_body(body: &str, is_sse: bool) -> String {
 // has cached from the start.
 fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize, usize) {
     let mut history_saved: usize = 0;
+
+    // Turn 1 has only system + user message(s) — nothing to compress
+    if messages.len() <= 2 { return (0, 0); }
+
     for msg in messages.iter_mut() {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
 
@@ -335,10 +351,43 @@ fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize,
 
         // First occurrence: compress and cache
         let compressed = match role {
-            "assistant" => compress_assistant_text(&content, COMPRESSION_DICT.as_ref()),
+            "assistant" => {
+                let existing = compress_assistant_text(&content, COMPRESSION_DICT.as_ref());
+                // Novel mechanisms (Maxwell, DSL) — disabled via RELIARY_PROXY_NOVEL_COMPRESS=0
+                let novel_disabled = std::env::var("RELIARY_PROXY_NOVEL_COMPRESS").is_ok_and(|v| v == "0");
+                if !novel_disabled {
+                    let maxwell = crate::novel_compress::maxwell_compress(&content, 50.0);
+                    let state_dsl = crate::novel_compress::extract_dialogue_state(&content);
+                    let mut best: Option<(String, usize)> = existing.clone().map(|c| { let s = content.len().saturating_sub(c.len()); (c, s) });
+                    if let Some(c) = &maxwell {
+                        let s = content.len().saturating_sub(c.len());
+                        if best.as_ref().is_none_or(|b| s > b.1) { best = Some((c.clone(), s)); }
+                    }
+                    if let Some(c) = &state_dsl {
+                        let s = content.len().saturating_sub(c.len());
+                        if best.as_ref().is_none_or(|b| s > b.1) { best = Some((c.clone(), s)); }
+                    }
+                    best.map(|(c, _)| c)
+                } else {
+                    existing
+                }
+            }
             "tool" | "toolResult" => {
                 let sifted = sift_compress_tool_result(&content);
-                if sifted.len() < content.len() { Some(sifted) } else { None }
+                let sifted_opt = if sifted.len() < content.len() { Some(sifted) } else { None };
+                // Novel mechanism (invariant hoisting) — disabled via RELIARY_PROXY_NOVEL_COMPRESS=0
+                let novel_disabled = std::env::var("RELIARY_PROXY_NOVEL_COMPRESS").is_ok_and(|v| v == "0");
+                if !novel_disabled {
+                    let hoisted = crate::novel_compress::hoist_json_invariants(&content);
+                    let mut best: Option<(String, usize)> = sifted_opt.clone().map(|c| { let s = content.len().saturating_sub(c.len()); (c, s) });
+                    if let Some(c) = &hoisted {
+                        let s = content.len().saturating_sub(c.len());
+                        if best.as_ref().is_none_or(|b| s > b.1) { best = Some((c.clone(), s)); }
+                    }
+                    best.map(|(c, _)| c)
+                } else {
+                    sifted_opt
+                }
             }
             _ => None,
         };
@@ -366,29 +415,29 @@ async fn ping() -> &'static str { "pong" }
 
 // ── Daemon GET routes ──
 
-async fn search_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn search_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let q = params.get("q").map(|s| s.as_str()).unwrap_or("");
     let p = params.get("path").map(|s| s.as_str()).unwrap_or(".");
     daemon_cmd_str(&format!("search {} {}", q, p))
 }
 
-async fn risk_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn risk_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let f = params.get("file").map(|s| s.as_str()).unwrap_or("");
     daemon_cmd_str(&format!("risk {}", f))
 }
 
-async fn compress_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn compress_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let t = params.get("text").map(|s| s.as_str()).unwrap_or("");
     daemon_cmd_str(&format!("compress {}", t))
 }
 
-async fn veto_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn veto_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let f = params.get("file").map(|s| s.as_str()).unwrap_or("");
     let t = params.get("text").map(|s| s.as_str()).unwrap_or("");
     daemon_cmd_str(&format!("veto {} {}", f, t))
 }
 
-async fn muzzle_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn muzzle_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let st = params.get("state").map(|s| s.as_str()).unwrap_or("");
     let s = get_state();
     match st {
@@ -398,19 +447,19 @@ async fn muzzle_handler(Query(params): Query<HashMap<String, String>>) -> String
     }
 }
 
-async fn prior_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn prior_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let p = params.get("path").map(|s| s.as_str()).unwrap_or(".");
     daemon_cmd_str(&format!("prior {}", p))
 }
 
-async fn read_summary_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn read_summary_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let f = params.get("file").map(|s| s.as_str()).unwrap_or("");
     daemon_cmd_str(&format!("read-summary {}", f))
 }
 
 async fn status_handler() -> &'static str { "ok\n" }
 
-async fn who_calls_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn who_calls_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let file = params.get("file").map(|s| s.as_str()).unwrap_or("");
     let identifier = params.get("identifier").map(|s| s.as_str()).unwrap_or("");
     if file.is_empty() || identifier.is_empty() {
@@ -491,19 +540,54 @@ async fn proxy_post(
             if let Some(last) = messages.last() {
                 if last.get("role").and_then(|r| r.as_str()) == Some("assistant") {
                     let content = last.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                    // Scan for edit tool calls in JSON content
-                    if content.contains("\"edit\"") || content.contains("\"apply-edit\"") {
+                    let has_edit = content.contains("\"edit\"") || content.contains("\"apply-edit\"")
+                        || content.contains("\"write\"")
+                        || content.contains("sed -i");
+                    // Check tool_calls array for edit/write function names
+                    let has_edit_tool = last.get("tool_calls")
+                        .and_then(|tc| tc.as_array())
+                        .map(|calls| calls.iter().any(|tc| {
+                            tc.get("function")
+                                .and_then(|f| f.get("name"))
+                                .and_then(|n| n.as_str())
+                                .map(|n| n == "edit" || n == "write" || n == "sed")
+                                .unwrap_or(false)
+                        }))
+                        .unwrap_or(false);
+                    if has_edit || has_edit_tool {
                         if let Some((file_path, new_text)) = extract_edit_from_assistant(content) {
                             if let Some((root, index_path, _)) = crate::daemon::find_reliary_root(&file_path) {
                                 let rel_paths = resolve_index_paths(&file_path, &root);
                                 for rp in &rel_paths {
-                                    let guard_result = crate::guard::check_diff(&index_path, rp, &new_text);
-                                    if guard_result.get("status").and_then(|s| s.as_str()) != Some("clean") {
-                                        // Inject guard warning as user message
-                                        let n_warnings = guard_result.get("warnings").and_then(|w| w.as_array()).map(|a| a.len()).unwrap_or(0);
+                                    // Guard result cache: skip FTS5 query for repeated same-content edits
+                                    let mut cache_key_hasher = rustc_hash::FxHasher::default();
+                                    rp.hash(&mut cache_key_hasher);
+                                    new_text.hash(&mut cache_key_hasher);
+                                    let gk = cache_key_hasher.finish();
+                                    let cached_status = GUARD_CACHE.lock().ok().and_then(|mut c| {
+                                        if let Some(entry) = c.get(&gk) {
+                                            if entry.inserted_at.elapsed() < std::time::Duration::from_secs(60) {
+                                                return Some(entry.status.clone());
+                                            }
+                                        }
+                                        c.remove(&gk);
+                                        None
+                                    });
+                                    let guard_status = match cached_status {
+                                        Some(s) => s,
+                                        None => {
+                                            let result = crate::guard::check_diff(&index_path, rp, &new_text);
+                                            let status = result.get("status").and_then(|s| s.as_str()).unwrap_or("error").to_string();
+                                            if let Ok(mut c) = GUARD_CACHE.lock() {
+                                                c.insert(gk, GuardCacheEntry { status: status.clone(), inserted_at: std::time::Instant::now() });
+                                            }
+                                            status
+                                        }
+                                    };
+                                    if guard_status != "clean" {
                                         messages.push(serde_json::json!({
                                             "role": "user",
-                                            "content": format!("[guard: {} potential issues in {} - verify cross-file references]", n_warnings, rp)
+                                            "content": format!("[guard: potential cross-file reference issues in {} - verify]", rp)
                                         }));
                                         break;
                                     }
@@ -583,13 +667,13 @@ async fn proxy_post(
 
     // Dedup identical messages (catches agent duplication bugs)
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
-        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut seen: rustc_hash::FxHashSet<u64> = rustc_hash::FxHashSet::default();
         let mut to_remove: Vec<usize> = Vec::new();
         for (i, msg) in messages.iter().enumerate() {
             let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
             let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
             if role.is_empty() || content.is_empty() { continue; }
-            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let mut h = rustc_hash::FxHasher::default();
             role.hash(&mut h);
             content.hash(&mut h);
             let key = h.finish();
@@ -658,62 +742,95 @@ async fn proxy_post(
     let hdr_history_saved = history_saved.to_string();
 
     match req_builder.send().await {
-        Ok(upstream_resp) => {
+        Ok(mut upstream_resp) => {
             if is_streaming {
-                // SSE streaming: buffer the full upstream response, emit as a single chunk.
-                // SSE is line-delimited text — parsers are chunk-agnostic, so sending the
-                // entire body at once works identically to true streaming.
-                // The mpsc channel approach lost the final [DONE] chunk under TCP timing.
+                // True SSE streaming: forward chunks as they arrive.
+                // Uses reqwest::Response::chunk() loop → tokio::mpsc → axum Body::from_stream.
+                // This preserves time-to-first-token (~500ms) instead of buffering.
+                let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::convert::Infallible>>(32);
                 let ak = auth_key.clone();
-                match upstream_resp.bytes().await {
-                    Ok(body) => {
-                        // Parse usage from buffered body
-                        let text = String::from_utf8_lossy(&body);
-                        if text.contains("\"usage\"") {
-                            let pt = text.split("\"prompt_tokens\":").nth(1)
-                                .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
-                                .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-                            let ct = text.split("\"completion_tokens\":").nth(1)
-                                .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
-                                .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-                            jsonl_log(&serde_json::json!({
-                                "event": "stream_usage",
-                                "auth_prefix": &ak[..ak.len().min(12)],
-                                "prompt_tokens": pt,
-                                "completion_tokens": ct,
-                            }));
-                        }
 
-                        // Compress response body (SSE) before returning to agent
-                        let compressed_body = compress_response_body(&String::from_utf8_lossy(&body), true);
-                        // Store in response cache for future identical requests
-                        if let Ok(msg_str) = serde_json::to_string(&payload.get("messages").unwrap_or(&Value::Null)) {
-                            store_response(&auth_key, &msg_str, &compressed_body, true);
+                tokio::spawn(async move {
+                    let mut total_bytes = Vec::new();
+                    let mut last_chunk_with_usage = String::new();
+                    loop {
+                        match upstream_resp.chunk().await {
+                            Ok(Some(chunk)) => {
+                                // Track for usage parsing and response cache
+                                let chunk_str = String::from_utf8_lossy(&chunk);
+                                // Stream-aware prefetch: extract file paths from live chunks
+                                if !std::env::var("RELIARY_PROXY_PREFETCH").is_ok_and(|v| v == "0") {
+                                    crate::novel_compress::try_prefetch(&chunk_str);
+                                }
+                                if chunk_str.contains("\"usage\"") || chunk_str.contains("\"prompt_tokens\"") {
+                                    last_chunk_with_usage = chunk_str.to_string();
+                                }
+                                total_bytes.extend_from_slice(&chunk);
+                                // Forward immediately
+                                if tx.send(Ok(chunk)).await.is_err() {
+                                    break; // Client disconnected
+                                }
+                            }
+                            Ok(None) => break, // Stream complete
+                            Err(e) => {
+                                tracing::warn!("upstream stream chunk error: {}", e);
+                                break;
+                            }
                         }
-                        let body_bytes_resp = compressed_body.into_bytes();
-                        let body_len = body_bytes_resp.len();
-                        let body_stream = futures_util::stream::once(
-                            async move { Ok::<_, std::convert::Infallible>(body_bytes_resp) }
-                        );
-                        let mut resp = axum::response::Response::new(
-                            axum::body::Body::from_stream(body_stream)
-                        );
-                        resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
-                        resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
-                        if let Ok(hv) = header::HeaderValue::from_str(&hdr_history_saved) {
-                            resp.headers_mut().insert("x-reliaty-history-saved", hv);
+                    }
+                    // Channel drop signals stream end to axum
+
+                    // Parse usage from the buffered final chunk (or full body)
+                    let usage_text = if !last_chunk_with_usage.is_empty() {
+                        last_chunk_with_usage.as_str()
+                    } else {
+                        &String::from_utf8_lossy(&total_bytes)
+                    };
+                    if usage_text.contains("\"usage\"") {
+                        let pt = usage_text.split("\"prompt_tokens\":").nth(1)
+                            .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                            .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                        let ct = usage_text.split("\"completion_tokens\":").nth(1)
+                            .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                            .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                        jsonl_log(&serde_json::json!({
+                            "event": "stream_usage",
+                            "auth_prefix": &ak[..ak.len().min(12)],
+                            "prompt_tokens": pt,
+                            "completion_tokens": ct,
+                        }));
+                        // Cache-hit feedback loop
+                        if !std::env::var("RELIARY_PROXY_CACHE_FEEDBACK").is_ok_and(|v| v == "0") {
+                            let hit_tokens = usage_text.split("\"prompt_cache_hit_tokens\":").nth(1)
+                                .and_then(|s| s.trim_start().split(|c: char| !c.is_ascii_digit()).next())
+                                .and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                            if pt > 0 {
+                                let _paused = crate::novel_compress::feed_cache_metrics(&ak, hit_tokens, pt);
+                            }
                         }
-                        resp.headers_mut().insert(
-                            "x-reliaty-body-bytes",
-                            header::HeaderValue::from_str(&body_len.to_string()).unwrap(),
-                        );
-                        resp
                     }
-                    Err(e) => {
-                        tracing::error!("upstream body error: {}", e);
-                        (StatusCode::BAD_GATEWAY, "upstream body error").into_response()
+
+                    // Cache the full body (best-effort — skips if serialization fails)
+                    if let Ok(msg_str) = serde_json::to_string(&payload.get("messages").unwrap_or(&Value::Null)) {
+                        store_response(&auth_key, &msg_str, &String::from_utf8_lossy(&total_bytes), true);
                     }
+                });
+
+                let body_len_hdr = "streaming".to_string();
+                let mut resp = axum::response::Response::new(
+                    axum::body::Body::from_stream(
+                        tokio_stream::wrappers::ReceiverStream::new(rx)
+                    )
+                );
+                resp.headers_mut().insert("content-type", header::HeaderValue::from_static("text/event-stream"));
+                resp.headers_mut().insert("cache-control", header::HeaderValue::from_static("no-cache"));
+                if let Ok(hv) = header::HeaderValue::from_str(&hdr_history_saved) {
+                    resp.headers_mut().insert("x-reliaty-history-saved", hv);
                 }
+                if let Ok(hv) = header::HeaderValue::from_str(&body_len_hdr) {
+                    let _ = hv; // Header value reserved for future use
+                }
+                resp
             } else {
                 match upstream_resp.bytes().await {
                     Ok(bytes) => {
@@ -799,7 +916,7 @@ fn resolve_index_paths(file_path: &str, root: &str) -> Vec<String> {
 }
 
 // GET /check-diff — check a proposed edit for structural issues.
-async fn check_diff_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn check_diff_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let file_path = params.get("file").map(|s| s.as_str()).unwrap_or("");
     let new_content = params.get("content").map(|s| s.as_str()).unwrap_or("");
     if file_path.is_empty() || new_content.is_empty() {
@@ -824,7 +941,7 @@ async fn check_diff_handler(Query(params): Query<HashMap<String, String>>) -> St
 }
 
 // GET /read-validated — warn about externally-referenced identifiers before editing.
-async fn read_validated_handler(Query(params): Query<HashMap<String, String>>) -> String {
+async fn read_validated_handler(Query(params): Query<StdHashMap<String, String>>) -> String {
     let file_path = params.get("file").map(|s| s.as_str()).unwrap_or("");
     if file_path.is_empty() {
         return "{\"error\": \"missing file param\"}".to_string();

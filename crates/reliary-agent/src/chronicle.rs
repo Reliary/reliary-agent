@@ -182,8 +182,12 @@ pub fn build_prior(workdir: &str) -> String {
         }
         
         let mut blocked_identifiers = Vec::new();
-        if let Ok(mut stmt) = db.prepare("SELECT detail, COUNT(*) as c FROM chronicle WHERE event = 'veto' GROUP BY detail HAVING c >= 2") {
-            if let Ok(mut rows) = stmt.query([]) {
+        let veto_cutoff = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64 - 7 * 86400; // 7-day window
+        if let Ok(mut stmt) = db.prepare("SELECT detail, COUNT(*) as c FROM chronicle WHERE event = 'veto' AND t >= ?1 GROUP BY detail HAVING c >= 2") {
+            if let Ok(mut rows) = stmt.query(rusqlite::params![veto_cutoff]) {
                 while let Ok(Some(row)) = rows.next() {
                     if let Ok(ident) = row.get::<_, String>(0) {
                         blocked_identifiers.push(ident);
