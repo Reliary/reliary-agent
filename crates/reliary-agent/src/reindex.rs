@@ -70,7 +70,9 @@ fn file_modified(p: &Path) -> u64 {
 fn walkdir(dir: &str) -> Result<Vec<std::path::PathBuf>, String> {
     let mut files = Vec::new();
     let mut stack = vec![std::path::PathBuf::from(dir)];
-    let skip_dirs = [".git", ".reliary", "node_modules", "target", "__pycache__", ".venv"];
+    let skip_dirs = [".git", ".reliary", "node_modules", "target", "__pycache__",
+        ".venv", ".cargo", ".rustup", ".npm", ".cache", ".local", "venv",
+        ".next", "dist", "build", "vendor", "bundle", ".bundle"];
 
     while let Some(path) = stack.pop() {
         if let Ok(entries) = std::fs::read_dir(&path) {

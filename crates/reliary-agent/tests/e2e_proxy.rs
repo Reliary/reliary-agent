@@ -81,6 +81,8 @@ fn e2e_auth_routing() {
     let client = common::http_client();
 
     // Unknown key -> 403
+    // NOTE: The daemon is spawned with RELIARY_UPSTREAM_URL removed (see common/mod.rs)
+    // so unknown keys are rejected even if the developer has the env var set.
     let resp = client
         .post("http://127.0.0.1:9090/v1/chat/completions")
         .header("Authorization", "Bearer sk-fake-key-xxxxx")

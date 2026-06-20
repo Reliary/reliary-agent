@@ -2,7 +2,7 @@ const { execFileSync, spawnSync } = require("child_process");
 const { existsSync, readFileSync, readdirSync, statSync, unlinkSync } = require("fs");
 const { createHash } = require("crypto");
 
-const GATE_VERSION = "2.6.0";
+const GATE_VERSION = "0.6.5";
 
 // ── Log levels (matching RELIARY_LOG convention) ──
 const LOG_LEVELS = { error: 1, warn: 2, info: 3, debug: 4, trace: 5 };
