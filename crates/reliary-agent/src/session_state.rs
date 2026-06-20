@@ -50,15 +50,17 @@ impl SessionState {
 
     pub fn read_cache_set(&self, path: String, entry: ReadCacheEntry) {
         let mut cache = self.read_cache.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.len() >= READ_CACHE_MAX {
-            // Evict oldest half
-            let evict = cache.len() / 2;
-            let mut removed = 0;
-            cache.retain(|_, _| {
-                removed += 1;
-                removed > evict
-            });
-        }
+        // On insert, touch existing entry to update insertion order for LRU-like behavior.
+        // FxHashMap doesn't preserve order, so we use remove+reinsert as a poor-man's LRU.
+        if (cache.remove(&path).is_some() || cache.len() >= READ_CACHE_MAX)
+            && cache.len() >= READ_CACHE_MAX {
+                // Evict oldest half (by arbitrary order — true LRU needs LinkedHashMap)
+                let evict = cache.len() / 2;
+                let keys: Vec<String> = cache.keys().cloned().collect();
+                for k in keys.iter().take(evict) {
+                    cache.remove(k);
+                }
+            }
         cache.insert(path, entry);
     }
 
@@ -74,19 +76,21 @@ impl SessionState {
 
     pub fn risk_cache_set(&self, path: String, risk: String) {
         let mut cache = self.risk_cache.lock().unwrap_or_else(|e| e.into_inner());
-        // Evict expired entries
         let now = Instant::now();
-        cache.retain(|_, (_, t)| now.duration_since(*t) < RISK_CACHE_TTL);
-        // Evict oldest half if still too large
+        // Periodic sweep: only evict expired entries every 20 inserts, not every write.
+        // This avoids the O(n) retain scan on every single insert.
+        if cache.len().is_multiple_of(20) {
+            cache.retain(|_, (_, t)| now.duration_since(*t) < RISK_CACHE_TTL);
+        }
+        // Evict oldest half if too large
         if cache.len() >= RISK_CACHE_MAX {
             let evict = cache.len() / 2;
-            let mut removed = 0;
-            cache.retain(|_, _| {
-                removed += 1;
-                removed > evict
-            });
+            let keys: Vec<String> = cache.keys().cloned().collect();
+            for k in keys.iter().take(evict) {
+                cache.remove(k);
+            }
         }
-        cache.insert(path, (risk, Instant::now()));
+        cache.insert(path, (risk, now));
     }
 
     /// Check if scavenger should run (not muzzled, or muzzle expired)

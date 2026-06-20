@@ -1298,7 +1298,6 @@ version = "0.6.5"
 dependencies = [
  "ahash",
  "regex",
- "regex-lite",
 ]
 
 [[package]]

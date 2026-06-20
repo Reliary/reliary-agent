@@ -40,6 +40,19 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
             Err(_) => continue,
         };
 
+        // WAL checkpoint: truncate the WAL file to reclaim disk space (passive mode blocks briefly).
+        let _ = chronicle_db.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+
+        // edit_cache TTL sweep: delete entries older than 24h to bound table growth.
+        let cutoff = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64 - 86400;
+        let _ = chronicle_db.execute(
+            "DELETE FROM edit_cache WHERE timestamp < ?1",
+            rusqlite::params![cutoff],
+        );
+
         // Process candidates sequentially (heal calls need serial DB)
         for c in candidates.iter() {
             if c.confidence != reliary_dead::Confidence::High { continue; }
