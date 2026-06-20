@@ -2,9 +2,27 @@
 //! Uses Rayon for parallel parsing and FxHashMap for speed.
 
 use rusqlite::{params, Connection};
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 use rustc_hash::FxHashMap;
 use rayon::prelude::*;
+
+/// Common build/dependency/cache directories that should never be indexed.
+/// Filtering at the WalkDir level (rather than per-file) keeps the directory
+/// tree from being descended at all — critical for WSL2 / 9p performance.
+const SKIP_DIRS: &[&str] = &[
+    "target", "node_modules", ".venv", "venv", "env", "__pycache__",
+    "dist", "build", "out", ".next", ".nuxt", ".cache", ".parcel-cache",
+    "vendor", "bundle", ".git", ".hg", ".svn", ".cargo", ".rustup",
+    ".npm", ".pnpm", ".yarn", ".local", "Library",
+];
+
+/// Returns true if this directory entry should be skipped entirely (descendants too).
+pub fn is_filtered_dir(entry: &DirEntry) -> bool {
+    if !entry.file_type().is_dir() { return false; }
+    let name = entry.file_name().to_string_lossy();
+    if name.starts_with('.') && name != "." { return true; } // hidden dirs (already covered)
+    SKIP_DIRS.iter().any(|&d| d == name)
+}
 
 use crate::schema::{classify_line, pack_flags, pack_line_nos};
 use crate::{scan_identifiers, porter_stem};
@@ -21,7 +39,10 @@ struct FileResult {
 /// Index all supported files in a directory. Returns file count.
 pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
     let mut paths = Vec::new();
-    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {  // GUARDED: intentional
+    for entry in WalkDir::new(dir).into_iter()
+        .filter_entry(|e| !is_filtered_dir(e))
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path();
         if !path.is_file() { continue; }
 

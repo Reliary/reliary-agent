@@ -30,32 +30,8 @@ use std::time::Duration;
 use tracing::{info, error};
 use crate::session_state::SessionState;
 
-/// Simple ANSI color helpers — respects NO_COLOR env var
-#[allow(dead_code)]
-mod color {
-    fn no_color() -> bool {
-        std::env::var("NO_COLOR").is_ok() || std::env::var("TERM").map(|t| t == "dumb").unwrap_or(false)
-    }
-    pub fn green(s: &str) -> String {
-        if no_color() { s.to_string() } else { format!("\x1b[32m{}\x1b[0m", s) }
-    }
-    pub fn red(s: &str) -> String {
-        if no_color() { s.to_string() } else { format!("\x1b[31m{}\x1b[0m", s) }
-    }
-    pub fn yellow(s: &str) -> String {
-        if no_color() { s.to_string() } else { format!("\x1b[33m{}\x1b[0m", s) }
-    }
-    pub fn bold(s: &str) -> String {
-        if no_color() { s.to_string() } else { format!("\x1b[1m{}\x1b[0m", s) }
-    }
-    pub fn dim(s: &str) -> String {
-        if no_color() { s.to_string() } else { format!("\x1b[2m{}\x1b[0m", s) }
-    }
-    pub fn reset(_s: &str) -> String {
-        if no_color() { String::new() } else { "\x1b[0m".to_string() }
-    }
-    pub fn is_enabled() -> bool { !no_color() }
-}
+/// ANSI color helpers — respects NO_COLOR env var. Defined in `color.rs`.
+pub(crate) mod color;
 
 #[cfg(test)]
 mod tests {
@@ -710,6 +686,19 @@ fn validate_config(workdir: &str) {
     }
 }
 
+/// Skip common build/dependency/cache directories during dead-code scanning.
+/// Mirrors reliary_search::ingest::is_filtered_dir — kept in sync via test.
+fn is_dead_skip_dir(entry: &walkdir::DirEntry) -> bool {
+    if !entry.file_type().is_dir() { return false; }
+    let name = entry.file_name().to_string_lossy();
+    if name.starts_with('.') && name != "." { return true; }
+    matches!(name.as_ref(),
+        "target" | "node_modules" | ".venv" | "venv" | "env" | "__pycache__" |
+        "dist" | "build" | "out" | ".next" | ".nuxt" | ".cache" | ".parcel-cache" |
+        "vendor" | "bundle" | "Library"
+    )
+}
+
 fn do_trust(path: &str) {
     let reliary_dir = std::path::PathBuf::from(path).join(".reliary");
     if reliary_dir.exists() {
@@ -1100,7 +1089,11 @@ fn main() {
                 let mut files = Vec::new();
                 let path_buf = std::path::PathBuf::from(path);
                 if path_buf.is_dir() {
-                    for entry in walkdir::WalkDir::new(&path_buf).into_iter().filter_map(|e| e.ok()) {
+                    for entry in walkdir::WalkDir::new(&path_buf)
+                        .into_iter()
+                        .filter_entry(|e| !is_dead_skip_dir(e))
+                        .filter_map(|e| e.ok())
+                    {
                         let p = entry.path();
                         if p.is_file() {
                             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");

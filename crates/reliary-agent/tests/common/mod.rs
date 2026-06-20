@@ -77,6 +77,8 @@ pub fn start_daemon() -> &'static DaemonGuard {
     get_shared_daemon()
 }
 
+/// Load the first usable API key from Pi's models.json. Tries common provider
+/// names in priority order. Returns None if Pi config missing or no real key.
 pub fn load_api_key() -> Option<String> {
     let pi_config = dirs::home_dir()
         .map(|h| h.join(".pi/agent/models.json"))?;
@@ -85,11 +87,31 @@ pub fn load_api_key() -> Option<String> {
     }
     let content = std::fs::read_to_string(pi_config).ok()?;
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let key = json["providers"]["deepinfra"]["apiKey"].as_str()?.to_string();
-    if key.is_empty() || key == "YOUR_API_KEY" {
-        return None;
+    let providers = json.get("providers")?.as_object()?;
+    // Priority order: most-common modern providers first, then legacy
+    let priority = [
+        "deepseek", "deepinfra", "openai", "anthropic", "openrouter",
+        "groq", "mistral", "google", "ollama",
+    ];
+    for name in priority {
+        if let Some(key) = providers.get(name)
+            .and_then(|p| p.get("apiKey"))
+            .and_then(|k| k.as_str())
+        {
+            if !key.is_empty() && key != "YOUR_API_KEY" {
+                return Some(key.to_string());
+            }
+        }
     }
-    Some(key)
+    // Fallback: first provider with a non-empty key
+    for (_name, provider) in providers {
+        if let Some(key) = provider.get("apiKey").and_then(|k| k.as_str()) {
+            if !key.is_empty() && key != "YOUR_API_KEY" {
+                return Some(key.to_string());
+            }
+        }
+    }
+    None
 }
 
 pub fn binary_path() -> PathBuf {

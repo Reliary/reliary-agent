@@ -107,8 +107,8 @@ reliary-agent doctor            # Check gate.js is installed
 reliary-agent status            # Check proxy is running
 ```
 Then check your Pi session -- you should see gate.js loading at startup and the
-proxy logging API calls to `/tmp/reliary_proxy.jsonl` (or the RELIARY_LOG_FILE
-path).
+proxy logging API calls to `/tmp/reliary_proxy.jsonl`. View aggregated metrics
+with `reliary-agent proxy-stats [--since 1h] [--format json]`.
 
 **Common pitfalls:**
 - If `*_BASE_URL` is not set, Pi bypasses the proxy and no compression happens
@@ -398,8 +398,10 @@ system.
 | `RELIARY_MODE=strict` | Full sandbox -- transparently redirects risky commands (default) |
 | `RELIARY_FEATURES=+editMerge,-healEdit` | Toggle individual features |
 | `RELIARY_UPSTREAM_URL=https://api.openai.com/v1` | Default upstream for unknown API keys |
-| `RELIARY_PROXY_GUARD_DISABLE=1` | Disable cross-file edit safety |
-| `RELIARY_PROXY_ANTI_DISABLE=1` | Disable Anti-decision memory |
+| `RELIARY_PROXY_GUARD_DISABLE=1` | Disable cross-file edit safety (on by default) |
+| `RELIARY_PROXY_FEATURE_ANTI=1` | Enable Anti-decision memory (off by default) |
+| `RELIARY_PROXY_NOVEL_COMPRESS=0` | Disable first-appearance freeze + novel mechanisms (on by default) |
+| `RELIARY_PROXY_WC_RATIO=2` | Output token weight for `proxy-stats` (DeepSeek V4 Flash 1:2) |
 
 ### Features
 

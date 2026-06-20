@@ -1,10 +1,9 @@
 #![allow(dead_code)]
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tracing::{info, warn, error};
+use tracing::warn;
 use std::sync::{Arc, LazyLock};
 use crate::session_state::SessionState;
 
@@ -378,52 +377,4 @@ fn append_chronicle(file: &str, event: &str, detail: &str, outcome: &str) {
             crate::chronicle::append(&db, event, file, detail, outcome);
         }
     }
-}
-
-pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
-    // Initialize session state
-    let state = if workdir == "." {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        Arc::new(SessionState::new(cwd.to_string_lossy().as_ref()))
-    } else {
-        Arc::new(SessionState::new(workdir))
-    };
-
-    // Start scavenger thread
-    let scavenger_state = Arc::clone(&state);
-    if let Err(e) = std::thread::Builder::new()
-        .name("scavenger".into())
-        .spawn(move || crate::scavenger::scavenger_loop(scavenger_state))
-    {
-        error!("scavenger thread: {}", e);
-    }
-
-    let connections = Arc::new(AtomicUsize::new(0));
-
-    let addr = format!("127.0.0.1:{}", port);
-    let listener = TcpListener::bind(&addr)?;
-    info!("daemon listening on {} (workdir: {}, max connections: {})", addr, workdir, MAX_CONCURRENT);
-
-    for stream in listener.incoming() {
-        match stream {
-            Ok(s) => {
-                let conns = Arc::clone(&connections);
-                let prev = conns.fetch_add(1, Ordering::Relaxed);
-                if prev >= MAX_CONCURRENT {
-                    conns.fetch_sub(1, Ordering::Relaxed);
-                    warn!("max connections ({}) reached, rejecting", MAX_CONCURRENT);
-                    continue;
-                }
-                let state = Arc::clone(&state);
-                if let Err(e) = std::thread::Builder::new()
-                    .name("handler".into())
-                    .spawn(move || { daemon_handle(s, state); conns.fetch_sub(1, Ordering::Relaxed); })
-                {
-                    error!("handler thread: {}", e);
-                }
-            }
-            Err(e) => error!("accept error: {}", e),
-        }
-    }
-    Ok(())
 }

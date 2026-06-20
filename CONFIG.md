@@ -51,8 +51,9 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
 | `RELIARY_REPLAY` | `record`, `replay` | Deterministic benchmark mode |
 | `RELIARY_UPSTREAM_URL` | URL | Fallback upstream URL for unknown API keys |
 | `RELIARY_PROXY_GUARD_DISABLE` | `1` | Disable guard (cross-file edit safety). On by default. |
-| `RELIARY_PROXY_ANTI_DISABLE` | `1` | Disable anti-decision (sticky identifier failure memory). On by default. |
-| `RELIARY_PROXY_OUTPUT_COMPRESS` | `1` | Enable first-appearance freeze compression. On by default. |
+| `RELIARY_PROXY_FEATURE_ANTI` | `1` | Enable anti-decision (sticky identifier failure memory). Off by default. |
+| `RELIARY_PROXY_NOVEL_COMPRESS` | `0` | Disable first-appearance freeze + novel mechanisms (Maxwell, DSL, hoisting). On by default. |
+| `RELIARY_PROXY_WC_RATIO` | `2` | Weighted-cost multiplier on output tokens (DeepSeek V4 Flash is 1:2, Claude/GPT-4 is 1:4). |
 
 ## Agent Setup Examples (Proxy Routing)
 

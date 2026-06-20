@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.6.5
+
+### Quality of Life
+- **`savings_pct` in JSONL log + `x-reliaty-savings-pct` response header**: previously the percentage was computed but never written to the log or sent to the agent. Now `proxy-stats --format json` reports `avg_savings_pct` from real data, and the agent sees its savings in every response header
+- **`--since` flag actually works**: previously the flag was parsed but its filter was a no-op. Now filters by Unix timestamp on `proxy_response` and `stream_usage` events
+- **Weighted-cost ratio configurable**: `proxy-stats` was hardcoded at 4× output (DeepSeek V4 Flash is 1:2). Now defaults to 2× and respects `RELIARY_PROXY_WC_RATIO=N`
+
+### Bug Fixes
+- **NO_COLOR support in `ux.rs`**: 5 color helpers were returning raw ANSI escape codes regardless of `NO_COLOR` env var. Now all CLI output respects the no-color.org standard
+- **`crates/reliary-agent/pi/gate.js` corruption sync**: the embedded copy shipped to `init` users was missing `RELIARY_BIN_PATH` and `DAEMON_HEALTHY` identifiers (silent parse failure when Pi loaded it). Now synced from the canonical root `pi/gate.js`
+- **Dead `daemon::start` TCP listener removed**: 47 lines of unreachable code that bound a separate port superseded by the unified axum server. Stale imports cleaned
+
+### Polish
+- **`WalkDir` filters target/node_modules/venv/dist/etc in `index` and `dead`**: previously these commands walked every directory in the project (including `target/` on Rust projects with 50K+ build artifacts). Now `filter_entry` skips common build/dependency dirs at the directory level, eliminating WSL2 / 9p filesystem slowness
+- **Documentation env-var sync**: README and CONFIG.md now reference the actual code (`RELIARY_PROXY_FEATURE_ANTI=1`, `RELIARY_PROXY_NOVEL_COMPRESS=0`, `RELIARY_PROXY_WC_RATIO=2`) instead of stale aliases
+
 ## v0.6.4
 
 ### Scorecard Security (June 2026)

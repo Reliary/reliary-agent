@@ -285,11 +285,14 @@ fn compress_response_body(body: &str) -> String {
 // cache the compressed version, and use the cached version forever after.
 // This preserves KV cache stability — the compressed version is what the API/SDK
 // has cached from the start.
-fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize, usize) {
+// Returns (bytes_saved, original_bytes, compressed_bytes).
+fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize, usize, usize) {
     let mut history_saved: usize = 0;
+    let mut original_total: usize = 0;
+    let mut compressed_total: usize = 0;
 
     // Turn 1 has only system + user message(s) — nothing to compress
-    if messages.len() <= 2 { return (0, 0); }
+    if messages.len() <= 2 { return (0, 0, 0); }
 
     for msg in messages.iter_mut() {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -302,6 +305,8 @@ fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize,
             _ => continue,
         };
         if content.len() < 100 { continue; }
+
+        original_total += content.len();
 
         let hash = PerKeyState::content_hash(&content);
 
@@ -358,14 +363,19 @@ fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize,
         if let Some(c) = compressed {
             if c.len() < content.len() && state.content_cache.len() < 200 {
                 history_saved += content.len().saturating_sub(c.len());
+                compressed_total += c.len();
                 state.content_cache.insert(hash, c.clone());
                 msg["content"] = Value::String(c);
+            } else {
+                compressed_total += content.len();
             }
             // Don't cache uncompressed content — it grows without bound
+        } else {
+            compressed_total += content.len();
         }
     }
 
-    (history_saved, 0)
+    (history_saved, original_total, compressed_total)
 }
 
 // ── Health / Ping ──
@@ -679,21 +689,29 @@ async fn proxy_post(
     }
 
     // First-appearance freeze: compress every message on first occurrence
-    let (history_saved, _aggressiveness) = {
+    let (history_saved, original_total, compressed_total) = {
         let mut guard = get_or_create_state(&auth_key);
         if let Some(state) = guard.get_mut(&auth_key) {
             if state.paused {
-                (0, 0) // KV cache warming — skip compression to avoid cache busting
+                (0, 0, 0) // KV cache warming — skip compression to avoid cache busting
             } else if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
                 compress_messages(messages, state)
             } else {
-                (0, 0)
+                (0, 0, 0)
             }
         } else {
             tracing::error!("state missing after insert for auth_key {}", &auth_key[..8.min(auth_key.len())]);
-            (0, 0)
+            (0, 0, 0)
         }
     };
+
+    // Compute savings percentage for logging/header
+    let savings_pct: f64 = if original_total > 0 {
+        ((original_total - compressed_total) as f64 / original_total as f64) * 100.0
+    } else {
+        0.0
+    };
+    let savings_pct_int = savings_pct.round() as u64;
 
     // Response cache (streaming and non-streaming)
     if let Some(messages) = payload.get("messages") {
@@ -828,6 +846,7 @@ async fn proxy_post(
                             "event": "proxy_response",
                             "auth_prefix": &auth_key[..auth_key.len().min(12)],
                             "history_saved": history_saved,
+                            "savings_pct": savings_pct,
                             "response_compressed": body_str.len() < raw_str.len(),
                             "timestamp": std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -837,6 +856,9 @@ async fn proxy_post(
                         let mut resp = (StatusCode::OK, [("content-type", "application/json")], body_str.clone()).into_response();
                         if let Ok(hv) = header::HeaderValue::from_str(&hdr_history_saved) {
                             resp.headers_mut().insert("x-reliaty-history-saved", hv);
+                        }
+                        if let Ok(hv) = header::HeaderValue::from_str(&savings_pct_int.to_string()) {
+                            resp.headers_mut().insert("x-reliaty-savings-pct", hv);
                         }
                         resp
                     }

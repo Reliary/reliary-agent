@@ -24,12 +24,27 @@ fn home_dir() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
-fn color() -> &'static str { "\x1b[1m\x1b[32m" }
-fn reset() -> &'static str { "\x1b[0m" }
-fn dim() -> &'static str { "\x1b[2m" }
-fn blue() -> &'static str { "\x1b[34m" }
-fn red() -> &'static str { "\x1b[31m" }
-fn yellow() -> &'static str { "\x1b[33m" }
+// NO_COLOR-aware color helpers. We wrap the no-color check once here so call
+// sites stay simple (each takes no args, returns &str for format! interpolation).
+fn _no_color() -> bool {
+    std::env::var("NO_COLOR").is_ok() || std::env::var("TERM").map(|t| t == "dumb").unwrap_or(false)
+}
+fn color() -> &'static str { if _no_color() { "" } else { "\x1b[1m\x1b[32m" } }
+fn reset() -> &'static str { if _no_color() { "" } else { "\x1b[0m" } }
+fn dim() -> &'static str { if _no_color() { "" } else { "\x1b[2m" } }
+fn blue() -> &'static str { if _no_color() { "" } else { "\x1b[34m" } }
+fn red() -> &'static str { if _no_color() { "" } else { "\x1b[31m" } }
+fn yellow() -> &'static str { if _no_color() { "" } else { "\x1b[33m" } }
+
+/// Weighted-cost ratio (output tokens cost this multiple of input tokens).
+/// Defaults to 2 (DeepSeek V4 Flash 1:2 pricing). Override via `RELIARY_PROXY_WC_RATIO`.
+fn weighted_ratio() -> u64 {
+    std::env::var("RELIARY_PROXY_WC_RATIO")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&n| n > 0 && n <= 16)
+        .unwrap_or(2)
+}
 
 pub fn daemon_alive() -> bool {
     TcpStream::connect_timeout(&"127.0.0.1:9090".parse().expect("invalid port"), Duration::from_millis(500)).is_ok()
@@ -516,7 +531,8 @@ pub fn proxy_stats(live: bool, since: Option<&str>, format: &str) {
             None => s.trim().to_lowercase().strip_suffix('m')
                 .and_then(|v| v.parse::<u64>().ok().map(|m| m * 60)),
         };
-        seconds.map(|sec| std::time::Instant::now() - std::time::Duration::from_secs(sec))
+        // Use SystemTime so we can compare against log-entry timestamps directly.
+        seconds.map(|sec| std::time::SystemTime::now() - std::time::Duration::from_secs(sec))
     });
 
     let mut total_requests = 0u64;
@@ -529,9 +545,16 @@ pub fn proxy_stats(live: bool, since: Option<&str>, format: &str) {
         let line = line.trim();
         if line.is_empty() { continue; }
 
-        // Crude timestamp check if we have a cutoff
-        if cutoff.is_some() {
-            // No timestamp in the log lines — skip filtering
+        // Time-window filter: drop entries with timestamp older than cutoff.
+        // The proxy logs Unix seconds under "timestamp" (set on proxy_response
+        // and stream_usage entries). Entries without a timestamp are kept (no filter).
+        if let Some(co) = cutoff {
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(ts) = entry.get("timestamp").and_then(|v| v.as_u64()) {
+                    let entry_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts);
+                    if entry_time < co { continue; }
+                }
+            }
         }
 
         if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
@@ -557,7 +580,7 @@ pub fn proxy_stats(live: bool, since: Option<&str>, format: &str) {
             "requests": total_requests,
             "prompt_tokens": total_prompt_tokens,
             "completion_tokens": total_completion_tokens,
-            "weighted_cost": total_prompt_tokens + 4 * total_completion_tokens,
+            "weighted_cost": total_prompt_tokens + weighted_ratio() * total_completion_tokens,
             "avg_savings_pct": format!("{:.1}", avg_savings),
             "log_file": "/tmp/reliary_proxy.jsonl",
             "auth_prefixes": prefixes,
@@ -568,7 +591,7 @@ pub fn proxy_stats(live: bool, since: Option<&str>, format: &str) {
         println!("  {}•{} Requests:      {}", blue(), reset(), total_requests);
         println!("  {}•{} Prompt tokens:  {}", blue(), reset(), total_prompt_tokens);
         println!("  {}•{} Output tokens:  {}", blue(), reset(), total_completion_tokens);
-        println!("  {}•{} Weighted cost:  {}", blue(), reset(), total_prompt_tokens + 4 * total_completion_tokens);
+        println!("  {}•{} Weighted cost:  {}", blue(), reset(), total_prompt_tokens + weighted_ratio() * total_completion_tokens);
         if !total_savings_pct.is_empty() {
             println!("  {}•{} Avg savings:    {:.1}%", blue(), reset(), avg_savings);
         }
@@ -778,6 +801,48 @@ mod tests {
     fn test_with_spinner_runs_closure() {
         let result = with_spinner("testing", || 42);
         assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_no_color_disables_ansi() {
+        // Save state
+        let prev_no = std::env::var("NO_COLOR").ok(); // GUARDED: intentional
+        let prev_term = std::env::var("TERM").ok(); // GUARDED: intentional
+        std::env::set_var("NO_COLOR", "1");
+        std::env::remove_var("TERM");
+        assert_eq!(red(), "", "red() should be empty under NO_COLOR");
+        assert_eq!(yellow(), "", "yellow() should be empty under NO_COLOR");
+        assert_eq!(blue(), "", "blue() should be empty under NO_COLOR");
+        assert_eq!(dim(), "", "dim() should be empty under NO_COLOR");
+        assert_eq!(reset(), "", "reset() should be empty under NO_COLOR");
+        assert_eq!(color(), "", "color() should be empty under NO_COLOR");
+        // Restore
+        match prev_no { Some(v) => std::env::set_var("NO_COLOR", v), None => std::env::remove_var("NO_COLOR") }
+        match prev_term { Some(v) => std::env::set_var("TERM", v), None => std::env::remove_var("TERM") }
+    }
+
+    #[test]
+    fn test_term_dumb_disables_ansi() {
+        let prev_no = std::env::var("NO_COLOR").ok(); // GUARDED: intentional
+        let prev_term = std::env::var("TERM").ok(); // GUARDED: intentional
+        std::env::remove_var("NO_COLOR");
+        std::env::set_var("TERM", "dumb");
+        assert_eq!(red(), "", "red() should be empty under TERM=dumb");
+        match prev_no { Some(v) => std::env::set_var("NO_COLOR", v), None => std::env::remove_var("NO_COLOR") }
+        match prev_term { Some(v) => std::env::set_var("TERM", v), None => std::env::remove_var("TERM") }
+    }
+
+    #[test]
+    fn test_ansi_when_default() {
+        // Force-clear both signals and verify ANSI codes are emitted
+        let prev_no = std::env::var("NO_COLOR").ok(); // GUARDED: intentional
+        let prev_term = std::env::var("TERM").ok(); // GUARDED: intentional
+        std::env::remove_var("NO_COLOR");
+        std::env::remove_var("TERM");
+        assert!(red().contains("\x1b["), "red() should emit ANSI when no NO_COLOR");
+        assert!(yellow().contains("\x1b["), "yellow() should emit ANSI when no NO_COLOR");
+        match prev_no { Some(v) => std::env::set_var("NO_COLOR", v), None => std::env::remove_var("NO_COLOR") }
+        match prev_term { Some(v) => std::env::set_var("TERM", v), None => std::env::remove_var("TERM") }
     }
 
     #[test]
