@@ -137,6 +137,7 @@ pub fn resolve_features_with_source(workdir: Option<&str>) -> Vec<ResolvedFeatur
         ("readEnrichment", true),
         ("editMerge", false),
         ("healEdit", true),
+        ("hologram", true),
         ("priorInjection", false),
     ];
 

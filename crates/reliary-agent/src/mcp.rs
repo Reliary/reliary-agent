@@ -24,7 +24,11 @@ fn respond_error(id: u64, code: i32, message: &str) {
 
 /// Public tool definitions for MCP tools/list — shared by stdio and SSE.
 pub fn tool_definitions() -> Vec<serde_json::Value> {
-    vec![
+    use crate::config::resolve_features;
+    let features = resolve_features(None);
+    let hologram_enabled = features.iter().find(|(n, _)| n == "hologram").map(|(_, e)| *e).unwrap_or(true);
+
+    let mut tools = vec![
         serde_json::json!({ "name": "reliary_search", "description": "BM25 grammar-free code search", "inputSchema": { "type": "object", "properties": { "query": {"type": "string"}, "path": {"type": "string"} }, "required": ["query"] } }),
         serde_json::json!({ "name": "reliary_compress", "description": "IR reasoning compression", "inputSchema": { "type": "object", "properties": { "text": {"type": "string"} }, "required": ["text"] } }),
         serde_json::json!({ "name": "reliary_risk", "description": "Pre-edit risk analysis", "inputSchema": { "type": "object", "properties": { "file": {"type": "string"} }, "required": ["file"] } }),
@@ -32,7 +36,11 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
         serde_json::json!({ "name": "reliary_dead", "description": "Grammar-free dead code detection (compact summary + top-N)", "inputSchema": { "type": "object", "properties": { "path": {"type": "string"}, "limit": {"type": "integer"}, "confidence": {"type": "string"} }, "required": ["path"] } }),
         serde_json::json!({ "name": "reliary_heal", "description": "Apply edit with self-healing (test before commit)", "inputSchema": { "type": "object", "properties": { "file": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}, "workdir": {"type": "string"} }, "required": ["file", "old", "new"] } }),
         serde_json::json!({ "name": "reliary_prior", "description": "Chronicled project state and cross-session memory", "inputSchema": { "type": "object", "properties": { "path": {"type": "string"} }, "required": ["path"] } }),
-    ]
+    ];
+    if hologram_enabled {
+        tools.push(serde_json::json!({ "name": "reliary_hologram", "description": "Render a compact Markdown 'hologram' of top-K files matching a prompt. Returns file paths with function signatures, top identifiers, and doc-comment summaries. Use this when you need to navigate or orient in an unfamiliar codebase, or when grep+read would require many round-trips. Skip this for mechanical changes (rename, find-replace, fix typo) where you already know the exact lines to edit.", "inputSchema": { "type": "object", "properties": { "prompt": {"type": "string", "description": "Natural language query describing what you're looking for"}, "path": {"type": "string", "description": "Repository path (default: CWD)"}, "top_k": {"type": "integer", "description": "Max entries to return (default: 10)"} }, "required": ["prompt"] } }));
+    }
+    tools
 }
 
 /// Pure dispatch result — returned by dispatch_tool_call for shared use by stdio and SSE.
@@ -198,6 +206,26 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
             DispatchResult::Success(serde_json::json!({
                 "content": [{ "type": "text", "text": serde_json::json!({"prior": prior}).to_string() }]
             }))
+        }
+        "reliary_hologram" => {
+            let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".").to_string();
+            let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            match crate::hologram::render(&crate::hologram::HologramOpts {
+                path: std::path::PathBuf::from(path),
+                prompt: if prompt.is_empty() { None } else { Some(prompt) },
+                top_k,
+                bytes_cap: 50_000,
+                min_score: 0.0,
+                include_tests: false,
+                json: false,
+                no_bodies: false,
+            }) {
+                Ok(out) => DispatchResult::Success(serde_json::json!({
+                    "content": [{ "type": "text", "text": out }]
+                })),
+                Err(e) => DispatchResult::Error(-32000, format!("hologram failed: {e}")),
+            }
         }
         _ => DispatchResult::Error(-32601, format!("unknown tool: {}", name)),
     }

@@ -83,6 +83,7 @@ const FEATURES = {
   compress: true,       // inline reasoning compression
   convWindow: true,     // drop old verbose tool results
   readEnrichment: true, // compress non-target read results
+  hologram: true,       // smart classifier conditionally exposes reliary_hologram tool
 };
 if (process.env.RELIARY_FEATURES) {
   for (const f of process.env.RELIARY_FEATURES.split(",")) {
@@ -90,6 +91,91 @@ if (process.env.RELIARY_FEATURES) {
     const name = isDisable ? f.slice(1) : f.startsWith("+") ? f.slice(1) : f;
     if (name) FEATURES[name] = !isDisable;
   }
+}
+
+// ── Smart classifier for hologram tool visibility ──
+// When FEATURES.hologram is on, classify the user's prompt as "investigation" or
+// "mechanical" via a tiny LLM call. Log the classification for later analysis.
+// The tool list always includes reliary_hologram; the classifier's label is a hint,
+// not enforcement (the LLM uses the tool description to decide).
+const { appendFileSync } = require("fs");
+const METRICS_FILE = "/tmp/reliary-metrics.jsonl";
+
+const sessionMetrics = {
+  classifierLabel: null,
+  hologramAvailable: false,
+  hologramCalled: false,
+  totalWeighted: 0,
+  totalInput: 0,
+  totalOutput: 0,
+  turnCount: 0,
+};
+
+async function classifyTask(prompt) {
+  if (!RELIARY_BIN || !FEATURES.hologram) return "investigation";
+  const classifierPrompt =
+    `Classify the following task as "investigation" or "mechanical".\n\n` +
+    `investigation: exploring unfamiliar code, adding features, cross-file refactoring, understanding architecture, debugging\n` +
+    `mechanical: renaming a symbol, find-replace, fixing a typo, applying a known fix, single-line edits\n\n` +
+    `Task: ${prompt.substring(0, 1000)}\n\n` +
+    `Respond with exactly one word: investigation or mechanical`;
+  try {
+    const configOut = execFileSync(RELIARY_BIN, ["config"], {
+      encoding: "utf-8", timeout: 3000, maxBuffer: 4096,
+    });
+    const baseUrlMatch = (configOut || "").match(/daemon:\s*(http:\/\/[^\s]+)/);
+    const apiKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
+    if (!baseUrlMatch || !apiKey) return "investigation";
+    const baseUrl = baseUrlMatch[1];
+
+    const body = JSON.stringify({
+      model: "deepseek-chat",
+      messages: [{ role: "user", content: classifierPrompt }],
+      max_tokens: 5,
+      temperature: 0,
+    });
+    const http = require("http");
+    const url = new URL(`${baseUrl}/chat/completions`);
+    const response = await new Promise((resolve, reject) => {
+      const req = http.request({
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        timeout: 8000,
+      }, (res) => {
+        let data = "";
+        res.on("data", (chunk) => data += chunk);
+        res.on("end", () => resolve(data));
+      });
+      req.on("error", reject);
+      req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+      req.write(body);
+      req.end();
+    });
+    const parsed = JSON.parse(response);
+    const word = (parsed.choices?.[0]?.message?.content || "").trim().toLowerCase();
+    return word.includes("mechanical") ? "mechanical" : "investigation";
+  } catch (e) {
+    gateLog("warn", `classifier failed: ${e.message}, defaulting to investigation`);
+    return "investigation";
+  }
+}
+
+function logMetric(event, extra = {}) {
+  try {
+    appendFileSync(METRICS_FILE, JSON.stringify({
+      ts: Date.now(),
+      event,
+      ...sessionMetrics,
+      ...extra,
+    }) + "\n");
+  } catch {}
 }
 
 // ── Reactive safety level ──
@@ -407,13 +493,10 @@ function handleToolCall(event) {
   const name = event.toolName;
   const input = event.input || {};
 
-  // Test tool: run grammar-free test runner via daemon
-  if (name === "test") {
-    const workdir = input.workdir || input.path || process.cwd();
-    gateLog("info", `test: ${workdir}`);
-    const result = runTest(workdir);
-    const sifted = siftOutput(result);
-    return { block: true, response: sifted !== result ? sifted : result };
+  // Track hologram calls for metrics
+  if (name === "reliary_hologram") {
+    sessionMetrics.hologramCalled = true;
+    logMetric("hologram_call", { prompt: (input.prompt || "").substring(0, 100) });
   }
 
   // Explain tool: get function context
@@ -620,12 +703,37 @@ function handleBeforeProviderRequest(event) {
   return { ...payload, messages: msgs };
 }
 
+// ── Hook C: before_agent_start — classify task type for hologram metrics ──
+async function handleBeforeAgentStart(event) {
+  if (!FEATURES.hologram) return;
+  if (sessionMetrics.classifierLabel !== null) return; // already classified
+
+  const prompt = event.prompt || "";
+  const label = await classifyTask(prompt);
+  sessionMetrics.classifierLabel = label;
+  sessionMetrics.hologramAvailable = true;
+  logMetric("classified", { promptLength: prompt.length });
+
+  let systemPrompt = event.systemPrompt;
+  if (label === "mechanical" && systemPrompt) {
+    systemPrompt = systemPrompt +
+      `\n\n[gate hint] This task looks mechanical (rename/find-replace/fix-typo). Skip reliary_hologram unless you get stuck.`;
+  } else if (label === "investigation" && systemPrompt) {
+    systemPrompt = systemPrompt +
+      `\n\n[gate hint] This task looks investigative. Consider calling reliary_hologram early to orient.`;
+  }
+  return { systemPrompt };
+}
+
 // ── Export: register hooks ──
 // ── Export: register hooks (CommonJS for Pi extension loader) ──
 module.exports = function (pi) {
   pi.on("tool_result", handleToolResult);
   pi.on("tool_call", handleToolCall);
   pi.on("before_provider_request", handleBeforeProviderRequest);
-  process.on("exit", () => {});
+  pi.on("before_agent_start", handleBeforeAgentStart);
+  process.on("exit", () => {
+    logMetric("session_exit");
+  });
 }
 

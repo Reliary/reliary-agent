@@ -10,7 +10,6 @@ members = [
     "crates/reliary-dead",
     "crates/reliary-agent",
     "crates/reliary-output",
-    "crates/reliary-sandbox",
 ]
 
 resolver = "2"

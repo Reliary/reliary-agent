@@ -192,6 +192,23 @@ fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str
                 }
             }
         }
+        "hologram" => {
+            let path = if p1.is_empty() { "." } else { p1 };
+            let top_k: usize = if p2.is_empty() { 10 } else { p2.parse().unwrap_or(10) };
+            match crate::hologram::render(&crate::hologram::HologramOpts {
+                path: std::path::PathBuf::from(path),
+                prompt: if p3.is_empty() { None } else { Some(p3.to_string()) },
+                top_k,
+                bytes_cap: 50_000,
+                min_score: 0.0,
+                include_tests: false,
+                json: false,
+                no_bodies: false,
+            }) {
+                Ok(out) => out + "\n",
+                Err(e) => format!("ERROR: hologram failed: {e}\n"),
+            }
+        }
         "compress" => {
             if p1.is_empty() {
                 "ERROR: usage: compress <text>\n".to_string()

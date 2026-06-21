@@ -21,6 +21,7 @@ mod novel_compress;
 mod routes;
 mod guard;
 mod antidecision;
+mod hologram;
 
 use clap::{Parser, Subcommand, ValueEnum, CommandFactory};
 use clap_complete::generate;
@@ -597,6 +598,20 @@ enum Commands {
     /// Build session state block from Pi session file
     #[command(hide = true)]
     SessionState { file: String },
+    /// Render a compact Markdown "hologram" of top-K files matching a prompt
+    Hologram {
+        query: Option<String>,
+        #[arg(default_value = ".")]
+        path: String,
+        #[arg(long, default_value_t = 10)]
+        top_k: usize,
+        #[arg(long, default_value_t = 50000)]
+        bytes: usize,
+        #[arg(long)]
+        refresh: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(ValueEnum, Clone)]
@@ -1261,6 +1276,25 @@ fn main() {
                     }
                 }
                 Err(e) => eprintln!("✗ Session file error: {}", e),
+            }
+        }
+        Commands::Hologram { query, path, top_k, bytes, refresh: _, json } => {
+            match hologram::render(&hologram::HologramOpts {
+                path: std::path::PathBuf::from(path),
+                prompt: query.clone(),
+                top_k: *top_k,
+                bytes_cap: *bytes,
+                min_score: 0.0,
+                include_tests: false,
+                json: *json,
+                no_bodies: false,
+            }) {
+                Ok(out) => {
+                    use std::io::Write;
+                    let _ = std::io::stdout().write_all(out.as_bytes());
+                    let _ = std::io::stdout().write_all(b"\n");
+                }
+                Err(e) => eprintln!("✗ Hologram error: {e}"),
             }
         }
     }
