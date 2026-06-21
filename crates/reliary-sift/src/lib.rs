@@ -1,4 +1,5 @@
 pub mod classify;
+pub mod compress_json;
 pub mod filter;
 
 /// Structural output compression + Maxwell information-theoretic gate.

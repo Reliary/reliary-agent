@@ -146,7 +146,16 @@ pub fn skeleton(line: &str) -> String {
         let is_alnum = |pos: usize| -> bool { bytes[pos].is_ascii_alphanumeric() };
         let bd = |pos: usize| -> bool { pos == 0 || !is_alnum(pos - 1) };
 
-        // 2. word-NNN (with optional hyphen separator)
+// 2. Hex hash (7-40 chars) — must come BEFORE word-NNN so alphaNNN doesn't eat trailing digits
+        if bd(i) && bytes[i].is_ascii_hexdigit() {
+            let mut he = i;
+            while he < len && (bytes[he] as char).is_ascii_hexdigit() { he += 1; }
+            if he - i >= 7 && he - i <= 40 && (he >= len || !is_alnum(he)) {
+                emit_str!("{hash}"); i = he; continue;
+            }
+        }
+
+        // 3. word-NNN (with optional hyphen separator)
         if bd(i) && is_alpha(i) {
             let mut we = i;
             while we < len && is_alpha(we) { we += 1; }
@@ -157,21 +166,17 @@ pub fn skeleton(line: &str) -> String {
                 if dne > we + 1 { emit_str!("{w}-{n}"); i = dne; continue; }
             }
             // Try alphaNNN (no separator) — crate0, file42, item123
+            // Only fire if word isn't a hex hash (a-f followed by hex digits)
             if we > i + 2 && we < len && is_digit(we) {
-                let mut dne = we;
-                while dne < len && is_digit(dne) { dne += 1; }
-                if dne > we { emit_str!("{w}{n}"); i = dne; continue; }
+                let is_hex_word = bytes[i..we].iter().all(|&b| b.is_ascii_hexdigit());
+                if !is_hex_word {
+                    let mut dne = we;
+                    while dne < len && is_digit(dne) { dne += 1; }
+                    if dne > we { emit_str!("{w}{n}"); i = dne; continue; }
+                }
             }
         }
 
-        // 3. Hex hash (7-40 chars)
-        if bd(i) && bytes[i].is_ascii_hexdigit() {
-            let mut he = i;
-            while he < len && (bytes[he] as char).is_ascii_hexdigit() { he += 1; }
-            if he - i >= 7 && he - i <= 40 && (he >= len || !is_alnum(he)) {
-                emit_str!("{hash}"); i = he; continue;
-            }
-        }
 
         // 4. Version X.Y.Z
         if is_digit(i) {

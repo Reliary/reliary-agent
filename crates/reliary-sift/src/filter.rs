@@ -98,11 +98,13 @@ pub fn format_output(lines: &[Line], strategy: CompressionStrategy) -> String {
 }
 
 fn format_json(lines: &[Line]) -> String {
-    lines.iter()
+    let joined = lines.iter()
         .filter(|l| !l.text.trim().is_empty() && !l.is_separator && !l.is_progress)
         .map(|l| l.text.as_str())
         .collect::<Vec<&str>>()
-        .join("\n")
+        .join("\n");
+    let compressed = crate::compress_json::compress_json(&joined);
+    if compressed.len() < joined.len() { compressed } else { joined }
 }
 
 fn format_diff(lines: &[Line]) -> String {
