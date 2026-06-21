@@ -139,7 +139,8 @@ fn scan_pi_configs(auth_key: &str) -> Option<String> {
     None
 }
 
-/// Normalize a base URL: append /v1/chat/completions if missing and not Anthropic-style.
+/// Normalize a base URL: append /chat/completions if missing and not Anthropic-style.
+/// Handles: /v1/openai, /openai/v1, bare host, /v1, /v1/chat/completions, etc.
 fn normalize_url(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     if trimmed.ends_with("/chat/completions") || trimmed.ends_with("/v1/messages") || trimmed.contains("/v1/messages") {
@@ -151,6 +152,9 @@ fn normalize_url(base_url: &str) -> String {
             format!("{}/v1/messages", trimmed)
         }
     } else if trimmed.ends_with("/v1") {
+        format!("{}/chat/completions", trimmed)
+    } else if trimmed.contains("/v1/") {
+        // Already has /v1/ in the path (e.g. /v1/openai, /v1/azure/openai) — just append endpoint
         format!("{}/chat/completions", trimmed)
     } else {
         format!("{}/v1/chat/completions", trimmed)

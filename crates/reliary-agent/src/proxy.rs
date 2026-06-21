@@ -272,6 +272,12 @@ fn sift_compress_tool_result(content: &str) -> String {
             }
         }
     } else {
+        // SRCR safety floor check on aggressive skeleton output.
+        // If the compressed version destroyed too much signal (below floor),
+        // return the working (pre-skeleton) content instead.
+        if let Some(result) = sr_floor_check(&compressed, &working) {
+            return result;
+        }
         return compressed;
     }
 
@@ -284,10 +290,40 @@ fn sift_compress_tool_result(content: &str) -> String {
     working
 }
 
+/// SRCR safety floor. Returns Some(working) if compressed output's SRCR
+/// is below the configured floor — i.e., the compression destroyed too much
+/// signal and we should ship the pre-skeleton content instead.
+/// Returns None if floor is disabled (0.0) or compression passes the floor check.
+fn sr_floor_check(compressed: &str, working: &str) -> Option<String> {
+    let floor: f64 = std::env::var("RELIARY_PROXY_SRCR_FLOOR")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.3);
+    if floor <= 0.0 {
+        return None;
+    }
+    let (srcr, _, _) = reliary_compress::srcr_for_compression(working, compressed);
+    if srcr < floor {
+        // Floor blocked — return pre-skeleton working content
+        Some(working.to_string())
+    } else {
+        None
+    }
+}
+
 /// Build a scorer closure that uses FTS5 document frequency for info scoring.
-/// Returns None if FTS5 index is unavailable (no project index, empty DB, etc).
+/// Returns None if FTS5 DF weighting is disabled (RELIARY_PROXY_FT_WEIGHT=0)
+/// or if FTS5 index is unavailable (no project index, empty DB, etc).
 /// Falls back to blind zone truncation in that case.
 fn build_info_scorer() -> Option<impl Fn(&str) -> f64> {
+    // Gate Phase 2 (FTS5 DF weighting) behind opt-in env var until validated
+    // in live sessions. Default off.
+    let ft_enabled = std::env::var("RELIARY_PROXY_FT_WEIGHT")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    if !ft_enabled {
+        return None;
+    }
     use std::sync::Mutex;
     // Try to open the project FTS5 index. Look for it in CWD or PWD env.
     let candidates = [
@@ -821,9 +857,23 @@ async fn proxy_post(
                 tokio::spawn(async move {
                     let mut total_bytes = Vec::new();
                     let mut last_chunk_with_usage = String::new();
+                    let mut last_chunk_with_finish: Option<Bytes> = None;
                     loop {
                         match upstream_resp.chunk().await {
                             Ok(Some(chunk)) => {
+                                let is_finish_chunk = chunk.windows(20).any(|w| {
+                                    std::str::from_utf8(w).map(|s| s.contains("\"finish_reason\":\"stop\"") || s.contains("\"finish_reason\":\"length\"")).unwrap_or(false)
+                                });
+                                if is_finish_chunk {
+                                    // Hold the finish_reason chunk until all preceding chunks are
+                                    // flushed to the client. This prevents the SSE "Stream ended
+                                    // without finish_reason" error when the client closes early
+                                    // after receiving the final content.
+                                    last_chunk_with_finish = Some(chunk.clone());
+                                    total_bytes.extend_from_slice(&chunk);
+                                    last_chunk_with_usage = String::from_utf8_lossy(&chunk).to_string();
+                                    continue;
+                                }
                                 // Track for usage parsing and response cache
                                 let chunk_str = String::from_utf8_lossy(&chunk);
                                 // Stream-aware prefetch: extract file paths from live chunks.
@@ -840,7 +890,8 @@ async fn proxy_post(
                                 total_bytes.extend_from_slice(&chunk);
                                 // Forward immediately
                                 if tx.send(Ok(chunk)).await.is_err() {
-                                    break; // Client disconnected
+                                    // Client disconnected; still try to flush any finish chunk we held
+                                    break;
                                 }
                             }
                             Ok(None) => break, // Stream complete
@@ -849,6 +900,11 @@ async fn proxy_post(
                                 break;
                             }
                         }
+                    }
+                    // After the upstream stream completes, send the deferred finish_reason chunk
+                    // if we held one. This guarantees Pi's parser sees finish_reason: stop.
+                    if let Some(finish_chunk) = last_chunk_with_finish.take() {
+                        let _ = tx.send(Ok(finish_chunk)).await;
                     }
                     // Channel drop signals stream end to axum
 

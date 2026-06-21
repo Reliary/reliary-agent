@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.7.0 (unreleased)
+
+### Compression Ceiling Breakthrough
+- **Aggressive skeleton compression:** Tokenizes all alphanumeric runs to `{w}` while preserving version/number placeholders. Cargo `Compiling X v1.0` lines now share skeletons and group together. Gate restricts activation to content where ≥80% of lines share the same aggressive skeleton AND line lengths are similar — prevents file reads with similar function signatures from collapsing.
+- **Information-preserving zone truncation:** Replaces blind first-30 + last-15 zone with score-based selection. Error lines (`FAILED`, `error[`, `panic`, `Traceback`) get +10 score bonus. Allows top-15 selection (vs blind 45 lines) without signal loss.
+- **FTS5 document frequency weighting:** Grammar-free pseudo-perplexity proxy (LLM Lingua analog without an LM). Tokens appearing in many files are "predictable" boilerplate; tokens in few files are "surprising" project-specific. Opt-in via `RELIARY_PROXY_FT_WEIGHT=1` (off by default until validated in live sessions).
+- **SRCR safety floor:** `preservation × compression` metric. Default `RELIARY_PROXY_SRCR_FLOOR=0.3` blocks destructive compression — if post-compression SRCR is below the floor, the proxy ships the pre-compression content instead. Set `0` to disable.
+- **Smoke test:** Cargo test output (6100 chars, 205 lines) compresses to ~225 chars (96% savings, `history_saved=5878`).
+
+### Tunable
+- `RELIARY_PROXY_SRCR_FLOOR` — default `0.3`, set `0` to disable
+- `RELIARY_PROXY_FT_WEIGHT` — default `0` (off), set `1` to enable
+
+### Test counts
+- 81 sift + 13 compress + 14 search + 7 sr_floor + 9 ft_weight_gate = 124 tests passing
+
 ## v0.6.4
 
 ### Scorecard Security (June 2026)

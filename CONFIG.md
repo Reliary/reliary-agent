@@ -53,6 +53,8 @@ reliary-agent uses a cascade of configuration sources (highest priority first):
 | `RELIARY_PROXY_GUARD_DISABLE` | `1` | Disable guard (cross-file edit safety). On by default. |
 | `RELIARY_PROXY_ANTI_DISABLE` | `1` | Disable anti-decision (sticky identifier failure memory). On by default. |
 | `RELIARY_PROXY_OUTPUT_COMPRESS` | `1` | Enable first-appearance freeze compression. On by default. |
+| `RELIARY_PROXY_SRCR_FLOOR` | `0.3` | SRCR safety floor. If post-compression SRCR < floor, ship pre-compression content instead. Set to `0` to disable. |
+| `RELIARY_PROXY_FT_WEIGHT` | `0` | Enable FTS5 document-frequency weighting for zone truncation. Off by default until validated in live sessions. |
 
 ## Agent Setup Examples (Proxy Routing)
 
