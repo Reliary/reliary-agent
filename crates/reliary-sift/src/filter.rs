@@ -84,16 +84,46 @@ fn extract_timestamp_prefix(text: &str) -> String {
     }
 }
 
+/// Decide whether aggressive skeleton grouping should be used for these lines.
+/// Aggressive is enabled when ≥80% of non-blank lines share the same template
+/// AND those lines have similar lengths (within 30%).
+///
+/// This catches cargo "Compiling X vY" output (≥80% share, similar length)
+/// while rejecting file reads where similar-looking function signatures are
+/// only a small fraction of total lines.
+pub fn should_use_aggressive(lines: &[Line]) -> bool {
+    let non_blank: Vec<&Line> = lines.iter()
+        .filter(|l| !l.text.trim().is_empty())
+        .collect();
+    if non_blank.len() < 5 {
+        return false;
+    }
+    let mut counts: std::collections::HashMap<String, (usize, Vec<usize>)> = std::collections::HashMap::new();
+    for l in &non_blank {
+        let s = classify::aggressive_skeleton(&l.text);
+        let entry = counts.entry(s).or_insert((0, Vec::new()));
+        entry.0 += 1;
+        entry.1.push(l.text.len());
+    }
+    let (count, lens) = counts.values().max_by_key(|(c, _)| *c).cloned().unwrap_or((0, vec![]));
+    // Require ≥80% concentration of single template
+    if count * 5 < non_blank.len() * 4 { return false; }
+    let min_len = lens.iter().min().copied().unwrap_or(0);
+    let max_len = lens.iter().max().copied().unwrap_or(0);
+    min_len > 0 && min_len * 10 >= max_len * 7
+}
+
 /// Format output using strategy-specific compression.
 pub fn format_output(lines: &[Line], strategy: CompressionStrategy) -> String {
     let mut lines = lines.to_vec();
     lines = extract_error_blocks(&lines);
+    let use_aggressive = should_use_aggressive(&lines);
     match strategy {
         CompressionStrategy::Json => format_json(&lines),
         CompressionStrategy::Diff => format_diff(&lines),
-        CompressionStrategy::Tabular => format_tabular(&lines),
-        CompressionStrategy::Prefixed => format_prefixed(&lines),
-        CompressionStrategy::Normal => format_normal(&lines),
+        CompressionStrategy::Tabular => format_tabular_with(&lines, use_aggressive),
+        CompressionStrategy::Prefixed => format_prefixed_with(&lines, use_aggressive),
+        CompressionStrategy::Normal => format_normal_with(&lines, use_aggressive),
     }
 }
 
@@ -138,10 +168,14 @@ fn format_diff(lines: &[Line]) -> String {
     out
 }
 
-fn format_tabular(lines: &[Line]) -> String {
+fn format_tabular_with(lines: &[Line], use_aggressive: bool) -> String {
     let mut lines = lines.to_vec();
     classify::compress_tabular(&mut lines);
-    let groups = collapse_prefix_runs(&classify::skeleton_groups(&lines));
+    let groups = if use_aggressive {
+        collapse_prefix_runs(&aggressive_skeleton_groups(&lines))
+    } else {
+        collapse_prefix_runs(&classify::skeleton_groups(&lines))
+    };
     let mut out = String::new();
     for group in &groups {
         if group.count == 1 { out.push_str(&group.sample); out.push('\n'); }
@@ -151,8 +185,12 @@ fn format_tabular(lines: &[Line]) -> String {
     out
 }
 
-fn format_prefixed(lines: &[Line]) -> String {
-    let groups = collapse_prefix_runs(&classify::skeleton_groups_prefixed(lines));
+fn format_prefixed_with(lines: &[Line], use_aggressive: bool) -> String {
+    let groups = if use_aggressive {
+        collapse_prefix_runs(&aggressive_skeleton_groups(lines))
+    } else {
+        collapse_prefix_runs(&classify::skeleton_groups_prefixed(lines))
+    };
     let mut out = String::new();
     let mut ok_count: usize = 0;
     for group in &groups {
@@ -182,7 +220,7 @@ fn format_prefixed(lines: &[Line]) -> String {
     out
 }
 
-fn format_normal(lines: &[Line]) -> String {
+fn format_normal_with(lines: &[Line], use_aggressive: bool) -> String {
     let mut lines = lines.to_vec();
     let is_repetitive = {
         let high = lines.len() / 2;
@@ -194,7 +232,12 @@ fn format_normal(lines: &[Line]) -> String {
         skels.len() <= high
     };
     if !is_repetitive { classify::compress_tabular(&mut lines); }
-    let groups = collapse_prefix_runs(&classify::skeleton_groups(&lines));
+
+    let groups = if use_aggressive {
+        collapse_prefix_runs(&aggressive_skeleton_groups(&lines))
+    } else {
+        collapse_prefix_runs(&classify::skeleton_groups(&lines))
+    };
     let mut out = String::new();
     let mut ok_count: usize = 0;
     for group in &groups {
@@ -222,6 +265,63 @@ fn format_normal(lines: &[Line]) -> String {
     flush_ok(&mut out, &mut ok_count);
     if out.ends_with('\n') { out.pop(); }
     out
+}
+
+/// Group lines by aggressive skeleton, then collapse runs into LineGroups.
+/// Mirrors classify::skeleton_groups but uses aggressive_skeleton for grouping.
+/// Error lines (is_error) and progress lines (is_progress) are preserved verbatim.
+fn aggressive_skeleton_groups(lines: &[Line]) -> Vec<classify::LineGroup> {
+    use std::collections::HashMap;
+    let mut groups_map: HashMap<String, classify::LineGroup> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        // Preserve error and progress lines verbatim — they are signal
+        if line.is_error || line.is_progress {
+            let key = format!("__single_error_{}", idx);
+            groups_map.insert(key.clone(), classify::LineGroup {
+                skeleton_key: 0,
+                sample: line.text.clone(),
+                count: 1,
+                first_idx: idx,
+                is_error: line.is_error,
+                distinct_prefixes: vec![],
+            });
+            order.push(key);
+            continue;
+        }
+
+        let agg = classify::aggressive_skeleton(&line.text);
+        if agg.is_empty() {
+            let key = format!("__blank_{}", idx);
+            groups_map.insert(key.clone(), classify::LineGroup {
+                skeleton_key: 0,
+                sample: line.text.clone(),
+                count: 1,
+                first_idx: idx,
+                is_error: false,
+                distinct_prefixes: vec![],
+            });
+            order.push(key);
+            continue;
+        }
+
+        if let Some(existing) = groups_map.get_mut(&agg) {
+            existing.count += 1;
+        } else {
+            groups_map.insert(agg.clone(), classify::LineGroup {
+                skeleton_key: 0,
+                sample: line.text.clone(),
+                count: 1,
+                first_idx: idx,
+                is_error: line.is_error,
+                distinct_prefixes: vec![],
+            });
+            order.push(agg);
+        }
+    }
+
+    order.into_iter().filter_map(|k| groups_map.remove(&k)).collect()
 }
 
 fn flush_ok(out: &mut String, count: &mut usize) {

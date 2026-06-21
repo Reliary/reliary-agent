@@ -207,6 +207,144 @@ fn num_end(start: usize, bytes: &[u8]) -> usize {
     e
 }
 
+/// Aggressive skeleton: same structural normalization as `skeleton` but ALSO
+/// replaces every word token with `{w}`. Used to detect template-filled output
+/// (cargo "Compiling X", pytest "test_X ok", shell progress) where each line
+/// differs only in token values but shares the same structural template.
+///
+/// Grammar-free: uses the same byte DFA as `skeleton`, no regex, no language
+/// detection. Pure structural template extraction.
+pub fn aggressive_skeleton(line: &str) -> String {
+    let s = line.trim();
+    if s.is_empty() { return String::new(); }
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut result = String::with_capacity(len.min(256));
+    let mut last_space = false;
+
+    macro_rules! emit_str {
+        ($s:expr) => { last_space = false; result.push_str($s); };
+    }
+
+    while i < len {
+        // 0. Progress bar (same as skeleton)
+        if bytes[i] == b'[' && i + 3 < len {
+            if let Some(cls) = s[i..].find(']') {
+                let inner = &s[i+1..i+cls];
+                if !inner.trim().is_empty() && inner.chars().all(|c| c == '#' || c == '.' || c == '=' || c == '>' || c == '-' || c == '_' || c.is_whitespace()) {
+                    emit_str!("{progress}"); i += cls + 1; continue;
+                }
+            }
+        }
+
+        // 1. UUID (same as skeleton)
+        if i + 36 <= len {
+            let mut is_uuid = true;
+            for j in 0..36 {
+                let b = bytes[i + j];
+                let expect_dash = j == 8 || j == 13 || j == 18 || j == 23;
+                if expect_dash { if b != b'-' { is_uuid = false; break; } }
+                else if !b.is_ascii_hexdigit() { is_uuid = false; break; }
+            }
+            if is_uuid { emit_str!("{uuid}"); i += 36; continue; }
+        }
+
+        let is_alpha = |pos: usize| -> bool { bytes[pos].is_ascii_alphabetic() };
+        let is_digit = |pos: usize| -> bool { bytes[pos].is_ascii_digit() };
+        let is_alnum = |pos: usize| -> bool { bytes[pos].is_ascii_alphanumeric() };
+        let bd = |pos: usize| -> bool { pos == 0 || !is_alnum(pos - 1) };
+
+        // 2. word-NNN → {w}-{n}
+        if bd(i) && is_alpha(i) {
+            let mut we = i;
+            while we < len && is_alpha(we) { we += 1; }
+            if we > i + 2 && we < len && bytes[we] == b'-' && we + 1 < len && is_digit(we + 1) {
+                let mut dne = we + 1;
+                while dne < len && is_digit(dne) { dne += 1; }
+                if dne > we + 1 { emit_str!("{w}-{n}"); i = dne; continue; }
+            }
+        }
+
+        // 3. Hex hash → {hash}
+        if bd(i) && bytes[i].is_ascii_hexdigit() {
+            let mut he = i;
+            while he < len && (bytes[he] as char).is_ascii_hexdigit() { he += 1; }
+            if he - i >= 7 && he - i <= 40 && (he >= len || !is_alnum(he)) {
+                emit_str!("{hash}"); i = he; continue;
+            }
+        }
+
+        // 4. Version X.Y.Z → {ver}
+        if is_digit(i) {
+            let ve = num_end(i, bytes);
+            if ve > i && ve < len && bytes[ve] == b'.' {
+                let v2e = num_end(ve + 1, bytes);
+                if v2e > ve + 1 && v2e < len && bytes[v2e] == b'.' {
+                    let v3e = num_end(v2e + 1, bytes);
+                    if v3e > v2e + 1 { emit_str!("{ver}"); i = v3e; continue; }
+                }
+            }
+        }
+
+        // 5. Number → {n}
+        if bd(i) && is_digit(i) {
+            let ne = num_end(i, bytes);
+            if ne > i && (ne >= len || !is_alnum(ne)) {
+                emit_str!("{n}"); i = ne; continue;
+            }
+        }
+
+        // 6. Pure-alpha word → {w}
+        // KEY DIFFERENCE from skeleton: this collapses every alpha word to {w},
+        // so "Compiling serde" and "Compiling tokio" share the same template.
+        // Compound tokens like "v1.0.200" get split: "v"→{w}, "1.0.200"→{ver}.
+        // Tokens like "E0308" get split: "E"→{w}, "0308"→{n}. Both versions
+        // share aggressive skeleton (both become {w}{n} after rules 6+5).
+        if bd(i) && is_alpha(i) {
+            let mut we = i;
+            while we < len && is_alpha(we) { we += 1; }
+            if we > i {
+                // Single-letter words: keep verbatim (structurals like 'a', 'I')
+                if we - i == 1 {
+                    let ch = s[i..].chars().next().unwrap_or(' ');
+                    result.push(ch);
+                    last_space = false;
+                } else {
+                    emit_str!("{w}");
+                }
+                i = we;
+                continue;
+            }
+        }
+
+        // 7. Pure-alphanumeric run (e.g., identifiers like "abc123") → {w}
+        // Catches tokens the alpha-only rule missed (start with digit).
+        if bd(i) && is_alnum(i) {
+            let mut we = i;
+            while we < len && is_alnum(we) { we += 1; }
+            if we > i {
+                emit_str!("{w}");
+                i = we;
+                continue;
+            }
+        }
+
+        // 8. Regular char
+        let ch = s[i..].chars().next().unwrap_or(' ');
+        if ch.is_whitespace() {
+            if !last_space { result.push(' '); last_space = true; }
+            i += ch.len_utf8();
+        } else {
+            result.push(ch);
+            last_space = false;
+            i += ch.len_utf8();
+        }
+    }
+
+    result.trim().to_lowercase()
+}
+
 fn skeleton_hash(text: &str) -> u64 {
     let s = skeleton(text);
     if s.is_empty() { return 0; }
