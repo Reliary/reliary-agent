@@ -115,14 +115,16 @@ fn jsonl_log(entry: &serde_json::Value) {
 
 // Per-auth-key state — first-appearance freeze cache.
 // `content_cache`: maps content hash → compressed version.
+// `turn_count`: total turns seen, used to skip pause logic during early warmup.
 struct PerKeyState {
     content_cache: FxHashMap<u64, String>,
     paused: bool,
+    turn_count: u32,
 }
 
 impl PerKeyState {
     fn new() -> Self {
-        Self { content_cache: FxHashMap::default(), paused: false }
+        Self { content_cache: FxHashMap::default(), paused: false, turn_count: 0 }
     }
 
     /// Content hash for cache lookup.
@@ -399,9 +401,12 @@ fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize,
                     // Compression too destructive — ship original
                     compressed_total += content.len();
                 } else {
-                    let (srcr, _, _) = reliary_compress::srcr_for_compression(&content, &c);
-                    srcr_sum += srcr;
-                    srcr_count += 1;
+                    // Only accumulate SRCR for messages large enough to compute it
+                    if content.len() >= 50 {
+                        let (srcr, _, _) = reliary_compress::srcr_for_compression(&content, &c);
+                        srcr_sum += srcr;
+                        srcr_count += 1;
+                    }
                     history_saved += content.len().saturating_sub(c.len());
                     compressed_total += c.len();
                     state.content_cache.insert(hash, c.clone());
@@ -734,7 +739,10 @@ async fn proxy_post(
     let (history_saved, original_total, compressed_total, avg_srcr) = {
         let mut guard = get_or_create_state(&auth_key);
         if let Some(state) = guard.get_mut(&auth_key) {
-            if state.paused {
+            state.turn_count += 1;
+            // Skip pause logic for the first 3 turns — no baseline to know if cache is busted yet
+            let early_warmup = state.turn_count <= 3;
+            if state.paused && !early_warmup {
                 (0, 0, 0, 0.0) // KV cache warming — skip compression to avoid cache busting
             } else if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
                 compress_messages(messages, state)
