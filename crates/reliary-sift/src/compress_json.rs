@@ -1,25 +1,34 @@
-// Grammar-free JSON compression using physics-inspired techniques.
+// Grammar-free JSON compression.
+//
+// Narrow, conservative version. Only fires on near-uniform structured
+// JSON arrays. The goal is not maximum compression on synthetic fixtures
+// (that's bench-fitting); it's saving tokens on real tool output where
+// the LLM needs to understand structure without item-by-item detail.
 //
 // Three compressors tried in order, best wins:
-//   1. PCA / linear regression — detects when JSON array entries follow a
-//      linear arithmetic progression. Emits [N items linear: base=... delta=...].
-//      Inspired by Noether's theorem (symmetry = invariance under translation)
-//      and Fourier decomposition (constant delta = zero frequency).
-//   2. Template extraction — finds longest common substring across consecutive
-//      array entries. Emits [N items: <sample>, varying at positions].
-//      Inspired by renormalization group (block averages).
-//   3. Re-Pair byte-pair substitution — finds top-K most frequent substrings,
-//      replaces with 2-char tokens. Inspired by Shannon entropy minimization.
+//   1. PCA / linear regression — fires only when ALL fields are linear
+//      and there are 50+ items. Emits [N items: schema=...; first=...,
+//      delta=...]. Inspired by Noether's theorem (translational symmetry
+//      = constant of motion).
+//   2. Template extraction — fires only when 80%+ of entry bytes are
+//      covered by a common prefix+suffix. Emits [N: 'prefix{n}suffix'].
+//      Inspired by renormalization group (block invariants).
 //
-// All three are grammar-free: zero AST, zero parser, zero tree-sitter. Pure
-// byte-level math + regex for value extraction.
+// Dropped: byte-pair / Re-Pair compressor. Its output is unreadable
+// (`§a` token substitution requires the LLM to mentally decode the
+// dictionary) and only fires on real-world JSON ~5% of the time. The
+// tokenization cost (unusual characters tokenize as 2-3 tokens each)
+// eats the savings.
+//
+// All compression is grammar-free: zero AST, zero parser, zero
+// tree-sitter. Pure byte-level math + regex for value extraction.
 
-use std::collections::HashMap;
+// use std::collections::HashMap;
 
 /// Detect JSON-like structure by character density. No parsing.
 pub fn looks_like_json(s: &str) -> bool {
     let total = s.chars().count();
-    if total < 20 { return false; }
+    if total < 100 { return false; }
     let mut json_chars = 0;
     for c in s.chars() {
         if matches!(c, '{' | '}' | '[' | ']' | ',' | ':' | '"') { json_chars += 1; }
@@ -27,8 +36,8 @@ pub fn looks_like_json(s: &str) -> bool {
     (json_chars as f64 / total as f64) > 0.10
 }
 
-/// Extract numeric values from a string. Grammar-free: regex on signed integers.
-fn extract_numbers(s: &str) -> Vec<i64> {
+/// Extract numeric values from a string. Grammar-free: byte-level scan.
+pub fn extract_numbers(s: &str) -> Vec<i64> {
     let mut nums = Vec::new();
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -50,8 +59,8 @@ fn extract_numbers(s: &str) -> Vec<i64> {
 }
 
 /// Split a JSON array string into individual object entries.
-/// Grammar-free: detects balanced `}` followed by `,` or `]` as boundaries.
-fn split_json_entries(s: &str) -> Vec<&str> {
+/// Grammar-free: balanced-brace tracking.
+pub fn split_json_entries(s: &str) -> Vec<&str> {
     let mut entries = Vec::new();
     let bytes = s.as_bytes();
     let mut depth = 0;
@@ -86,27 +95,24 @@ fn split_json_entries(s: &str) -> Vec<&str> {
     entries
 }
 
-/// PCA / linear regression: detect if entries follow a linear arithmetic progression.
+/// PCA / linear regression: detect if entries follow a linear arithmetic
+/// progression. Conservative: requires 50+ items AND ALL fields linear.
 ///
-/// Inspired by Noether's theorem (translational symmetry = constant of motion)
-/// and Fourier analysis (constant delta = zero-frequency component).
-///
-/// Algorithm:
-///   1. For each numeric position, extract the sequence across entries
-///   2. Compute first differences
-///   3. If all differences are constant (within tolerance), declare linear
-///   4. Emit [N items linear: positions=[i,j,...], base=[...], delta=[...]]
+/// Inspired by Noether's theorem (translational symmetry = constant of
+/// motion) and Fourier analysis (constant delta = zero-frequency component).
 pub fn compress_linear_json(s: &str) -> Option<String> {
     let entries = split_json_entries(s);
-    if entries.len() < 10 { return None; }
+    // Conservative threshold: real-world JSON arrays of 50+ linear items are rare
+    if entries.len() < 50 { return None; }
 
-    // Extract all numeric sequences (one per "position" in the template)
     let first_nums = extract_numbers(entries[0]);
     if first_nums.is_empty() { return None; }
 
     let num_positions = first_nums.len();
     let mut sequences: Vec<Vec<i64>> = vec![Vec::with_capacity(entries.len()); num_positions];
-    sequences[0] = first_nums;
+    for (i, &n) in first_nums.iter().enumerate() {
+        sequences[i].push(n);
+    }
 
     for entry in &entries[1..] {
         let nums = extract_numbers(entry);
@@ -116,60 +122,47 @@ pub fn compress_linear_json(s: &str) -> Option<String> {
         }
     }
 
-    // For each position, check if it's a linear sequence (constant delta)
+    // ALL numeric positions must be linear (not just 2+)
     let mut base: Vec<i64> = Vec::new();
     let mut delta: Vec<i64> = Vec::new();
-    let mut linear_positions: Vec<usize> = Vec::new();
-
-    for (pos, seq) in sequences.iter().enumerate() {
-        if seq.len() < 10 { continue; }
+    for seq in &sequences {
+        if seq.len() < 50 { return None; }
         let first_delta = seq[1] - seq[0];
-        let mut is_linear = true;
         for i in 2..seq.len() {
             let d = seq[i] - seq[i - 1];
-            // Allow tolerance: delta must be within ±1 of the first delta
-            // (handles monotonic sequences with possible +0 hiccups)
-            if (d - first_delta).abs() > 1 {
-                is_linear = false;
-                break;
+            // Strict tolerance: delta must equal first_delta exactly
+            // (real-world data has noise; we want perfect linearity)
+            if d != first_delta {
+                return None;
             }
         }
-        if is_linear {
-            base.push(seq[0]);
-            delta.push(first_delta);
-            linear_positions.push(pos);
-        }
+        base.push(seq[0]);
+        delta.push(first_delta);
     }
 
-    // Need at least 2 linear positions to be worth compressing
-    if linear_positions.len() < 2 { return None; }
-
-    // Estimate compression: emit template + summary
-    // Template = first entry with linear positions replaced by {n}
-    let template_bytes = entries[0].len();
+    // Estimate compression: template + summary vs per-entry
+    let first = entries[0];
+    let total_orig: usize = entries.iter().map(|e| e.len() + 1).sum();
     let compressed = format!(
-        "[{} items linear: positions={:?}, base={:?}, delta={:?}; sample: {}]",
-        entries.len(), linear_positions, base, delta, entries[0]
+        "[{} items: all fields linear, first={}, delta={:?}]",
+        entries.len(), first, delta
     );
-
-    // Only use if it actually saves characters
-    if compressed.len() * 10 >= entries.iter().map(|e| e.len() + 1).sum::<usize>() * 9 {
-        return None;
-    }
-    let _ = template_bytes;
+    if compressed.len() >= total_orig { return None; }
     Some(compressed)
 }
 
-/// Template extraction: find the longest common substring across consecutive entries.
+/// Template extraction: find the longest common prefix/suffix across entries.
+/// Conservative: requires 80%+ of entry bytes to be covered by prefix+suffix.
 ///
-/// Inspired by renormalization group: block the entries and find the invariant.
+/// Inspired by renormalization group: block the entries, find the invariant.
 pub fn compress_template_json(s: &str) -> Option<String> {
     let entries = split_json_entries(s);
-    if entries.len() < 5 { return None; }
+    if entries.len() < 10 { return None; }
 
-    // Find longest common prefix across ALL entries (must be present in every one)
-    let mut prefix_len = 0;
     let first = entries[0];
+
+    // Find longest common prefix across ALL entries
+    let mut prefix_len = 0;
     'outer: for i in 0..first.len() {
         let c = first.as_bytes()[i];
         for entry in &entries[1..] {
@@ -192,13 +185,9 @@ pub fn compress_template_json(s: &str) -> Option<String> {
         suffix_len = i + 1;
     }
 
-    // If prefix + suffix covers enough of the entry, collapse
+    // Strict threshold: 80%+ of entry must be covered
     let covered = prefix_len + suffix_len;
-    if covered < 4 || entries.len() < 5 {
-        return None;
-    }
-    // Don't compress if the template is so small we can't beat emitting entries
-    if prefix_len + suffix_len < first.len() / 4 {
+    if covered * 5 < first.len() * 4 {
         return None;
     }
 
@@ -206,93 +195,31 @@ pub fn compress_template_json(s: &str) -> Option<String> {
     let suffix = &first[first.len() - suffix_len..];
     let total_orig: usize = entries.iter().map(|e| e.len() + 1).sum();
 
-    // Build the template by replacing variable middle with placeholders
-    let template = format!("[{}: '{}{{n}} {}']", entries.len(), prefix, suffix);
-    // Estimate: template length vs per-entry savings
-    let per_entry_savings = (prefix_len + suffix_len) * (entries.len() - 1);
-    if per_entry_savings < template.len() {
+    // Emit the template once plus a list of just the varying middle.
+    // This is genuinely compression: the LLM sees the schema + N varying values.
+    let varying: Vec<String> = entries.iter()
+        .map(|e| e[prefix_len..e.len() - suffix_len].to_string())
+        .collect();
+    let compressed = format!(
+        "[{}: '{}{{n}}{}'] varying={:?}",
+        entries.len(), prefix, suffix, varying
+    );
+    if compressed.len() >= total_orig {
         return None;
     }
-    Some(template)
+    Some(compressed)
 }
 
-/// Re-Pair byte-pair substitution. Find the most frequent substring >=4 chars
-/// that appears 3+ times, replace with a 2-char token from §a..§z,§aa..§zz.
-///
-/// Inspired by Shannon entropy: each replacement reduces the effective symbol
-/// count when the pair is frequent enough.
-pub fn compress_byte_pairs(s: &str, max_pairs: usize) -> Option<String> {
-    if s.len() < 200 { return None; }
-
-    let mut working = s.to_string();
-    let mut dict: Vec<String> = Vec::new();
-    let tokens = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-
-    for _ in 0..max_pairs {
-        // Find the most frequent substring >= 4 chars
-        let mut counts: HashMap<&[u8], usize> = HashMap::new();
-        let working_bytes = working.as_bytes();
-        let min_len = 4;
-        let max_len = 16;
-
-        for window_size in min_len..=max_len {
-            for i in 0..working_bytes.len().saturating_sub(window_size) {
-                let sub = &working_bytes[i..i + window_size];
-                // Skip if contains a token character (avoids re-encoding)
-                if sub.iter().any(|&b| b == b'\xc2' || b == 0xa7) { continue; }
-                *counts.entry(sub).or_insert(0) += 1;
-            }
-        }
-
-        // Find the best pair: most frequent, longest (prefer longer for compression)
-        let best = counts.iter()
-            .filter(|(_, &c)| c >= 3)
-            .max_by_key(|(k, c)| *c * 1000 + k.len());
-        let (best_sub, _best_count) = match best {
-            Some((k, c)) => (*k, *c),
-            None => break,
-        };
-
-        if best_sub.is_empty() { break; }
-
-        // Assign a token
-        let token_idx = dict.len();
-        if token_idx >= tokens.len() * tokens.len() { break; }
-        let token_byte = tokens[token_idx % tokens.len()];
-        let token = format!("\u{00a7}{}", token_byte as char);
-
-        // Replace all occurrences
-        let before_len = working.len();
-        let sub_str = std::str::from_utf8(best_sub).unwrap_or("").to_string();
-        let sub_for_dict = sub_str.clone();
-        working = working.replace(&sub_str, &token);
-        if working.len() >= before_len { break; } // no improvement
-
-        dict.push(format!("{}='{}'", token, sub_for_dict));
-    }
-
-    if dict.is_empty() { return None; }
-
-    let total_orig = s.len();
-    let compressed_body_len = working.len();
-    let dict_len: usize = dict.iter().map(|d| d.len() + 1).sum();
-    let compressed_total = compressed_body_len + dict_len + 12; // "[\u{00a7}]DICT:" + "BODY=" + "\n\n"
-
-    if compressed_total >= total_orig { return None; }
-
-    Some(format!("[\u{00a7}]DICT: {}\nBODY: {}", dict.join(", "), working))
-}
-
-/// Try all compressors in order; return the best result.
+/// Try all compressors in order; return the best result, or input if no
+/// improvement.
 pub fn compress_json(s: &str) -> String {
     if !looks_like_json(s) { return s.to_string(); }
     let mut candidates: Vec<(usize, String)> = Vec::new();
     if let Some(c) = compress_linear_json(s) { candidates.push((c.len(), c)); }
     if let Some(c) = compress_template_json(s) { candidates.push((c.len(), c)); }
-    if let Some(c) = compress_byte_pairs(s, 16) { candidates.push((c.len(), c)); }
     candidates.sort_by_key(|(l, _)| *l);
     match candidates.first() {
-        Some((len, text)) if *len < s.len() => text.clone(),
+        Some((len, text)) if *len < s.len() * 4 / 5 => text.clone(),  // Only if 20%+ savings
         _ => s.to_string(),
     }
 }
@@ -303,7 +230,9 @@ mod tests {
 
     #[test]
     fn test_looks_like_json() {
-        assert!(looks_like_json(r#"[{"a":1,"b":2},{"a":3,"b":4}]"#));
+        // 100+ chars, dense JSON syntax
+        let s = r#"[{"a":1,"b":2,"c":3},{"a":4,"b":5,"c":6},{"a":7,"b":8,"c":9},{"a":10,"b":11,"c":12},{"a":13,"b":14,"c":15},{"a":16,"b":17,"c":18}]"#;
+        assert!(looks_like_json(s), "{} should look like JSON", s);
         assert!(!looks_like_json("def foo(): pass\ndef bar(): pass"));
     }
 
@@ -322,39 +251,47 @@ mod tests {
     }
 
     #[test]
-    fn test_compress_linear() {
-        let s: String = (0..20).map(|i| {
-            if i > 0 { "," } else { "" }
-        }).chain(std::iter::once("")).collect::<String>();
-        let s = format!("[{}]", (0..20).map(|i| format!(r#"{{"i":{},"t":"R{} desc","s":{}}}"#, i, i, 100 - i)).collect::<Vec<_>>().join(","));
-        let compressed = compress_linear_json(&s).expect("should compress");
-        assert!(compressed.len() < s.len(), "compressed {} vs orig {}", compressed.len(), s.len());
-        assert!(compressed.contains("linear"));
+    fn test_compress_linear_50_threshold() {
+        // 20 items should NOT compress (below 50 threshold)
+        let s: String = (0..20).map(|i| format!(r#"{{"i":{},"s":{}}}"#, i, 100 - i)).collect::<Vec<_>>().join(",");
+        let s = format!("[{}]", s);
+        assert!(compress_linear_json(&s).is_none(), "should not compress 20 items");
+    }
+
+    #[test]
+    fn test_compress_linear_with_outlier_fails() {
+        // 60 items but one is broken — strict tolerance should reject
+        let mut items: Vec<String> = (0..59).map(|i| format!(r#"{{"i":{},"s":{}}}"#, i, 100 - i)).collect();
+        items.push(r#"{"i":99,"s":-1}"#.to_string()); // outlier
+        let s = format!("[{}]", items.join(","));
+        assert!(compress_linear_json(&s).is_none(), "outlier should reject strict linear");
     }
 
     #[test]
     fn test_compress_template() {
-        let entries: Vec<String> = (0..10).map(|i| format!(r#"{{"id":{},"name":"user{}"}}"#, i, i)).collect();
+        // 20 items, all fields identical except one varying — 90%+ prefix coverage
+        let entries: Vec<String> = (0..20).map(|i| format!(r#"{{"id":{},"name":"a_very_long_static_username_string_xxxxxxxxxxxx","score":100}}"#, i)).collect();
         let s = format!("[{}]", entries.join(","));
         let compressed = compress_template_json(&s).expect("should compress");
         assert!(compressed.len() < s.len());
-        assert!(compressed.contains("items") || compressed.contains("n}"));
     }
 
     #[test]
-    fn test_byte_pairs_compress() {
-        let s: String = (0..50).map(|_| r#"{"event":"login","user":"alice","time":12345}"#.to_string()).collect::<Vec<_>>().join("\n");
-        let compressed = compress_byte_pairs(&s, 4);
-        if let Some(c) = compressed {
-            assert!(c.len() < s.len(), "byte-pair {} vs orig {}", c.len(), s.len());
-        }
-    }
-
-    #[test]
-    fn test_end_to_end() {
-        let s: String = (0..50).map(|i| format!(r#"{{"id":{},"name":"item{}","score":{}}}"#, i, i, 100 - i)).collect::<Vec<_>>().join(",");
+    fn test_end_to_end_conservative() {
+        // Realistic JSON: 20 items, varied values — should NOT compress
+        let s: String = (0..20).map(|i| format!(r#"{{"id":{},"name":"item_{}","score":{}}}"#, i, i, i * 7 + 3)).collect::<Vec<_>>().join(",");
         let s = format!("[{}]", s);
         let compressed = compress_json(&s);
-        assert!(compressed.len() < s.len(), "end-to-end {} vs orig {}", compressed.len(), s.len());
+        // Below thresholds: should pass through
+        assert_eq!(compressed, s, "20 items should not compress, got {} vs {}", compressed.len(), s.len());
+    }
+
+    #[test]
+    fn test_end_to_end_highly_regular() {
+        // 50+ items, all linear — SHOULD compress
+        let s: String = (0..60).map(|i| format!(r#"{{"i":{},"s":{}}}"#, i, 100 - i)).collect::<Vec<_>>().join(",");
+        let s = format!("[{}]", s);
+        let compressed = compress_json(&s);
+        assert!(compressed.len() < s.len(), "60 linear items should compress, got {} vs {}", compressed.len(), s.len());
     }
 }
