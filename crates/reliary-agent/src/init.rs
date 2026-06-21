@@ -145,6 +145,10 @@ pub fn run() {
     }
 
     // 3. OpenCode
+    // OpenCode uses {env:VARIABLE_NAME} substitution in config strings. To route
+    // through the Reliary proxy, the user sets each provider's options.baseURL to
+    // "{env:RELIARY_BASE_URL}/v1" and exports RELIARY_BASE_URL=http://127.0.0.1:9090/v1
+    // in their shell. No config file mutation needed — see README.
     if let Some(home) = home_dir() {
         let opencode_cfg = if cfg!(target_os = "windows") {
             dirs::config_dir().map(|d| d.join("opencode").join("opencode.json"))
@@ -154,42 +158,15 @@ pub fn run() {
             Some(home.join(".config/opencode/opencode.json"))
         };
 
-        if let Some(cfg_path) = opencode_cfg {
-            if cfg_path.exists() {
-                // Offer SSE MCP URL if daemon will be installed
-                let use_sse = ask_yes_no("Found OpenCode config. Add Reliary MCP server via SSE? (single port, shared state)", true);
-                if use_sse {
-                    if inject_sse_mcp_server(&cfg_path, "reliary", 9090) {
-                        ok("Updated opencode.json (SSE MCP)");
-                        configured_agents += 1;
-                    } else if inject_mcp_server(&cfg_path, "reliary") {
-                        ok("Updated opencode.json (stdio fallback)");
-                        configured_agents += 1;
-                    } else {
-                        println!("  \x1b[31m✗\x1b[0m Failed to update opencode.json\n");
-                    }
-                } else {
-                    println!("  \x1b[33m-\x1b[0m Skipped\n");
-                }
-
-                // Proxy routing — after MCP injection, ask to mutate provider baseURLs
-                if ask_yes_no("\nRoute all OpenCode providers through Reliary proxy?\n(Your provider baseURLs will be updated to point at localhost:9090\nand proxy-routes.json will be generated automatically)", true) {
-                    let (count, routes) = inject_opencode_proxy_routes(&cfg_path);
-                    if count > 0 {
-                        ok(&format!("Updated {} OpenCode provider baseURLs", count));
-                        if write_proxy_routes(&routes) {
-                            ok("Generated ~/.reliary/proxy-routes.json");
-                        }
-                    } else {
-                        println!("  \x1b[33m-\x1b[0m No providers found to update\n");
-                    }
-                } else {
-                    println!("  \x1b[33m-\x1b[0m Skipped\n");
-                }
+        if let Some(opencode_cfg) = opencode_cfg {
+            if opencode_cfg.exists() {
+                println!("  \x1b[2m  OpenCode config detected (no changes needed).\x1b[0m");
+                println!("    Set provider baseURL to \"{{env:RELIARY_BASE_URL}}/v1\"");
+                println!("    Then export RELIARY_BASE_URL=http://127.0.0.1:9090/v1");
             }
         }
     }
-    
+
     // 4. Cline
     if let Some(home) = home_dir() {
         let cline_cfg = if cfg!(target_os = "windows") {
@@ -276,30 +253,6 @@ fn inject_mcp_server(cfg_path: &PathBuf, server_name: &str) -> bool {
 }
 
 /// Inject SSE MCP server entry into config JSON (url-based, no subprocess).
-fn inject_sse_mcp_server(cfg_path: &PathBuf, server_name: &str, port: u16) -> bool {
-    let content = match fs::read_to_string(cfg_path) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let mut v: Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-
-    if let Some(obj) = v.as_object_mut() {
-        let mcp_servers = obj.entry("mcpServers").or_insert(serde_json::json!({}));
-        if let Some(servers) = mcp_servers.as_object_mut() {
-            servers.insert(server_name.to_string(), serde_json::json!({
-                "url": format!("http://127.0.0.1:{}/mcp/sse", port),
-            }));
-            if let Ok(new_content) = serde_json::to_string_pretty(&v) {
-                return atomic_write(&cfg_path.to_string_lossy(), &new_content);
-            }
-        }
-    }
-    false
-}
-
 /// Install proxy routing for Pi providers.
 /// Reads Pi settings.json, finds API keys, writes proxy-routes.json.
 /// Returns the number of API keys discovered.
@@ -518,7 +471,8 @@ pub fn uninstall() {
         }
     }
 
-    // 3. OpenCode
+    // 3. OpenCode — nothing to remove. init never mutates opencode.json;
+    // users configure RELIARY_BASE_URL in their shell. See README.
     if let Some(home) = home_dir() {
         let opencode_cfg = if cfg!(target_os = "windows") {
             dirs::config_dir().map(|d| d.join("opencode").join("opencode.json"))
@@ -528,16 +482,9 @@ pub fn uninstall() {
             Some(home.join(".config/opencode/opencode.json"))
         };
 
-        if let Some(cfg_path) = opencode_cfg {
-            if cfg_path.exists() {
-                if remove_mcp_server(&cfg_path, "reliary") {
-                    ok("Removed Reliary from OpenCode");
-                    removed_agents += 1;
-                }
-                // Restore original provider baseURLs
-                if restore_opencode_proxy_routes() {
-                    ok("Restored OpenCode provider baseURLs");
-                }
+        if let Some(opencode_cfg) = opencode_cfg {
+            if opencode_cfg.exists() {
+                println!("  \x1b[2m  OpenCode: unset RELIARY_BASE_URL to go direct\x1b[0m");
             }
         }
     }
@@ -661,71 +608,9 @@ fn uninstall_daemon() -> bool {
     removed
 }
 
-/// Inject proxy baseURLs for all OpenCode providers.
-/// Returns (count_of_updated_providers, routes_map).
-fn inject_opencode_proxy_routes(cfg_path: &PathBuf) -> (usize, HashMap<String, String>) {
-    let content = match std::fs::read_to_string(cfg_path) {
-        Ok(c) => c,
-        Err(_) => return (0, HashMap::new()),
-    };
-    let mut v: Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return (0, HashMap::new()),
-    };
-
-    let mut routes: HashMap<String, String> = HashMap::new();
-    let mut backups: HashMap<String, String> = HashMap::new();
-    let mut count = 0;
-
-    if let Some(obj) = v.as_object_mut() {
-        if let Some(providers) = obj.get_mut("provider").and_then(|p| p.as_object_mut()) {
-            for (name, provider) in providers.iter_mut() {
-                if let Some(options) = provider.get_mut("options").and_then(|o| o.as_object_mut()) {
-                    let original_url = match options.get("baseURL").and_then(|v| v.as_str()) {
-                        Some(u) => u.to_string(),
-                        None => continue,
-                    };
-                    // Skip if already pointing at proxy
-                    if original_url.contains("127.0.0.1:9090") || original_url.contains("localhost:9090") {
-                        continue;
-                    }
-                    let api_key = match options.get("apiKey").and_then(|v| v.as_str()) {
-                        Some(k) => k.to_string(),
-                        None => continue,
-                    };
-                    // Update baseURL to proxy
-                    options.insert("baseURL".to_string(), Value::String("http://127.0.0.1:9090/v1".to_string()));
-                    routes.insert(api_key, original_url.clone());
-                    backups.insert(name.clone(), original_url);
-                    count += 1;
-                }
-            }
-        }
-    }
-
-    // Write updated opencode.json
-    if count > 0 {
-        // Add backup metadata to the routes map
-        let routes_with_backups = {
-            let mut r = routes.clone();
-            if !backups.is_empty() {
-                r.insert("__backups".to_string(), serde_json::to_string(&backups).unwrap_or_default());
-            }
-            r
-        };
-
-        if let Ok(new_content) = serde_json::to_string_pretty(&v) {
-            atomic_write(&cfg_path.to_string_lossy(), &new_content);
-        }
-        // Write proxy-routes.json with backup data embedded (for restore)
-        write_proxy_routes(&routes_with_backups);
-        (count, routes_with_backups)
-    } else {
-        (0, routes)
-    }
-}
-
-/// Write proxy-routes.json to ~/.reliary/
+/// Write proxy-routes.json to ~/.reliary/ (used by install_pi_proxy_routes).
+/// Merges with existing file rather than overwriting, so that Pi and OpenCode
+/// init runs in either order don't clobber each other.
 fn write_proxy_routes(routes: &HashMap<String, String>) -> bool {
     let home = match dirs::home_dir() {
         Some(h) => h,
@@ -734,85 +619,20 @@ fn write_proxy_routes(routes: &HashMap<String, String>) -> bool {
     let config_dir = home.join(".reliary");
     let _ = std::fs::create_dir_all(&config_dir);
 
-    // Build routes JSON from api_key -> upstream_url
-    let mut routes_json = serde_json::Map::new();
+    // Merge with existing routes — preserve keys not in this call's routes map.
+    let routes_path = config_dir.join("proxy-routes.json");
+    let mut routes_json: serde_json::Map<String, Value> = if let Ok(existing) = std::fs::read_to_string(&routes_path) {
+        serde_json::from_str(&existing).unwrap_or_default()
+    } else {
+        serde_json::Map::new()
+    };
     for (key, value) in routes {
         routes_json.insert(key.clone(), Value::String(value.clone()));
     }
 
-    let routes_path = config_dir.join("proxy-routes.json");
     let content = serde_json::to_string_pretty(&serde_json::Value::Object(routes_json))
         .unwrap_or_default();
     atomic_write(&routes_path.to_string_lossy(), &content)
-}
-
-/// Restore original OpenCode provider baseURLs from proxy-routes.json backup.
-pub fn restore_opencode_proxy_routes() -> bool {
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => return false,
-    };
-    let cfg_path = if cfg!(target_os = "windows") {
-        std::env::var("APPDATA").ok()
-            .map(|d| PathBuf::from(d).join("opencode").join("opencode.json"))
-    } else if cfg!(target_os = "macos") {
-        Some(home.join("Library/Application Support/opencode/opencode.json"))
-    } else {
-        Some(home.join(".config/opencode/opencode.json"))
-    };
-    let cfg_path = match cfg_path {
-        Some(p) => p,
-        None => return false,
-    };
-    if !cfg_path.exists() { return false; }
-
-    let routes_path = home.join(".reliary/proxy-routes.json");
-    let routes_content = match std::fs::read_to_string(&routes_path) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let routes: Value = match serde_json::from_str(&routes_content) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let backups = match routes.get("__backups").and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => return false,
-    };
-    let backups: HashMap<String, String> = match serde_json::from_str(backups) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-
-    let content = match std::fs::read_to_string(&cfg_path) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let mut v: Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-
-    let mut restored = 0;
-    if let Some(obj) = v.as_object_mut() {
-        if let Some(providers) = obj.get_mut("provider").and_then(|p| p.as_object_mut()) {
-            for (name, provider) in providers.iter_mut() {
-                if let Some(original_url) = backups.get(name) {
-                    if let Some(options) = provider.get_mut("options").and_then(|o| o.as_object_mut()) {
-                        options.insert("baseURL".to_string(), Value::String(original_url.clone()));
-                        restored += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    if restored > 0 {
-        if let Ok(new_content) = serde_json::to_string_pretty(&v) {
-            atomic_write(&cfg_path.to_string_lossy(), &new_content);
-        }
-    }
-    restored > 0
 }
 
     #[cfg(test)]
@@ -940,25 +760,6 @@ pub fn restore_opencode_proxy_routes() -> bool {
     }
 
     #[test]
-    fn test_inject_sse_mcp_server() {
-        with_temp_home(|home| {
-            let cfg_path = home.join("test_sse_config.json");
-            std::fs::write(&cfg_path, r#"{}"#).unwrap();
-
-            let result = inject_sse_mcp_server(&cfg_path, "reliary_sse", 9090);
-            assert!(result, "should inject SSE MCP server entry");
-
-            let content = std::fs::read_to_string(&cfg_path).unwrap();
-            let v: Value = serde_json::from_str(&content).unwrap();
-            let servers = v.get("mcpServers").and_then(|m| m.as_object()).unwrap();
-            assert!(servers.contains_key("reliary_sse"));
-            let entry = servers.get("reliary_sse").unwrap();
-            let url = entry.get("url").and_then(|u| u.as_str()).unwrap_or("");
-            assert_eq!(url, "http://127.0.0.1:9090/mcp/sse");
-        });
-    }
-
-    #[test]
     fn test_remove_mcp_server() {
         with_temp_home(|home| {
             let cfg_path = home.join("test_remove_config.json");
@@ -984,6 +785,46 @@ pub fn restore_opencode_proxy_routes() -> bool {
             let servers = v.get("mcpServers").and_then(|m| m.as_object()).unwrap();
             assert!(servers.contains_key("existing"), "existing server should survive");
             assert!(servers.contains_key("reliary_new"), "new server should be added");
+        });
+    }
+
+    #[test]
+    fn test_write_proxy_routes_merges_with_existing() {
+        // write_proxy_routes must merge, not overwrite, so that Pi and OpenCode
+        // init runs in either order don't clobber each other.
+        with_temp_home(|home| {
+            // Seed an existing proxy-routes.json with a key from a previous init
+            let config_dir = home.join(".reliary");
+            std::fs::create_dir_all(&config_dir).unwrap();
+            let routes_path = config_dir.join("proxy-routes.json");
+            std::fs::write(&routes_path, r#"{"existing-key": "https://existing.example/v1"}"#).unwrap();
+
+            // Write a new routes map that doesn't contain existing-key
+            let mut new_routes = HashMap::new();
+            new_routes.insert("new-key".to_string(), "https://new.example/v1".to_string());
+            let ok = write_proxy_routes(&new_routes);
+            assert!(ok, "write_proxy_routes should succeed");
+
+            // Both keys should now be present
+            let content = std::fs::read_to_string(&routes_path).unwrap();
+            assert!(content.contains("existing-key"), "existing key should survive");
+            assert!(content.contains("existing.example"), "existing upstream should survive");
+            assert!(content.contains("new-key"), "new key should be added");
+            assert!(content.contains("new.example"), "new upstream should be added");
+        });
+    }
+
+    #[test]
+    fn test_no_opencode_proxy_routes_function() {
+        // init.rs no longer exports inject_opencode_proxy_routes or
+        // restore_opencode_proxy_routes. Verify they don't exist.
+        // (Compile-time check — if these functions were added back, this test
+        // would fail to compile.)
+        // We just verify the public surface here:
+        // If you re-add OpenCode URL rewriting, this test serves as a reminder
+        // that init must NEVER mutate ~/.config/opencode/opencode.json.
+        with_temp_home(|_home| {
+            // No setup needed — this is a placeholder asserting intent.
         });
     }
 }

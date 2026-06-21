@@ -160,9 +160,9 @@ tools listed.
 - MCP tools only appear if `init` was run and `~/.claude.json` contains the reliary
   entry. Run `reliary-agent doctor` to check
 
-### Cline / OpenCode
+### Cline
 
-Both agents use MCP for code intelligence tools and the proxy for compression.
+Cline uses MCP for code intelligence tools and the proxy for compression.
 
 ```bash
 # 1. Install reliary-agent
@@ -192,16 +192,41 @@ reliary-agent doctor           # Check MCP config and proxy
 reliary-agent status           # Show proxy route count
 ```
 
-In OpenCode, check `~/.config/opencode/opencode.json` for the `mcpServers.reliary`
-entry. In Cline, check `~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json`.
+In Cline, check `~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json`.
 
 **Common pitfalls:**
-- OpenCode uses `~/.config/opencode/opencode.json` (Linux), 
-  `~/Library/Application Support/opencode/opencode.json` (macOS), or
-  `%APPDATA%/opencode/opencode.json` (Windows)
 - The env var must match your provider: `OPENAI_BASE_URL` for OpenAI-compatible
   providers, `ANTHROPIC_BASE_URL` for Anthropic, etc.
 - Cline expects MCP config in its settings JSON, not in `~/.claude.json`
+
+### OpenCode
+
+OpenCode uses `{env:VAR}` substitution in config strings. Set each provider's
+`options.baseURL` to `{env:RELIARY_BASE_URL}/v1`, then export the env var in
+your shell. No config-file mutation needed.
+
+```bash
+# 1. Edit ~/.config/opencode/opencode.json
+#    Change each provider's options.baseURL to:
+#      "{env:RELIARY_BASE_URL}/v1"
+
+# 2. Start the proxy
+reliary-agent serve &
+
+# 3. Export the env var in your shell
+export RELIARY_BASE_URL=http://127.0.0.1:9090/v1
+
+# 4. Launch OpenCode
+opencode
+```
+
+Switch between proxy and direct without editing any files:
+
+```bash
+export RELIARY_BASE_URL=http://127.0.0.1:9090/v1   # through proxy
+export RELIARY_BASE_URL=https://api.openai.com/v1  # direct
+unset RELIARY_BASE_URL                              # use config defaults
+```
 
 ### Any agent (proxy-only, no MCP)
 

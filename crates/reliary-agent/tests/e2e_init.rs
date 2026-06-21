@@ -10,11 +10,11 @@ fn setup_fake_home() -> tempfile::TempDir {
     let claude = home.join(".claude.json");
     std::fs::write(&claude, r#"{"mcpServers":{}}"#).unwrap();
 
-    // Mock OpenCode config
+    // Mock OpenCode config (init must NOT mutate this)
     let opencode_dir = home.join(".config/opencode");
     std::fs::create_dir_all(&opencode_dir).unwrap();
     let opencode = opencode_dir.join("opencode.json");
-    std::fs::write(&opencode, r#"{"mcpServers":{}}"#).unwrap();
+    std::fs::write(&opencode, r#"{"provider":{"x":{"options":{"baseURL":"https://upstream.example/v1","apiKey":"key-x"}}}}"#).unwrap();
 
     // Mock Pi config (needed for init to detect Pi)
     let pi_dir = home.join(".local/bin");
@@ -41,10 +41,11 @@ fn e2e_init_injects_mcp_config() {
         .expect("failed to start init");
 
     // Feed answers: Y for Pi (no pi binary in fake home, won't fire),
-    // Y for Claude, Y for OpenCode, N for Cline (no config), N for daemon
+    // Y for Claude, N for Cline (no config), N for daemon.
+    // OpenCode no longer asks any questions — informational only.
     if let Some(stdin) = child.stdin.as_mut() {
         use std::io::Write;
-        stdin.write_all(b"Y\nY\nY\nN\nN\n").unwrap();
+        stdin.write_all(b"Y\nY\nN\nN\n").unwrap();
         stdin.flush().unwrap();
     }
 
@@ -75,14 +76,12 @@ fn e2e_init_injects_mcp_config() {
         "MCP args should be 'mcp', not 'serve'"
     );
 
-    // Verify OpenCode config was modified
+    // Verify OpenCode config was NOT modified — init must leave it untouched.
     let opencode_path = PathBuf::from(&home).join(".config/opencode/opencode.json");
     let opencode_content = std::fs::read_to_string(&opencode_path).unwrap_or_default();
-    let opencode_json: serde_json::Value = serde_json::from_str(&opencode_content).unwrap_or_default();
-    let oc_mcp = &opencode_json["mcpServers"]["reliary"];
-    assert!(
-        !oc_mcp.is_null(),
-        "expected reliary MCP entry in OpenCode config. Content: {}",
+    assert_eq!(
+        opencode_content, r#"{"provider":{"x":{"options":{"baseURL":"https://upstream.example/v1","apiKey":"key-x"}}}}"#,
+        "init must not touch opencode.json. Content: {}",
         opencode_content
     );
 }
@@ -92,7 +91,9 @@ fn e2e_uninstall_removes_mcp_config() {
     let fake_home = setup_fake_home();
     let home = fake_home.path().to_str().unwrap().to_string();
 
-    // First run init — answer Y for all prompts
+    // First run init — answer Y for Pi (no pi binary in fake home, won't fire),
+    // Y for Claude, N for Cline (no config), N for daemon.
+    // OpenCode no longer asks any questions.
     let mut child = std::process::Command::new(common::binary_path())
         .env("HOME", &home)
         .env("USER", "test")
@@ -102,7 +103,7 @@ fn e2e_uninstall_removes_mcp_config() {
         .expect("failed to start init");
     if let Some(stdin) = child.stdin.as_mut() {
         use std::io::Write;
-        stdin.write_all(b"Y\nY\nY\nN\nN\n").unwrap();
+        stdin.write_all(b"Y\nY\nN\nN\n").unwrap();
         stdin.flush().unwrap();
     }
     child.wait().unwrap();
