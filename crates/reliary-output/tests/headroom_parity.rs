@@ -250,7 +250,8 @@ fn print_table(results: &[BenchResult]) {
 #[test]
 fn headroom_parity_benchmark() {
     // Headroom's published ratios from https://headroom-docs.vercel.app/docs/benchmarks
-    let cases: [(&'static str, f64, fn() -> String); 6] = [
+    type BenchCase = (&'static str, f64, fn() -> String);
+    let cases: [BenchCase; 6] = [
         ("JSON array (100 items)", 0.906, json_array_100_items),
         ("JSON array (500 items)", 0.831, json_array_500_items),
         ("Shell output (200 lines)", 0.855, shell_output_200_lines),
@@ -294,7 +295,8 @@ fn fixture_sizes_match_headroom_within_tolerance() {
         ("grep results (150 hits)", 2624, 0.20),
         ("Python source (~480 lines)", 2958, 0.20),
     ];
-    let actuals: &[(&str, fn() -> String)] = &[
+    type ActualCase<'a> = (&'a str, fn() -> String);
+    let actuals: &[ActualCase] = &[
         ("JSON array (100 items)", json_array_100_items),
         ("JSON array (500 items)", json_array_500_items),
         ("Shell output (200 lines)", shell_output_200_lines),

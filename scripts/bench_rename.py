@@ -186,6 +186,29 @@ def guard_logs():
     except Exception:
         return 0
 
+def read_srcr_from_proxy_logs():
+    """Read avg SRCR from /tmp/reliary_proxy.jsonl for the most recent session."""
+    try:
+        srcrs = []
+        with open("/tmp/reliary_proxy.jsonl") as f:
+            for line in f:
+                line = line.strip()
+                if not line: continue
+                try:
+                    d = json.loads(line)
+                    if d.get("event") == "stream_usage" and "avg_srcr" in d:
+                        srcrs.append(d["avg_srcr"])
+                except: pass
+        if not srcrs: return 0.0, 0.0, 0
+        # Skip the first entry (turn 1, always 0.0)
+        relevant = [s for s in srcrs if s > 0.0]
+        if not relevant: return 0.0, max(srcrs) if srcrs else 0.0, len(srcrs)
+        avg = sum(relevant) / len(relevant)
+        worst = min(relevant)
+        return round(avg, 4), round(worst, 4), len(srcrs)
+    except Exception:
+        return 0.0, 0.0, 0
+
 def run_condition(cond, run_idx):
     sfile = f"/tmp/bench-rn-{cond['label']}-r{run_idx}.json"
     if os.path.exists(sfile): os.remove(sfile)
@@ -227,6 +250,7 @@ def run_condition(cond, run_idx):
     all_pass, test_out = check_tests(REPO)
     stale_after = count_stale_refs(REPO)
     guard_fired = any(guard_signals)
+    srcr_avg, srcr_worst, srcr_events = read_srcr_from_proxy_logs() if cond["needs_proxy"] else (0.0, 0.0, 0)
 
     wc = total_pt + 2 * total_ct  # DeepSeek V4 Flash: 1:2 pricing
     return {
@@ -237,6 +261,9 @@ def run_condition(cond, run_idx):
         "turns": len(TURNS), "ok": all_pass,
         "stale_refs": stale_after,
         "guard_fired": guard_fired,
+        "srcr_avg": srcr_avg,
+        "srcr_worst": srcr_worst,
+        "srcr_events": srcr_events,
         "test_output": test_out[:200],
         "per_turn": turn_results,
     }
@@ -272,15 +299,15 @@ if __name__ == "__main__":
     finally:
         restore_configs()
 
-    print("\n" + "=" * 110)
-    hdr = f"  {'Condition':<14s} {'PT':>8s} {'CT':>8s} {'WC':>10s} {'WT':>7s} {'TC':>5s} {'Acc':>5s} {'Δ%':>7s}  Ref  Guard"
+    print("\n" + "=" * 130)
+    hdr = f"  {'Condition':<14s} {'PT':>8s} {'CT':>8s} {'WC':>10s} {'WT':>7s} {'TC':>5s} {'Acc':>5s} {'Compl':>6s} {'Prod':>5s} {'Δ%':>7s}  Ref  Guard  SRCR"
     print(hdr)
-    print("-" * 110)
+    print("-" * 130)
 
     b_trials = [t for t in all_trials if t["feature"] == "baseline"]
     bar_wc = sum(t["wc"] for t in b_trials) / len(b_trials) if b_trials else 1
     if b_trials:
-        print(f"  {'baseline':<12s}  {sum(t['pt'] for t in b_trials)//len(b_trials):<8d}  {sum(t['ct'] for t in b_trials)//len(b_trials):<8d}  {bar_wc:<10.0f}  {sum(t['wt'] for t in b_trials)/len(b_trials):<6.1f}s  {sum(t['tc'] for t in b_trials)//len(b_trials):<5d}  {sum(1 for t in b_trials if t['ok'])}/{len(b_trials):<2}  —       {sum(t['stale_refs'] for t in b_trials)}/{len(b_trials)}  {sum(1 for t in b_trials if t['guard_fired'])}/{len(b_trials)}")
+        print(f"  {'baseline':<12s}  {sum(t['pt'] for t in b_trials)//len(b_trials):<8d}  {sum(t['ct'] for t in b_trials)//len(b_trials):<8d}  {bar_wc:<10.0f}  {sum(t['wt'] for t in b_trials)/len(b_trials):<6.1f}s  {sum(t['tc'] for t in b_trials)//len(b_trials):<5d}  {sum(1 for t in b_trials if t['ok'])}/{len(b_trials):<2}  {'—':>6s}  {'—':>5s}  —       {sum(t['stale_refs'] for t in b_trials)}/{len(b_trials)}  {sum(1 for t in b_trials if t['guard_fired'])}/{len(b_trials)}  {'—':>5s}")
 
     for cond in CONDITIONS:
         if cond["label"] == "baseline": continue
@@ -291,13 +318,22 @@ if __name__ == "__main__":
         okc = sum(1 for x in t if x["ok"])
         gc = sum(1 for x in t if x["guard_fired"])
         sr = sum(x["stale_refs"] for x in t)
-        print(f"  {cond['label']:<12s}  {sum(x['pt'] for x in t)//len(t):<8d}  {sum(x['ct'] for x in t)//len(t):<8d}  {awc:<10.0f}  {sum(x['wt'] for x in t)/len(t):<6.1f}s  {sum(x['tc'] for x in t)//len(t):<5d}  {okc}/{len(t):<2}  {delta:>+6.1f}%  {sr}/{len(t)}  {gc}/{len(t)}")
+        # SRCR: average of per-run srcr_avg, show as percentage
+        srcr_vals = [x.get("srcr_avg", 0.0) for x in t if x.get("srcr_avg", 0.0) > 0]
+        srcr_str = f"{sum(srcr_vals)/len(srcr_vals)*100:.1f}%" if srcr_vals else "—"
+        # Completion/productivity
+        comps = [x.get("completion", 0) for x in t]
+        prods = [x.get("productivity", 0) for x in t]
+        avg_comp = sum(comps)/len(comps) if comps else 0
+        avg_prod = sum(prods)/len(prods) if prods else 0
+        print(f"  {cond['label']:<12s}  {sum(x['pt'] for x in t)//len(t):<8d}  {sum(x['ct'] for x in t)//len(t):<8d}  {awc:<10.0f}  {sum(x['wt'] for x in t)/len(t):<6.1f}s  {sum(x['tc'] for x in t)//len(t):<5d}  {okc}/{len(t):<2}  {avg_comp:.2f}  {avg_prod:.1f}  {delta:>+6.1f}%  {sr}/{len(t)}  {gc}/{len(t)}  {srcr_str}")
 
     print(f"\nPer-run:")
     for t in all_trials:
         g = " guard" if t["guard_fired"] else ""
         s = f" stale={t['stale_refs']}" if t["stale_refs"] else ""
-        print(f"  r{t['run']} {t['feature']:<12s} pt={t['pt']} ct={t['ct']} wc={t['wc']} {t['wt']:>4.0f}s ok={'Y' if t['ok'] else 'N'}{g}{s}")
+        srcr = f" srcr={t.get('srcr_avg', 0.0):.3f}" if t.get("srcr_avg", 0.0) > 0 else ""
+        print(f"  r{t['run']} {t['feature']:<12s} pt={t['pt']} ct={t['ct']} wc={t['wc']} {t['wt']:>4.0f}s ok={'Y' if t['ok'] else 'N'} comp={t.get('completion',0):.2f} prod={t.get('productivity',0):.1f}{g}{s}{srcr}")
 
     with open("/tmp/bench_rn_results.json", "w") as f:
         json.dump(all_trials, f, indent=2)

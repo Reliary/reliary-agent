@@ -306,13 +306,15 @@ fn compress_response_body(body: &str) -> String {
 // This preserves KV cache stability — the compressed version is what the API/SDK
 // has cached from the start.
 // Returns (bytes_saved, original_bytes, compressed_bytes).
-fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize, usize, usize) {
+fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize, usize, usize, f64) {
     let mut history_saved: usize = 0;
     let mut original_total: usize = 0;
     let mut compressed_total: usize = 0;
+    let mut srcr_sum: f64 = 0.0;
+    let mut srcr_count: usize = 0;
 
     // Turn 1 has only system + user message(s) — nothing to compress
-    if messages.len() <= 2 { return (0, 0, 0); }
+    if messages.len() <= 2 { return (0, 0, 0, 0.0); }
 
     for msg in messages.iter_mut() {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -332,6 +334,10 @@ fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize,
 
         // If we already have a cached version, use it
         if let Some(cached) = state.content_cache.get(&hash) {
+            // Measure SRCR for cache-hit compression
+            let (srcr, _, _) = reliary_compress::srcr_for_compression(&content, cached);
+            srcr_sum += srcr;
+            srcr_count += 1;
             history_saved += content.len().saturating_sub(cached.len());
             msg["content"] = Value::String(cached.clone());
             continue;
@@ -382,10 +388,25 @@ fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize,
 
         if let Some(c) = compressed {
             if c.len() < content.len() && state.content_cache.len() < 200 {
-                history_saved += content.len().saturating_sub(c.len());
-                compressed_total += c.len();
-                state.content_cache.insert(hash, c.clone());
-                msg["content"] = Value::String(c);
+                // SRCR safety floor: if compression destroys too much signal, use original
+                let srcr_floor = std::env::var("RELIARY_PROXY_SRCR_FLOOR")
+                    .ok()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let below_floor = srcr_floor > 0.0
+                    && reliary_compress::srcr_below_floor(&content, &c, srcr_floor);
+                if below_floor {
+                    // Compression too destructive — ship original
+                    compressed_total += content.len();
+                } else {
+                    let (srcr, _, _) = reliary_compress::srcr_for_compression(&content, &c);
+                    srcr_sum += srcr;
+                    srcr_count += 1;
+                    history_saved += content.len().saturating_sub(c.len());
+                    compressed_total += c.len();
+                    state.content_cache.insert(hash, c.clone());
+                    msg["content"] = Value::String(c);
+                }
             } else {
                 compressed_total += content.len();
             }
@@ -395,7 +416,8 @@ fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize,
         }
     }
 
-    (history_saved, original_total, compressed_total)
+    let avg_srcr = if srcr_count > 0 { srcr_sum / srcr_count as f64 } else { 0.0 };
+    (history_saved, original_total, compressed_total, avg_srcr)
 }
 
 // ── Health / Ping ──
@@ -709,19 +731,19 @@ async fn proxy_post(
     }
 
     // First-appearance freeze: compress every message on first occurrence
-    let (history_saved, original_total, compressed_total) = {
+    let (history_saved, original_total, compressed_total, avg_srcr) = {
         let mut guard = get_or_create_state(&auth_key);
         if let Some(state) = guard.get_mut(&auth_key) {
             if state.paused {
-                (0, 0, 0) // KV cache warming — skip compression to avoid cache busting
+                (0, 0, 0, 0.0) // KV cache warming — skip compression to avoid cache busting
             } else if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
                 compress_messages(messages, state)
             } else {
-                (0, 0, 0)
+                (0, 0, 0, 0.0)
             }
         } else {
             tracing::error!("state missing after insert for auth_key {}", &auth_key[..8.min(auth_key.len())]);
-            (0, 0, 0)
+            (0, 0, 0, 0.0)
         }
     };
 
@@ -732,6 +754,8 @@ async fn proxy_post(
         0.0
     };
     let savings_pct_int = savings_pct.round() as u64;
+    let srcr_pct = (avg_srcr * 100.0).round() as u64;
+    let hdr_srcr = srcr_pct.to_string();
 
     // Response cache (streaming and non-streaming)
     if let Some(messages) = payload.get("messages") {
@@ -763,6 +787,8 @@ async fn proxy_post(
                 // This preserves time-to-first-token (~500ms) instead of buffering.
                 let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::convert::Infallible>>(32);
                 let ak = auth_key.clone();
+                let ak_srcr = avg_srcr;
+                let ak_savings = savings_pct;
 
                 tokio::spawn(async move {
                     let mut total_bytes = Vec::new();
@@ -816,6 +842,8 @@ async fn proxy_post(
                             "auth_prefix": &ak[..ak.len().min(12)],
                             "prompt_tokens": pt,
                             "completion_tokens": ct,
+                            "avg_srcr": (ak_srcr * 10000.0).round() / 10000.0,
+                            "savings_pct": ak_savings,
                         }));
                         // Cache-hit feedback loop
                         if !std::env::var("RELIARY_PROXY_CACHE_FEEDBACK").is_ok_and(|v| v == "0") {
@@ -867,6 +895,7 @@ async fn proxy_post(
                             "auth_prefix": &auth_key[..auth_key.len().min(12)],
                             "history_saved": history_saved,
                             "savings_pct": savings_pct,
+                            "avg_srcr": (avg_srcr * 10000.0).round() / 10000.0,
                             "response_compressed": body_str.len() < raw_str.len(),
                             "timestamp": std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -879,6 +908,9 @@ async fn proxy_post(
                         }
                         if let Ok(hv) = header::HeaderValue::from_str(&savings_pct_int.to_string()) {
                             resp.headers_mut().insert("x-reliaty-savings-pct", hv);
+                        }
+                        if let Ok(hv) = header::HeaderValue::from_str(&hdr_srcr) {
+                            resp.headers_mut().insert("x-reliaty-srcr", hv);
                         }
                         resp
                     }

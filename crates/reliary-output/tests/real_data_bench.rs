@@ -146,13 +146,13 @@ fn real_data_benchmark() {
         cargo_test.push_str(&format!("test test_{} ... ok\n", i));
     }
     cargo_test.push_str("test test_async_handler ... FAILED\n");
-    cargo_test.push_str("\n");
+    cargo_test.push('\n');
     cargo_test.push_str("failures:\n");
-    cargo_test.push_str("\n");
+    cargo_test.push('\n');
     cargo_test.push_str("---- test_async_handler stdout ----\n");
     cargo_test.push_str("thread 'test_async_handler' panicked at 'assertion failed: 1 == 2', src/lib.rs:42:5\n");
     cargo_test.push_str("note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n");
-    cargo_test.push_str("\n");
+    cargo_test.push('\n');
     cargo_test.push_str("test result: FAILED. 45 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n");
     results.push(run_one("cargo test (build + 45 ok + 1 err)", &cargo_test));
 
