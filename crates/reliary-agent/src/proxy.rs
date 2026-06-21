@@ -224,9 +224,19 @@ fn compress_assistant_text(text: &str, dict: Option<&reliary_compress::Compressi
 fn sift_compress_tool_result(content: &str) -> String {
     if content.len() < 200 { return content.to_string(); }
 
-    // Step 1: Very large content — zone truncate first (keep head + tail, drop middle)
+    // Step 1: Very large content — info-preserving zone truncate if FTS5 available,
+    // else fall back to blind zone truncate. Info-zone preserves error lines and
+    // project-specific identifiers, enabling more aggressive truncation without
+    // signal loss (Phase 3 from break-ceiling plan).
     let working = if content.lines().count() > 200 {
-        reliary_sift::zone_truncate(content, 30, 15)
+        let info_scored = build_info_scorer();
+        if let Some(scorer) = info_scored {
+            // With scorer: keep top-15 by info score (vs blind 30+15=45 lines)
+            reliary_sift::zone_truncate_info(content, 15, Some(scorer))
+        } else {
+            // No scorer available: blind zone truncate (legacy behavior)
+            reliary_sift::zone_truncate(content, 30, 15)
+        }
     } else {
         content.to_string()
     };
@@ -241,7 +251,8 @@ fn sift_compress_tool_result(content: &str) -> String {
         .collect();
     let strategy = reliary_sift::classify::detect_strategy(&raw_lines);
 
-    // Step 4: Apply expert compression per strategy
+    // Step 4: Apply expert compression per strategy (now uses aggressive_skeleton
+    // when content is template-filled — Phase 1 from break-ceiling plan)
     let compressed = reliary_sift::filter::format_output(&lines, strategy);
 
     // Step 5: If adaptive didn't help, fall through to existing mechanisms
@@ -271,6 +282,32 @@ fn sift_compress_tool_result(content: &str) -> String {
     }
 
     working
+}
+
+/// Build a scorer closure that uses FTS5 document frequency for info scoring.
+/// Returns None if FTS5 index is unavailable (no project index, empty DB, etc).
+/// Falls back to blind zone truncation in that case.
+fn build_info_scorer() -> Option<impl Fn(&str) -> f64> {
+    use std::sync::Mutex;
+    // Try to open the project FTS5 index. Look for it in CWD or PWD env.
+    let candidates = [
+        std::env::var("RELIARY_INDEX_DB").ok(),
+        Some(".reliary/index.sqlite".to_string()),
+        Some("/tmp/reliary/index.sqlite".to_string()),
+    ];
+    let mut fw = None;
+    for cand in candidates.iter().flatten() {
+        if let Some(w) = reliary_search::ft_weight::FtWeight::open(cand) {
+            fw = Some(w);
+            break;
+        }
+    }
+    let fw = fw?;
+    let fw_mutex = Mutex::new(fw);
+    Some(move |line: &str| -> f64 {
+        let mut guard = fw_mutex.lock().unwrap();
+        guard.line_info_score(line)
+    })
 }
 
 // Compress the assistant message in an API response body before returning to agent.

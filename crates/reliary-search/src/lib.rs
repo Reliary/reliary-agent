@@ -2,6 +2,7 @@
 pub mod schema;
 pub mod search;
 pub mod ingest;
+pub mod ft_weight;
 
 /// BM25 IDF: ((N - df + 0.5) / (df + 0.5) + 1.0).ln()
 pub fn bm25_idf(n_docs: f64, df: f64) -> f64 {
