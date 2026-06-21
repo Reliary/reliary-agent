@@ -146,14 +146,21 @@ pub fn skeleton(line: &str) -> String {
         let is_alnum = |pos: usize| -> bool { bytes[pos].is_ascii_alphanumeric() };
         let bd = |pos: usize| -> bool { pos == 0 || !is_alnum(pos - 1) };
 
-        // 2. word-NNN
+        // 2. word-NNN (with optional hyphen separator)
         if bd(i) && is_alpha(i) {
             let mut we = i;
             while we < len && is_alpha(we) { we += 1; }
+            // Try alpha-NNN (with hyphen)
             if we > i + 2 && we < len && bytes[we] == b'-' && we + 1 < len && is_digit(we + 1) {
                 let mut dne = we + 1;
                 while dne < len && is_digit(dne) { dne += 1; }
                 if dne > we + 1 { emit_str!("{w}-{n}"); i = dne; continue; }
+            }
+            // Try alphaNNN (no separator) — crate0, file42, item123
+            if we > i + 2 && we < len && is_digit(we) {
+                let mut dne = we;
+                while dne < len && is_digit(dne) { dne += 1; }
+                if dne > we { emit_str!("{w}{n}"); i = dne; continue; }
             }
         }
 

@@ -194,7 +194,11 @@ fn format_normal(lines: &[Line]) -> String {
         skels.len() <= high
     };
     if !is_repetitive { classify::compress_tabular(&mut lines); }
-    let groups = collapse_prefix_runs(&classify::skeleton_groups(&lines));
+    let mut groups = collapse_prefix_runs(&classify::skeleton_groups(&lines));
+    // Merge non-consecutive groups sharing the same skeleton_key (shell/build
+    // output often interleaves two skeleton variants; collapsing them after the
+    // fact restores the "N items matching" compression).
+    merge_split_skeleton_groups(&mut groups);
     let mut out = String::new();
     let mut ok_count: usize = 0;
     for group in &groups {
@@ -226,6 +230,43 @@ fn format_normal(lines: &[Line]) -> String {
 
 fn flush_ok(out: &mut String, count: &mut usize) {
     if *count > 0 { out.push_str(&format!("[{} ok]\n", count)); *count = 0; }
+}
+
+/// Merge groups that share a skeleton_key but were split by interleaved lines.
+/// For shell/build output where two skeleton variants alternate (e.g. short
+/// `Compiling crateN` and longer `Compiling crate-N-extra v0.1.0`), this
+/// collapses them into one combined group.
+fn merge_split_skeleton_groups(groups: &mut Vec<LineGroup>) {
+    if groups.len() < 2 { return; }
+    let mut merged: Vec<LineGroup> = Vec::new();
+    let mut i = 0;
+    while i < groups.len() {
+        let key = groups[i].skeleton_key;
+        let mut combined_count = 0;
+        let mut sample: Option<String> = None;
+        let mut first_idx = groups[i].first_idx;
+        let mut is_error = false;
+        let mut prefixes: Vec<String> = Vec::new();
+        while i < groups.len() && groups[i].skeleton_key == key {
+            combined_count += groups[i].count;
+            if sample.is_none() { sample = Some(groups[i].sample.clone()); }
+            if groups[i].first_idx < first_idx { first_idx = groups[i].first_idx; }
+            if groups[i].is_error { is_error = true; }
+            for p in &groups[i].distinct_prefixes {
+                if !prefixes.contains(p) { prefixes.push(p.clone()); }
+            }
+            i += 1;
+        }
+        merged.push(LineGroup {
+            skeleton_key: key,
+            sample: sample.unwrap_or_default(),
+            count: combined_count,
+            first_idx,
+            is_error,
+            distinct_prefixes: prefixes,
+        });
+    }
+    *groups = merged;
 }
 
 #[cfg(test)]
