@@ -2,7 +2,7 @@
 """Stress test 4: Heal-apply continuous edit cycle."""
 import subprocess, tempfile, os, time
 
-RELIARY = "/home/dev/src/reliary-agent/target/release/reliary-agent"
+RELIARY = os.path.join(os.environ.get("REPO_ROOT", os.path.expanduser("~/src/reliary-agent")), "target", "release", "reliary-agent")
 TEST_FILE = "/tmp/stress_heal_test.rs"
 
 # Create a simple test file and cargo project

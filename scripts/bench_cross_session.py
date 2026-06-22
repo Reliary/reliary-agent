@@ -4,9 +4,9 @@ Sessions 1-5 populate the chronicle. Sessions 6-10 test if the prior changes LLM
 
 import sys, os, json, subprocess, time, shutil
 
-STRA = "/home/dev/src/stria"
+STRA = os.path.join(os.environ.get("STRA_ROOT", os.path.expanduser("~/src/stria")))
 PI = os.path.expanduser("~/.local/bin/pi")
-BIN = "/home/dev/src/reliary-agent/target/release/reliary-agent"
+BIN = os.path.join(os.environ.get("REPO_ROOT", os.path.expanduser("~/src/reliary-agent")), "target", "release", "reliary-agent")
 
 def run_pi(label, timeout=240):
     sfile = f"/tmp/cross-session-{label}-{int(time.time()*1000)}.jsonl"
