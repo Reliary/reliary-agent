@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.7.0 (unreleased)
+## v0.6.6
 
 ### Compression Ceiling Breakthrough
 - **Aggressive skeleton compression:** Tokenizes all alphanumeric runs to `{w}` while preserving version/number placeholders. Cargo `Compiling X v1.0` lines now share skeletons and group together. Gate restricts activation to content where ≥80% of lines share the same aggressive skeleton AND line lengths are similar — prevents file reads with similar function signatures from collapsing.
