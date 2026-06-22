@@ -1,3 +1,6 @@
+pub mod classify;
+pub mod filter;
+
 /// Structural output compression + Maxwell information-theoretic gate.
 /// Zone truncation: keep first N lines, omit middle, keep last M
 pub fn zone_truncate(text: &str, head: usize, tail: usize) -> String {
@@ -29,6 +32,85 @@ pub fn collapse_blanks(text: &str) -> String {
 /// Strip trailing whitespace from each line
 pub fn strip_trailing(text: &str) -> String {
     text.lines().map(|l| l.trim_end()).collect::<Vec<_>>().join("\n")
+}
+
+/// Detect if a line is likely an error/signal line worth preserving.
+/// Grammar-free: simple substring patterns (no regex per line, no AST).
+pub fn is_error_line(line: &str) -> bool {
+    line.contains("FAILED")
+        || line.contains("Error:")
+        || line.contains("error[")
+        || line.contains("panic")
+        || line.contains("Traceback")
+        || line.contains("Exception")
+        || line.starts_with("  --> ")
+        || line.starts_with("error:")
+}
+
+/// Information-preserving zone truncation.
+/// Instead of blind first-N + last-M, score each line by:
+///   - is_error_line bonus (preserve error context)
+///   - identifier uniqueness bonus (project-specific identifiers preserved)
+///   - position penalty (first/last lines slightly preferred)
+///
+/// Falls back to `zone_truncate(text, head, tail)` if `scorer` is None.
+pub fn zone_truncate_info<F>(text: &str, keep_lines: usize, scorer: Option<F>) -> String
+where
+    F: Fn(&str) -> f64,
+{
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= keep_lines {
+        return text.to_string();
+    }
+    let scorer = match scorer {
+        Some(s) => s,
+        None => return zone_truncate(text, keep_lines / 2, keep_lines - keep_lines / 2),
+    };
+
+    // Score each line
+    let scored: Vec<(usize, f64)> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let mut score = scorer(line);
+            if is_error_line(line) {
+                score += 10.0;
+            }
+            // First/last 3 lines get small position bonus (recency/primacy)
+            if i < 3 || i >= lines.len().saturating_sub(3) {
+                score += 0.5;
+            }
+            (i, score)
+        })
+        .collect();
+
+    // Pick top-N lines by score (preserve their original order)
+    let mut sorted = scored.clone();
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let keep_indices: std::collections::BTreeSet<usize> = sorted
+        .iter()
+        .take(keep_lines)
+        .map(|(i, _)| *i)
+        .collect();
+
+    // Reassemble preserving original order, inserting markers for dropped runs
+    let mut result: Vec<String> = Vec::new();
+    let mut drop_count: usize = 0;
+    for (i, line) in lines.iter().enumerate() {
+        if keep_indices.contains(&i) {
+            if drop_count > 0 {
+                result.push(format!("[…{} lines…]", drop_count));
+                drop_count = 0;
+            }
+            result.push(line.to_string());
+        } else {
+            drop_count += 1;
+        }
+    }
+    if drop_count > 0 {
+        result.push(format!("[…{} lines…]", drop_count));
+    }
+    result.join("\n")
 }
 
 /// Maxwell triple-metric filter: entropy, compression ratio, lexical diversity
@@ -356,7 +438,7 @@ mod tests {
     #[test]
     fn test_is_definition_line() {
         assert!(is_definition_line("fn hello()"));
-        assert!(is_definition_line("x = y")); // assignment IS a definition
+        assert!(is_definition_line("x = y"));
     }
     #[test]
     fn test_looks_like_content() {
@@ -378,7 +460,7 @@ mod tests {
         let text = "# this is a comment\n# another comment\nfn main() {}";
         let lines = classify_content(text);
         let r = compress_content(lines, false);
-        assert!(r.iter().any(|l| l.contains("this is a comment")), "non-aggressive mode should preserve first comment");
+        assert!(r.iter().any(|l| l.contains("this is a comment")));
     }
     #[test]
     fn test_truncate_long() {

@@ -2,7 +2,7 @@
 """Stress test 7: Malformed config cascade."""
 import json, os, tempfile, subprocess, shutil
 
-RELIARY = "/home/dev/src/reliary-agent/target/release/reliary-agent"
+RELIARY = os.path.join(os.environ.get("REPO_ROOT", os.path.expanduser("~/src/reliary-agent")), "target", "release", "reliary-agent")
 RELIARY_DIR = os.path.expanduser("~/.reliary")
 errors = 0
 

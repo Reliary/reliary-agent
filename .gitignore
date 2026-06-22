@@ -1,5 +1,12 @@
 target/
 .reliary/
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
 *.bak
 *.perf
 *.old
+__pycache__/
+*.pyc
+.pytest_cache/

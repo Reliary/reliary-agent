@@ -67,6 +67,14 @@ jobs:
           stale=$(find . -name "*.bak" -o -name "*.perf" -o -name "*.old" -not -path "./target/*" 2>/dev/null)
           if [ -n "$stale" ]; then echo "FAIL"; echo "$stale"; exit 1; fi
 
+      - name: no sqlite runtime DBs
+        run: |
+          if git ls-files | grep -qE '\.sqlite(-journal|-shm|-wal)?$'; then
+            echo "FAIL: SQLite runtime DBs committed (daemon rebuilds these)"
+            git ls-files | grep -E '\.sqlite'
+            exit 1
+          fi
+
       - name: gate.js sync
         run: |
           if ! diff pi/gate.js crates/reliary-agent/pi/gate.js >/dev/null 2>&1; then

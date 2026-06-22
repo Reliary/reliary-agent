@@ -5,7 +5,7 @@ import os, json, subprocess, tempfile, shutil
 
 RELIARY = os.path.expanduser("~/.local/bin/reliary-agent")
 if not os.path.exists(RELIARY):
-    RELIARY = "/home/dev/src/reliary-agent/target/release/reliary-agent"
+    RELIARY = os.path.join(os.environ.get("REPO_ROOT", os.path.expanduser("~")), "src", "reliary-agent", "target", "release", "reliary-agent")
 
 def test_claude_config_injection():
     print("=== Test 1: Claude Code config injection ===")

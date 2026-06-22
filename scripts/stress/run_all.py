@@ -15,7 +15,7 @@ for name, script, needs_daemon in SCRIPTS:
     # Start daemon for tests that need it
     if needs_daemon:
         subprocess.run(["pkill", "-f", "reliary-agent"], capture_output=True)
-        subprocess.Popen(["/home/dev/src/reliary-agent/target/release/reliary-agent", "serve"],
+        subprocess.Popen([os.path.join(os.environ.get("REPO_ROOT", os.path.expanduser("~/src/reliary-agent")), "target", "release", "reliary-agent"), "serve"],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         import time as _t; _t.sleep(3)
 
