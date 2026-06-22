@@ -298,6 +298,138 @@ def check_hardcoded_lists(files: List[str]) -> List[Violation]:
     return violations
 
 
+def check_unbounded_collections(files: List[str]) -> List[Violation]:
+    """Rule 7: Detect unbounded HashMap/Mutex<HashMap> with no LRU eviction.
+
+    Bug 62: ANTI_DB grew with every new workdir (was unbounded).
+    Bug 67: RATE_BUCKETS grew with every unique auth_key (was unbounded).
+    Bug 40: SSE_SESSIONS grew with every new MCP client (was unbounded).
+
+    Pattern: a Mutex<HashMap> or LazyLock<Mutex<HashMap>> with no .retain() or
+    bounded cap nearby.
+    """
+    violations = []
+    for path in files:
+        with open(path) as f:
+            lines = f.readlines()
+        for i, line in enumerate(lines, 1):
+            if 'lazy_lock' not in line.lower() and 'lazy_static' not in line.lower() and 'LazyLock' not in line:
+                continue
+            if 'HashMap' not in line and 'FxHashMap' not in line:
+                continue
+            # Check 100 lines of context for eviction logic
+            context_end = min(len(lines), i + 100)
+            context = ''.join(lines[i:context_end])
+            has_eviction = any(pat in context for pat in [
+                'retain', '.remove(', 'evict', 'MAX_', 'CAP', 'capped',
+                '>= ', 'len() >=', 'min_by_key',  # LRU-style eviction
+            ])
+            # Test code is exempt
+            if '#[cfg(test)]' in ''.join(lines[max(0, i-50):i]):
+                continue
+            if '#[test]' in ''.join(lines[max(0, i-10):i]):
+                continue
+            if not has_eviction:
+                violations.append(Violation(
+                    'unbounded-collection',
+                    path, i,
+                    f"HashMap without visible eviction policy (could grow unbounded). Add .retain(), cap check, or LRU."
+                ))
+    return violations
+
+
+def check_blocking_in_async(files: List[str]) -> List[Violation]:
+    """Rule 8: Detect std::fs operations inside async fn without spawn_blocking.
+
+    Bug 56: try_prefetch did std::fs::read_to_string in async loop (blocked runtime).
+    Bug 69: HTTP client has no timeout (async task can hang).
+    """
+    violations = []
+    for path in files:
+        with open(path) as f:
+            lines = f.readlines()
+        # Find async fn boundaries
+        in_async_fn = False
+        async_brace_depth = 0
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if 'async fn ' in stripped or 'async ' in stripped and 'fn ' in stripped:
+                in_async_fn = True
+                async_brace_depth = 0
+            if in_async_fn:
+                async_brace_depth += stripped.count('{') - stripped.count('}')
+                if async_brace_depth <= 0 and '{' in stripped:
+                    in_async_fn = False
+            if not in_async_fn:
+                continue
+            # Check for std::fs in async context (not in spawn_blocking)
+            if 'std::fs::read_to_string' in line or 'std::fs::read(' in line or 'std::fs::File::' in line:
+                # Look for spawn_blocking nearby
+                context_start = max(0, i - 5)
+                context = ''.join(lines[context_start:i])
+                if 'spawn_blocking' in context or 'block_in_place' in context:
+                    continue
+                if 'GUARDED: intentional' in line:
+                    continue
+                violations.append(Violation(
+                    'blocking-in-async',
+                    path, i,
+                    f"std::fs operation in async fn. Use tokio::task::spawn_blocking or tokio::fs."
+                ))
+    return violations
+
+
+def check_no_timeout(files: List[str]) -> List[Violation]:
+    """Rule 9: Detect reqwest::Client without .timeout().
+
+    Bug 69: HTTP client had no timeout — upstream hang leaked memory and FDs.
+    """
+    violations = []
+    for path in files:
+        with open(path) as f:
+            lines = f.readlines()
+        for i, line in enumerate(lines, 1):
+            if 'reqwest::Client::builder' not in line and 'reqwest::Client::new' not in line:
+                continue
+            # Check next 10 lines for timeout
+            context = ''.join(lines[i:min(len(lines), i+10)])
+            if '.timeout(' in context:
+                continue
+            if '// GUARDED' in line:
+                continue
+            violations.append(Violation(
+                'no-timeout',
+                path, i,
+                f"reqwest::Client without .timeout(). Hung upstream leaks memory and FDs."
+            ))
+    return violations
+
+
+def check_panic_lock(files: List[str]) -> List[Violation]:
+    """Rule 10: Detect Mutex::lock().unwrap() (panics on poison).
+
+    Bug 57: Many .lock().unwrap() calls — if any thread panics while holding
+    the lock, future lockers also panic.
+    """
+    violations = []
+    for path in files:
+        if 'fs_safe.rs' in path:
+            continue
+        with open(path) as f:
+            lines = f.readlines()
+        for i, line in enumerate(lines, 1):
+            if '.lock().unwrap()' not in line:
+                continue
+            if 'GUARDED: intentional' in line:
+                continue
+            if 'test' in path:
+                continue
+            violations.append(Violation(
+                'panic-lock',
+                path, i,
+                f"Mutex::lock().unwrap() panics on poison. Use unwrap_or_else(|e| e.into_inner())."
+            ))
+    return violations
 def main():
     staged = '--staged' in sys.argv
     verbose = '--verbose' in sys.argv
@@ -317,6 +449,10 @@ def main():
         ('sql-unknown-table', check_sql_unknown_tables),
         ('uncapped-stdin', check_stdin_size),
         ('hardcoded-list', check_hardcoded_lists),
+        ('unbounded-collection', check_unbounded_collections),
+        ('blocking-in-async', check_blocking_in_async),
+        ('no-timeout', check_no_timeout),
+        ('panic-lock', check_panic_lock),
     ]
     for rule_name, check_fn in checks:
         violations = check_fn(files)

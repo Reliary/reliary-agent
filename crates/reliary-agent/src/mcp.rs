@@ -50,7 +50,7 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
             let db_path = format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'));
             match rusqlite::Connection::open(&db_path) {
                 Ok(db) => {
-                    let _ = db.execute_batch(" synchronous=NORMAL;");
+                    let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
                     if reliary_search::schema::open_existing_db(&db).is_ok() {
                         let results = reliary_search::search::search_fts5(&db, query, 10);
                         DispatchResult::Success(serde_json::json!({

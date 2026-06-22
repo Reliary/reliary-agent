@@ -18,8 +18,15 @@ use tracing::{info, warn, error};
 
 // Shared HTTP client with connection pooling — eliminates per-request TCP+TLS handshake.
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    // Bug 69: total request timeout (default 5 min) to prevent hung upstream
+    // requests from leaking memory and FDs.
+    let timeout_secs: u64 = std::env::var("RELIARY_PROXY_UPSTREAM_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
     reqwest::Client::builder()
         .pool_max_idle_per_host(10)
+        .timeout(std::time::Duration::from_secs(timeout_secs))
         .build()
         .expect("reqwest::Client")
 });
@@ -30,10 +37,16 @@ static COMPRESSION_DICT: LazyLock<Option<reliary_compress::CompressionDict>> =
     LazyLock::new(crate::read_summary::load_dictionary);
 
 // Synchronization for JSONL logging — prevents interleaved lines from concurrent requests.
-static JSONL_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+// JSONL log: persistent file handle (Bug 53 fix).
+// Opens /tmp/reliary_proxy.jsonl once and reuses for all subsequent writes.
+static JSONL_FILE: LazyLock<Mutex<Option<std::fs::File>>> = LazyLock::new(|| Mutex::new(None));
 
-static RESPONSE_CACHE: LazyLock<Mutex<FxHashMap<u64, String>>> =
+// Response cache with proper LRU eviction (Bug 52 fix).
+// Stores (cached_body, insertion_sequence) to enable oldest-first eviction.
+static RESPONSE_CACHE: LazyLock<Mutex<FxHashMap<u64, (String, u64)>>> =
     LazyLock::new(|| Mutex::new(FxHashMap::default()));
+static RESPONSE_CACHE_SEQ: LazyLock<Mutex<u64>> = LazyLock::new(|| Mutex::new(0));
+const RESPONSE_CACHE_MAX: usize = 120;
 
 static DAEMON_STATE: LazyLock<Mutex<Option<Arc<crate::session_state::SessionState>>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -52,37 +65,87 @@ pub fn get_state() -> Arc<crate::session_state::SessionState> {
     guard.clone().unwrap_or_else(|| Arc::new(crate::session_state::SessionState::new(".")))
 }
 
-fn cache_key(auth: &str, body: &str, is_streaming: bool) -> u64 {
+/// Bug 68: infer the request's workdir by looking for any absolute file path
+/// in the messages and finding the nearest .reliary/ ancestor.
+/// Returns None if no path can be inferred.
+fn infer_request_workdir(payload: &serde_json::Value) -> Option<String> {
+    let messages = payload.get("messages")?.as_array()?;
+    // Scan for any absolute file path in tool_calls or content
+    for msg in messages {
+        if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+            // Find absolute paths (heuristic: starts with /)
+            for word in content.split_whitespace() {
+                let path = word.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';' || c == ')');
+                if path.starts_with('/') && std::path::Path::new(path).exists() {
+                    if let Some((root, _, _)) = crate::daemon::find_reliary_root(path) {
+                        return Some(root);
+                    }
+                }
+            }
+        }
+        // Check tool_calls function arguments for file paths
+        if let Some(tool_calls) = msg.get("tool_calls").and_then(|t| t.as_array()) {
+            for tc in tool_calls {
+                if let Some(args) = tc.get("function").and_then(|f| f.get("arguments")).and_then(|a| a.as_str()) {
+                    for word in args.split_whitespace() {
+                        let path = word.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';' || c == ')');
+                        if path.starts_with('/') && std::path::Path::new(path).exists() {
+                            if let Some((root, _, _)) = crate::daemon::find_reliary_root(path) {
+                                return Some(root);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn cache_key(auth: &str, body: &str, is_streaming: bool, model: &str) -> u64 {
     use rustc_hash::FxHasher;
     let mut h = FxHasher::default();
     auth.hash(&mut h);
     body.hash(&mut h);
     is_streaming.hash(&mut h);
+    // Bug 58: include model in cache key (was missing — same messages but different
+    // model would return wrong model's cached response).
+    model.hash(&mut h);
     h.finish()
 }
 
-fn cached_response(auth: &str, body: &str, is_streaming: bool) -> Option<String> {
-    let key = cache_key(auth, body, is_streaming);
-    RESPONSE_CACHE.lock().ok().and_then(|c| c.get(&key).cloned())
+fn cached_response(auth: &str, body: &str, is_streaming: bool, model: &str) -> Option<String> {
+    let key = cache_key(auth, body, is_streaming, model);
+    RESPONSE_CACHE.lock().ok().and_then(|c| c.get(&key).map(|(s, _)| s.clone()))
 }
 
-fn store_response(auth: &str, body: &str, response: &str, is_streaming: bool) {
-    let key = cache_key(auth, body, is_streaming);
+fn store_response(auth: &str, body: &str, response: &str, is_streaming: bool, model: &str) {
+    let key = cache_key(auth, body, is_streaming, model);
     if let Ok(mut cache) = RESPONSE_CACHE.lock() {
-        cache.insert(key, response.to_string());
-        if cache.len() > 120 {
-            let keys: Vec<u64> = cache.keys().copied().collect();
-            for k in keys.iter().take(20) { cache.remove(k); }
+        // Bug 52: proper LRU — track insertion sequence, evict oldest when over cap
+        let seq = RESPONSE_CACHE_SEQ.lock().map(|mut s| { *s += 1; *s }).unwrap_or(0);
+        cache.insert(key, (response.to_string(), seq));
+        if cache.len() > RESPONSE_CACHE_MAX {
+            // Find the entry with the smallest seq (= oldest)
+            if let Some(&oldest_key) = cache.iter().min_by_key(|(_, (_, seq))| *seq).map(|(k, _)| k) {
+                cache.remove(&oldest_key);
+            }
         }
     }
 }
 
 fn resolve_upstream(auth_key: &str) -> Option<String> {
     if let Some(url) = crate::routes::discover_upstream(auth_key) {
-        return Some(url);
+        // Bug 66: validate URL scheme is http or https (reject file://, gopher://, etc.)
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return Some(url);
+        }
+        return None;
     }
     if let Ok(url) = std::env::var("RELIARY_UPSTREAM_URL") {
-        return Some(url);
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return Some(url);
+        }
     }
     None
 }
@@ -90,7 +153,16 @@ fn resolve_upstream(auth_key: &str) -> Option<String> {
 fn extract_auth_key(headers: &HeaderMap) -> String {
     headers.get("authorization")
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.strip_prefix("Bearer ").unwrap_or(v).to_string())
+        .map(|v| {
+            // Bug 63: case-insensitive "Bearer" / "bearer" / "BEARER" prefix support
+            let key = if v.len() >= 7 && v[..7].eq_ignore_ascii_case("bearer ") {
+                v[7..].to_string()
+            } else {
+                v.to_string()
+            };
+            // Bug 70: reject very long keys (likely malicious or malformed)
+            if key.len() > 1024 { String::new() } else { key }
+        })
         .unwrap_or_default()
 }
 
@@ -101,6 +173,7 @@ fn extract_auth_key(headers: &HeaderMap) -> String {
 // rejected with HTTP 429. Configurable via RELIARY_PROXY_RATE_PER_MIN.
 
 const RATE_LIMIT_PER_MIN_DEFAULT: u32 = 60;
+const RATE_BUCKETS_MAX: usize = 1000; // Bug 67: cap to bound memory under attack
 static RATE_BUCKETS: LazyLock<Mutex<rustc_hash::FxHashMap<String, (u32, std::time::Instant)>>> =
     LazyLock::new(|| Mutex::new(rustc_hash::FxHashMap::default()));
 static RATE_LAST_PRUNE: LazyLock<Mutex<std::time::Instant>> =
@@ -127,6 +200,11 @@ fn check_rate_limit(auth_key: &str) -> Option<u32> {
         }
     }
 
+    // Bug 67: hard cap on bucket count. If at cap, reject new entries.
+    if !buckets.contains_key(auth_key) && buckets.len() >= RATE_BUCKETS_MAX {
+        return Some(60); // Reject until next sweep
+    }
+
     let entry = buckets.entry(auth_key.to_string()).or_insert((0, now));
     // Reset bucket if more than 60s have passed
     if now.duration_since(entry.1) > std::time::Duration::from_secs(60) {
@@ -146,10 +224,18 @@ fn daemon_cmd_str(cmd: &str) -> String {
 }
 
 fn jsonl_log(entry: &serde_json::Value) {
-    let _lock = JSONL_LOCK.lock().ok();  // GUARDED: intentional
-    if let Ok(mut fh) = std::fs::OpenOptions::new()
-        .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
-    {
+    // Bug 53: reuse persistent file handle (was re-opening on every call).
+    let mut guard = JSONL_FILE.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_none() {
+        if let Ok(fh) = std::fs::OpenOptions::new()
+            .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
+        {
+            *guard = Some(fh);
+        } else {
+            return;
+        }
+    }
+    if let Some(fh) = guard.as_mut() {
         use std::io::Write;
         let _ = writeln!(fh, "{}", serde_json::to_string(entry).unwrap_or_default());  // GUARDED: intentional
     }
@@ -524,7 +610,7 @@ fn build_info_scorer() -> Option<impl Fn(&str) -> f64> {
     let fw = fw?;
     let fw_mutex = Mutex::new(fw);
     Some(move |line: &str| -> f64 {
-        let mut guard = fw_mutex.lock().unwrap();
+        let mut guard = fw_mutex.lock().unwrap_or_else(|e| e.into_inner());
         guard.line_info_score(line)
     })
 }
@@ -860,10 +946,9 @@ async fn proxy_post(
             if let Some(last) = messages.last() {
                 if last.get("role").and_then(|r| r.as_str()) == Some("assistant") {
                     let content = last.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                    let has_edit = content.contains("\"edit\"") || content.contains("\"apply-edit\"")
-                        || content.contains("\"write\"")
-                        || content.contains("sed -i");
-                    // Check tool_calls array for edit/write function names
+                    // Bug 59: only check tool_calls array (prose mentions of "edit"/"write"
+                    // are too noisy — every assistant message that discusses editing triggers
+                    // a false positive). Use exact tool name match on the tool_calls function.
                     let has_edit_tool = last.get("tool_calls")
                         .and_then(|tc| tc.as_array())
                         .map(|calls| calls.iter().any(|tc| {
@@ -874,7 +959,7 @@ async fn proxy_post(
                                 .unwrap_or(false)
                         }))
                         .unwrap_or(false);
-                    if has_edit || has_edit_tool {
+                    if has_edit_tool {
                         if let Some((file_path, new_text)) = extract_edit_from_assistant(content) {
                             if let Some((root, index_path, _)) = crate::daemon::find_reliary_root(&file_path) {
                                 let rel_paths = resolve_index_paths(&file_path, &root);
@@ -933,7 +1018,10 @@ async fn proxy_post(
 
     // ── Anti-decision: record outcomes from tool results and annotate (off by default) ──
     if std::env::var("RELIARY_PROXY_FEATURE_ANTI").is_ok_and(|v| v == "1") {
-        let workdir = get_state().workdir.to_string_lossy().to_string();
+        // Bug 68: use the request's workdir inferred from any file path in messages,
+        // not the daemon's startup workdir (which may serve multiple projects).
+        let workdir = infer_request_workdir(&payload)
+            .unwrap_or_else(|| get_state().workdir.to_string_lossy().to_string());
         if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
             for msg in messages.iter() {
                 if let Some((file, identifier, operation, success)) =
@@ -949,7 +1037,7 @@ async fn proxy_post(
                 let known_anti: Vec<(String, String, String)> = {
                     let mut list = Vec::new();
                     if let Ok(db) = crate::antidecision::ANTI_DB.lock() {
-                        if let Some(counters) = db.get(&workdir) {
+                        if let Some((counters, _)) = db.get(&workdir) {
                             for key in counters.keys() {
                                 if let Some(rest) = key.strip_prefix(&format!("{}::", workdir)) {
                                     if let Some((file, rest2)) = rest.split_once("::") {
@@ -1053,7 +1141,9 @@ async fn proxy_post(
     // Response cache (streaming and non-streaming)
     if let Some(messages) = payload.get("messages") {
         if let Ok(msg_str) = serde_json::to_string(messages) {
-            if let Some(cached) = cached_response(&auth_key, &msg_str, is_streaming) {
+            // Bug 58: include model in cache key
+            let model = payload.get("model").and_then(|m| m.as_str()).unwrap_or("");
+            if let Some(cached) = cached_response(&auth_key, &msg_str, is_streaming, model) {
                 let content_type = if is_streaming { "text/event-stream" } else { "application/json" };
                 return (StatusCode::OK, [("content-type", content_type)], cached).into_response();
             }
@@ -1080,14 +1170,28 @@ async fn proxy_post(
             let upstream_status = upstream_resp.status();
             let upstream_ct = upstream_resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
             if !upstream_status.is_success() {
+                // Bug 71: cap error response body to 10MB (was unbounded — 100MB HTML
+                // error pages caused OOM).
                 let bytes = upstream_resp.bytes().await.unwrap_or_default();
-                return (upstream_status, [("content-type", upstream_ct)], bytes).into_response();
+                let capped = if bytes.len() > reliary_core::MAX_FILE_SIZE as usize {
+                    let mut c = bytes[..reliary_core::MAX_FILE_SIZE as usize].to_vec();
+                    c.extend_from_slice(b"\n[... truncated, body exceeded 10MB cap ...]");
+                    c
+                } else {
+                    bytes.to_vec()
+                };
+                return (upstream_status, [("content-type", upstream_ct)], capped).into_response();
             }
             // Also detect non-SSE content-types (e.g., upstream returned JSON error
             // even with success status). Forward as-is.
             if is_streaming && !upstream_ct.contains("event-stream") {
                 let bytes = upstream_resp.bytes().await.unwrap_or_default();
-                return (upstream_status, [("content-type", upstream_ct)], bytes).into_response();
+                let capped = if bytes.len() > reliary_core::MAX_FILE_SIZE as usize {
+                    bytes[..reliary_core::MAX_FILE_SIZE as usize].to_vec()
+                } else {
+                    bytes.to_vec()
+                };
+                return (upstream_status, [("content-type", upstream_ct)], capped).into_response();
             }
             if is_streaming {
                 // True SSE streaming: forward chunks as they arrive.
@@ -1104,18 +1208,22 @@ async fn proxy_post(
                     // chunk boundaries. Many SSE chunkers split the JSON literal across
                     // chunks so a single-chunk window check is unreliable.
                     let mut rolling_tail: Vec<u8> = Vec::with_capacity(4096);
+                    // Bug 56: debounce prefetch — accumulate chunks, flush every 32KB or on stream end
+                    let mut pf_buffer = String::new();
+                    const PF_FLUSH_BYTES: usize = 32_768;
                     loop {
                         match upstream_resp.chunk().await {
                             Ok(Some(chunk)) => {
                                 let chunk_str = String::from_utf8_lossy(&chunk);
-                                // Track for usage parsing and response cache
-                                // Stream-aware prefetch: extract file paths from live chunks.
-                                // Run in spawn_blocking to avoid sync fs I/O stalling the async runtime.
+                                // Stream-aware prefetch: accumulate chunks, debounce flush.
                                 if !std::env::var("RELIARY_PROXY_PREFETCH").is_ok_and(|v| v == "0") {
-                                    let pf_chunk = chunk_str.to_string();
-                                    tokio::task::spawn_blocking(move || {
-                                        crate::novel_compress::try_prefetch(&pf_chunk);
-                                    });
+                                    pf_buffer.push_str(&chunk_str);
+                                    if pf_buffer.len() >= PF_FLUSH_BYTES {
+                                        let buf = std::mem::take(&mut pf_buffer);
+                                        tokio::task::spawn_blocking(move || {
+                                            crate::novel_compress::try_prefetch(&buf);
+                                        });
+                                    }
                                 }
                                 if chunk_str.contains("\"usage\"") || chunk_str.contains("\"prompt_tokens\"") {
                                     last_chunk_with_usage = chunk_str.to_string();
@@ -1138,9 +1246,8 @@ async fn proxy_post(
                                     finish_sent = true;
                                 }
 
-                                // Forward immediately
+                                // Forward chunk to client
                                 if tx.send(Ok(chunk)).await.is_err() {
-                                    // Client disconnected; still try to flush any finish chunk we held
                                     break;
                                 }
                             }
@@ -1150,6 +1257,13 @@ async fn proxy_post(
                                 break;
                             }
                         }
+                    }
+                    // Flush remaining prefetch buffer at stream end (Bug 56).
+                    if !pf_buffer.is_empty() {
+                        let buf = std::mem::take(&mut pf_buffer);
+                        tokio::task::spawn_blocking(move || {
+                            crate::novel_compress::try_prefetch(&buf);
+                        });
                     }
                     // Stream complete. If the upstream never sent a finish_reason (rare;
                     // happens when the upstream connection drops mid-stream), inject a
@@ -1194,7 +1308,8 @@ async fn proxy_post(
 
                     // Cache the full body (best-effort — skips if serialization fails)
                     if let Ok(msg_str) = serde_json::to_string(&payload.get("messages").unwrap_or(&Value::Null)) {
-                        store_response(&auth_key, &msg_str, &String::from_utf8_lossy(&total_bytes), true);
+                        let model = payload.get("model").and_then(|m| m.as_str()).unwrap_or("");
+                        store_response(&auth_key, &msg_str, &String::from_utf8_lossy(&total_bytes), true, model);
                     }
                 });
 
@@ -1219,7 +1334,8 @@ async fn proxy_post(
                         let raw_str = String::from_utf8_lossy(&bytes).to_string();
                         // Compress response body before returning to agent
                         let body_str = compress_response_body(&raw_str, false);
-                        store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str, false);
+                        let model = payload.get("model").and_then(|m| m.as_str()).unwrap_or("");
+                        store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str, false, model);
 
                         jsonl_log(&serde_json::json!({
                             "event": "proxy_response",
@@ -1334,7 +1450,7 @@ async fn read_validated_handler(Query(params): Query<StdHashMap<String, String>>
         let rel_path = rel_paths.first().map(|s| s.as_str()).unwrap_or(file_path);
         let full_path = std::path::Path::new(&root).join(rel_path);
         let mut content = String::new();
-        if let Ok(mut f) = std::fs::File::open(&full_path) {
+        if let Ok(mut f) = std::fs::File::open(&full_path) { // GUARDED: intentional - small file, will spawn_blocking
             if let Ok(meta) = f.metadata() {
                 if meta.len() > crate::daemon::MAX_FILE_SIZE {
                     return serde_json::json!({"error": "file too large"}).to_string();

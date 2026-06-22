@@ -26,9 +26,16 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-type CounterMap = FxHashMap<String, (usize, usize)>;
+ type CounterMap = FxHashMap<String, (usize, usize)>;
 
-pub static ANTI_DB: once_cell::sync::Lazy<Mutex<FxHashMap<String, CounterMap>>> =
+// Bug 62: cap ANTI_DB at MAX_WORKDIRS workdirs with LRU eviction to bound memory.
+// Also use (value, last_access_seq) for eviction tracking.
+pub const ANTI_DB_MAX_WORKDIRS: usize = 1000;
+static ANTI_DB_SEQ: once_cell::sync::Lazy<Mutex<u64>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(0));
+
+type WorkdirEntry = (CounterMap, u64);
+pub static ANTI_DB: once_cell::sync::Lazy<Mutex<FxHashMap<String, WorkdirEntry>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(FxHashMap::default()));
 
 #[allow(dead_code)]
@@ -166,8 +173,17 @@ pub fn extract_tool_call(msg: &Value) -> Option<(String, String, String, bool)> 
 pub fn record(workdir: &str, file: &str, identifier: &str, operation: &str, success: bool) {
     let key = format!("{}::{}::{}", workdir, file, identifier);
     if let Ok(mut db) = ANTI_DB.lock() {
-        let counters = db.entry(workdir.to_string()).or_insert_with(FxHashMap::default);
-        let entry = counters.entry(key).or_insert((0, 0));
+        // Bug 62: cap outer workdir map with LRU eviction
+        if !db.contains_key(workdir) && db.len() >= ANTI_DB_MAX_WORKDIRS {
+            // Evict oldest workdir
+            if let Some((oldest_key, _)) = db.iter().min_by_key(|(_, (_, seq))| *seq).map(|(k, v)| (k.clone(), v.1)) {
+                db.remove(&oldest_key);
+            }
+        }
+        let seq = ANTI_DB_SEQ.lock().map(|mut s| { *s += 1; *s }).unwrap_or(0);
+        let counters = db.entry(workdir.to_string()).or_insert_with(|| (FxHashMap::default(), 0));
+        counters.1 = seq; // Update last-access seq for LRU
+        let entry = counters.0.entry(key).or_insert((0, 0));
         if success {
             entry.0 += 1;
         } else {
@@ -191,12 +207,14 @@ pub fn load_persisted(workdir: &str) {
     };
     if events.is_empty() { return; }
     if let Ok(mut db) = ANTI_DB.lock() {
-        let counters = db.entry(workdir.to_string()).or_insert_with(FxHashMap::default);
+        let seq = ANTI_DB_SEQ.lock().map(|mut s| { *s += 1; *s }).unwrap_or(0);
+        let counters = db.entry(workdir.to_string()).or_insert_with(|| (FxHashMap::default(), 0));
+        counters.1 = seq;
         for event in &events {
             let parts: Vec<&str> = event.detail.splitn(3, "::").collect();
             if parts.len() != 3 { continue; }
             let key = format!("{}::{}::{}", workdir, parts[0], parts[1]);
-            let entry = counters.entry(key).or_insert((0, 0));
+            let entry = counters.0.entry(key).or_insert((0, 0));
             if parts[2] == "success" {
                 entry.0 += 1;
             } else {
@@ -219,7 +237,7 @@ pub fn query_anti_decisions(workdir: &str, file: &str) -> Vec<(String, f64, usiz
     }
     let prefix = format!("{}::{}::", workdir, file);
     if let Ok(db) = ANTI_DB.lock() {
-        if let Some(counters) = db.get(workdir) {
+        if let Some((counters, _)) = db.get(workdir) {
             let mut results: Vec<(String, f64, usize, usize)> = counters.iter()
                 .filter(|(k, _)| k.starts_with(&prefix))
                 .map(|(k, &(s, f))| {

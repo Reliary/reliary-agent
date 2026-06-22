@@ -1,7 +1,40 @@
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+/// Cache of upstream URL per auth key (Bug 64 fix).
+/// Avoids re-reading agent config files on every request.
+type UpstreamCache = std::collections::HashMap<String, Option<String>>;
+static UPSTREAM_CACHE: OnceLock<Mutex<(UpstreamCache, Instant)>> = OnceLock::new();
+const UPSTREAM_CACHE_TTL: Duration = Duration::from_secs(30);
+
+fn get_upstream_cache() -> &'static Mutex<(UpstreamCache, Instant)> {
+    UPSTREAM_CACHE.get_or_init(|| Mutex::new((std::collections::HashMap::new(), Instant::now())))
+}
+
+fn cached_discover(auth_key: &str) -> Option<String> {
+    let mut guard = get_upstream_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let (cache, last_refresh) = &mut *guard;
+    // If cache is stale, clear it (configs may have changed)
+    if last_refresh.elapsed() > UPSTREAM_CACHE_TTL {
+        cache.clear();
+        *last_refresh = Instant::now();
+    }
+    if let Some(cached) = cache.get(auth_key) {
+        return cached.clone();
+    }
+    let result = discover_upstream_uncached(auth_key);
+    cache.insert(auth_key.to_string(), result.clone());
+    result
+}
 
 /// Discover upstream URL for an auth key by scanning all known agent configs.
 pub fn discover_upstream(auth_key: &str) -> Option<String> {
+    cached_discover(auth_key)
+}
+
+fn discover_upstream_uncached(auth_key: &str) -> Option<String> {
     // 1. Local proxy-routes.json (explicit user override, highest priority)
     if let Some(url) = scan_proxy_routes(auth_key) {
         return Some(url);

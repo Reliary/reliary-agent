@@ -19,9 +19,35 @@ pub fn create_new_db(db: &Connection) -> rusqlite::Result<()> {
 }
 
 pub fn open_existing_db(db: &Connection) -> rusqlite::Result<()> {
+    // Bug 61: synchronous=OFF + journal_mode=MEMORY sacrifices crash safety for
+    // indexing speed. The index is rebuildable from source so this is acceptable
+    // for ingest. For read-only access, callers should use open_existing_db_safe()
+    // which uses WAL + NORMAL for crash safety.
     db.execute_batch(
         "PRAGMA synchronous = OFF;
          PRAGMA journal_mode = MEMORY;
+         PRAGMA cache_size = -200000;
+         PRAGMA mmap_size = 268435456;
+         PRAGMA temp_store = MEMORY;
+         PRAGMA lock_timeout = 5000;",
+    )?;
+    let version: i32 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version != SCHEMA_VERSION {
+        return Err(rusqlite::Error::InvalidColumnName(format!(
+            "Schema version mismatch: DB has {}, expected {}. Run `reliary-agent index` to rebuild.",
+            version, SCHEMA_VERSION
+        )));
+    }
+    Ok(())
+}
+
+/// Read-only open with crash-safe PRAGMAs (Bug 61).
+/// Use this for daemon startup and search queries where crash safety matters.
+/// Trade-off: slightly slower than open_existing_db() but protected against corruption.
+pub fn open_existing_db_safe(db: &Connection) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
          PRAGMA cache_size = -200000;
          PRAGMA mmap_size = 268435456;
          PRAGMA temp_store = MEMORY;

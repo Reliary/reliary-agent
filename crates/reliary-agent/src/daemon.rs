@@ -415,11 +415,13 @@ pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
                     continue;
                 }
                 let state = Arc::clone(&state);
-                if let Err(e) = std::thread::Builder::new()
+                let spawn_result = std::thread::Builder::new()
                     .name("handler".into())
-                    .spawn(move || { daemon_handle(s, state); conns.fetch_sub(1, Ordering::Relaxed); })
-                {
-                    error!("handler thread: {}", e);
+                    .spawn(move || { daemon_handle(s, state); conns.fetch_sub(1, Ordering::Relaxed); });
+                if let Err(e) = spawn_result {
+                    // Bug 51: decrement counter on thread spawn failure (was leaking)
+                    connections.fetch_sub(1, Ordering::Relaxed);
+                    error!("handler thread spawn failed: {}", e);
                 }
             }
             Err(e) => error!("accept error: {}", e),

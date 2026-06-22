@@ -399,7 +399,7 @@ fn status_data() -> StatusData {
 
     if index_exists {
         if let Ok(db) = rusqlite::Connection::open(&index_path) {
-            let _ = db.execute_batch(" synchronous=;");
+            let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
             if let Ok(mut stmt) = db.prepare("SELECT COUNT(*) FROM file_map") {
                 if let Ok(mut rows) = stmt.query([]) {
                     if let Ok(Some(row)) = rows.next() { index_files = row.get(0).unwrap_or(0); }

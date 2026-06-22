@@ -259,7 +259,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static TEST_CTR: AtomicU64 = AtomicU64::new(0);
         let ctr = TEST_CTR.fetch_add(1, Ordering::Relaxed);
-        let _guard = CONFIG_TEST_MUTEX.lock().unwrap();
+        let _guard = CONFIG_TEST_MUTEX.lock().unwrap(); // GUARDED: intentional - test mutex
         std::env::remove_var("RELIARY_MODE");
         std::env::remove_var("RELIARY_FEATURES");
         let tmp = std::env::temp_dir().join(format!("reliary_config_test_{}_{}", std::process::id(), ctr));

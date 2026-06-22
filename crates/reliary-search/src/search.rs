@@ -10,10 +10,21 @@ pub struct SearchResult {
 
 /// Search the FTS5 index. Returns top-N results sorted by BM25 score.
 pub fn search_fts5(db: &Connection, query: &str, top_n: usize) -> Vec<SearchResult> {
+    // Bug 60: sanitize tokens to strip FTS5 special characters. Without this,
+    // a query like 'foo" OR x OR "' corrupts the FTS5 syntax and matches everything.
+    // Strip everything except alphanumerics and underscore from each token.
     let fts_query = query
         .split_whitespace()
         .filter(|t| t.len() >= 2)
-        .map(|t| format!("\"{}\"", t))
+        .map(|t| {
+            // Sanitize: keep only alphanumerics, underscore, and a few safe chars
+            let sanitized: String = t
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .collect();
+            if sanitized.is_empty() { String::new() } else { format!("\"{}\"", sanitized) }
+        })
+        .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(" OR ");
 

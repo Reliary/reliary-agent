@@ -1,5 +1,76 @@
 # Changelog
 
+## v0.6.10
+
+### Esoteric bug sweep — 24 fixes + 4 new guardrails
+
+Deep audit found esoteric bugs (race conditions, TOCTOU, panic recovery, cache
+keying, resource leaks) that don't show up in normal testing. All fixed, with
+new guardrails to prevent the patterns from recurring.
+
+**Critical fixes (7):**
+- ux.rs:402 and mcp.rs:53 — SQL PRAGMA corruption (` synchronous=;` with no
+  value, no `PRAGMA` prefix) fixed to `PRAGMA synchronous=NORMAL;`
+
+**High-severity fixes (11):**
+- **Bug 51** — Daemon connection counter now decrements on thread spawn failure
+  (was leaking forever)
+- **Bug 52** — RESPONSE_CACHE now uses proper LRU eviction (was removing
+  arbitrary hash-order entries, not oldest)
+- **Bug 53** — JSONL log uses persistent file handle (was reopening per call,
+  60+ open() syscalls per minute)
+- **Bug 56** — try_prefetch debounced to 32KB chunks (was 1000+ spawn_blocking
+  per second on streaming responses)
+- **Bug 57** — Replaced `Mutex::lock().unwrap()` with `unwrap_or_else(|e| e.into_inner())`
+  for poison recovery (was panicking whole daemon on any thread panic)
+- **Bug 58** — Response cache key now includes `model` (was returning wrong
+  model's response on cache hit)
+- **Bug 59** — Guard reverts to tool_calls-only check (regression from v0.6.7
+  — was checking prose mentions of "edit")
+- **Bug 64** — Agent config lookups now cached for 30s (was re-reading 4+
+  config files per request)
+- **Bug 68** — Antidecision now uses request's workdir inferred from message
+  file paths (was using daemon's startup workdir)
+- **Bug 69** — HTTP client now has 5-minute timeout (was hanging forever on
+  slow upstream)
+- **Bug 71** — Error response body capped at 10MB (was unbounded — 100MB HTML
+  error page = OOM)
+
+**Medium-severity fixes (7):**
+- **Bug 60** — FTS5 search tokens sanitized to strip `"` and FTS5 special chars
+  (was corrupting search syntax)
+- **Bug 61** — Added `open_existing_db_safe()` with WAL+NORMAL PRAGMAs for
+  crash-safe read access (was synchronous=OFF, no crash safety)
+- **Bug 62** — ANTI_DB outer map capped at 1000 workdirs with LRU eviction
+  (was unbounded across workdirs)
+- **Bug 63** — `extract_auth_key` now case-insensitive on "Bearer"/"bearer"/"BEARER"
+- **Bug 66** — Upstream URL scheme validated to http/https only (was accepting
+  file://, gopher://, etc.)
+- **Bug 67** — RATE_BUCKETS capped at 1000 entries (was unbounded under unique
+  auth_key attack)
+
+**Low-severity fixes (1):**
+- **Bug 70** — Auth keys > 1KB rejected (was using full key as map key, memory
+  waste attack)
+
+### 4 new guardrail rules
+
+Added to `scripts/ci_guards.py` (now **10 rules total**):
+
+7. **unbounded-collection** — flags `Mutex<HashMap>` without visible eviction
+   (catches bug class behind 62, 67, 40)
+8. **blocking-in-async** — flags `std::fs` operations in async fn without
+   `spawn_blocking` (catches bug class behind 56, 69)
+9. **no-timeout** — flags `reqwest::Client` without `.timeout()` (catches
+   bug class behind 69)
+10. **panic-lock** — flags `Mutex::lock().unwrap()` (catches bug class behind 57)
+
+### Tests
+
+- 89 unit tests passing
+- 10/10 guardrails passing on clean build
+- Pre-commit hook: passes
+
 ## v0.6.9
 
 ### Guardrails (the big new thing)
