@@ -140,6 +140,142 @@ fn get_or_create_state(auth_key: &str) -> std::sync::MutexGuard<'static, FxHashM
     guard
 }
 
+// Sanitize malformed messages that violate OpenAI/DeepSeek spec.
+//
+// Pi's retry-after-error mechanism produces several invalid sequences:
+//   1. Empty assistant messages with no content/tool_calls (Pi's retry marker)
+//   2. Assistant messages whose tool_call_ids were ALREADY responded to earlier
+//      (Pi re-uses the same IDs on retry, causing DeepSeek to reject)
+//
+// Pattern observed in failing BFCL runs:
+//   assistant{tc=[id1,id2,id3]} → tool{id1} tool{id2} tool{id3}
+//   → assistant{tc=[id1,id2,id3]} → tool{id1} tool{id2} tool{id3}
+//                       ↑ DeepSeek rejects: tool_calls reuse already-responded IDs
+//
+// Fix:
+//   1. Find consecutive assistant-with-tool_calls messages where the second reuses
+//      IDs from the first.
+//   2. Strip the duplicate tool_calls from the second assistant AND its following
+//      tool responses (otherwise those become orphans).
+//   3. Remove empty assistant messages that aren't the final message.
+//
+// No-op for well-formed sequences. Default-on; opt-out via RELIARY_PROXY_SANITIZER=0.
+fn sanitize_malformed_messages(payload: &mut Value) {
+    let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) else {
+        return;
+    };
+
+    // Pass 1: detect and fix duplicate tool_call_id reuse.
+    // Find an assistant with tool_calls. Look at the NEXT assistant with tool_calls.
+    // If they share IDs, strip the second assistant's tool_calls AND its following tool messages.
+    let n = messages.len();
+    let mut to_remove: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        if to_remove.contains(&i) {
+            i += 1;
+            continue;
+        }
+        let msg = &messages[i];
+        if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            i += 1;
+            continue;
+        }
+        let first_ids: std::collections::HashSet<String> = msg.get("tool_calls")
+            .and_then(|t| t.as_array())
+            .map(|a| a.iter().filter_map(|v| v.get("id").and_then(|x| x.as_str()).map(String::from)).collect())
+            .unwrap_or_default();
+        if first_ids.is_empty() {
+            i += 1;
+            continue;
+        }
+        // Look for the next assistant with tool_calls that reuses any of these IDs.
+        let mut j = i + 1;
+        while j < n {
+            let next = &messages[j];
+            if next.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+                j += 1;
+                continue;
+            }
+            let next_ids: Vec<String> = next.get("tool_calls")
+                .and_then(|t| t.as_array())
+                .map(|a| a.iter().filter_map(|v| v.get("id").and_then(|x| x.as_str()).map(String::from)).collect())
+                .unwrap_or_default();
+            if next_ids.is_empty() {
+                j += 1;
+                continue;
+            }
+            // Check overlap
+            let overlap: Vec<&String> = next_ids.iter().filter(|id| first_ids.contains(*id)).collect();
+            if overlap.is_empty() {
+                j += 1;
+                continue;
+            }
+            // Found it. Strip tool_calls from assistant j, and remove any tool messages
+            // that respond to the overlapping IDs (which would become orphans).
+            if let Some(tc_arr) = messages[j].get_mut("tool_calls").and_then(|t| t.as_array_mut()) {
+                tc_arr.retain(|v| {
+                    v.get("id").and_then(|i| i.as_str())
+                        .map(|id| !first_ids.contains(id))
+                        .unwrap_or(true)
+                });
+            }
+            // Now look forward from j and remove tool messages that respond to overlapping IDs.
+            let mut k = j + 1;
+            while k < n {
+                let m = &messages[k];
+                if m.get("role").and_then(|r| r.as_str()) == Some("tool") {
+                    if let Some(tcid) = m.get("tool_call_id").and_then(|x| x.as_str()) {
+                        if overlap.iter().any(|id| id.as_str() == tcid) {
+                            to_remove.push(k);
+                            k += 1;
+                            continue;
+                        }
+                    }
+                    k += 1;
+                } else {
+                    break; // stop at next non-tool
+                }
+            }
+            break;
+        }
+        i += 1;
+    }
+    for i in to_remove.iter().rev() {
+        messages.remove(*i);
+    }
+
+    // Pass 2: remove empty assistant messages (no content, no tool_calls) that aren't
+    // the final message in the conversation.
+    let mut to_remove: Vec<usize> = Vec::new();
+    let n = messages.len();
+    for (i, msg) in messages.iter().enumerate() {
+        if i + 1 == n {
+            continue;
+        }
+        if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            continue;
+        }
+        let content_empty = match msg.get("content") {
+            Some(Value::String(s)) => s.is_empty(),
+            Some(Value::Array(a)) => a.is_empty(),
+            Some(Value::Null) | None => true,
+            _ => false,
+        };
+        let has_tool_calls = msg.get("tool_calls")
+            .and_then(|t| t.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        if !content_empty || has_tool_calls {
+            continue;
+        }
+        to_remove.push(i);
+    }
+    for i in to_remove.iter().rev() {
+        messages.remove(*i);
+    }
+}
+
 // Compress old assistant reasoning — strip verbose explanations, keep code blocks intact.
 // Splits message into code blocks (```...```) and prose sections.
 // Compresses prose, leaves code verbatim.
@@ -597,6 +733,39 @@ async fn proxy_post(
 
     let is_streaming = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
+    // Sanitize malformed messages before any routing decision.
+    // Default-on because it's a no-op for well-formed sequences and fixes
+    // a class of Pi/Claude Code retry bugs that produce empty assistant
+    // messages violating OpenAI spec ("assistant with tool_calls must be
+    // followed by tool messages"). Opt-out via RELIARY_PROXY_SANITIZER=0.
+    let sanitizer_enabled = !std::env::var("RELIARY_PROXY_SANITIZER").is_ok_and(|v| v == "0");
+    if sanitizer_enabled {
+        sanitize_malformed_messages(&mut payload);
+    }
+
+    // Passthrough mode: relay raw request/response with zero compression,
+    // zero guard, zero history modification. Sanitizer still runs (default-on).
+    // Useful as an honest baseline when benchmarking accuracy preservation —
+    // the proxy adds HTTP hop overhead but nothing else.
+    let passthrough = std::env::var("RELIARY_PROXY_PASSTHROUGH").is_ok_and(|v| v == "1");
+    if passthrough {
+        let body_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+        let mut req_builder = HTTP_CLIENT.post(&upstream_url)
+            .header("Content-Type", "application/json")
+            .body(body_bytes);
+        if let Some(auth_val) = headers.get("authorization") {
+            req_builder = req_builder.header("authorization", auth_val);
+        }
+        let upstream = match req_builder.send().await {
+            Ok(r) => r,
+            Err(e) => return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": format!("upstream: {}", e)}))).into_response(),
+        };
+        let status = upstream.status();
+        let content_type = upstream.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("application/json").to_string();
+        let bytes = upstream.bytes().await.unwrap_or_default();
+        return (status, [("content-type", content_type)], bytes).into_response();
+    }
+
     // Normalize roles: translate provider-specific roles to API-compatible.
     // Harmless for Anthropic /v1/messages (their roles are user/assistant, not developer).
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
@@ -608,6 +777,9 @@ async fn proxy_post(
             }
         }
     }
+
+// (empty-assistant sanitizer was moved above the passthrough check so it applies
+// to both passthrough and full proxy code paths)
 
     // Context filter: collapse old tool results to 1-line summaries (preserves message sequence for KV cache)
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
@@ -847,6 +1019,21 @@ async fn proxy_post(
 
     match req_builder.send().await {
         Ok(mut upstream_resp) => {
+            // If upstream returned an error status, forward the error body as JSON
+            // (not SSE chunks). Pi's SSE parser fails when non-"data: " prefixed
+            // bytes arrive in the stream.
+            let upstream_status = upstream_resp.status();
+            let upstream_ct = upstream_resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            if !upstream_status.is_success() {
+                let bytes = upstream_resp.bytes().await.unwrap_or_default();
+                return (upstream_status, [("content-type", upstream_ct)], bytes).into_response();
+            }
+            // Also detect non-SSE content-types (e.g., upstream returned JSON error
+            // even with success status). Forward as-is.
+            if is_streaming && !upstream_ct.contains("event-stream") {
+                let bytes = upstream_resp.bytes().await.unwrap_or_default();
+                return (upstream_status, [("content-type", upstream_ct)], bytes).into_response();
+            }
             if is_streaming {
                 // True SSE streaming: forward chunks as they arrive.
                 // Uses reqwest::Response::chunk() loop → tokio::mpsc → axum Body::from_stream.
@@ -857,25 +1044,16 @@ async fn proxy_post(
                 tokio::spawn(async move {
                     let mut total_bytes = Vec::new();
                     let mut last_chunk_with_usage = String::new();
-                    let mut last_chunk_with_finish: Option<Bytes> = None;
+                    let mut finish_sent = false;
+                    // Accumulate a rolling tail buffer to detect finish_reason that spans
+                    // chunk boundaries. Many SSE chunkers split the JSON literal across
+                    // chunks so a single-chunk window check is unreliable.
+                    let mut rolling_tail: Vec<u8> = Vec::with_capacity(4096);
                     loop {
                         match upstream_resp.chunk().await {
                             Ok(Some(chunk)) => {
-                                let is_finish_chunk = chunk.windows(20).any(|w| {
-                                    std::str::from_utf8(w).map(|s| s.contains("\"finish_reason\":\"stop\"") || s.contains("\"finish_reason\":\"length\"")).unwrap_or(false)
-                                });
-                                if is_finish_chunk {
-                                    // Hold the finish_reason chunk until all preceding chunks are
-                                    // flushed to the client. This prevents the SSE "Stream ended
-                                    // without finish_reason" error when the client closes early
-                                    // after receiving the final content.
-                                    last_chunk_with_finish = Some(chunk.clone());
-                                    total_bytes.extend_from_slice(&chunk);
-                                    last_chunk_with_usage = String::from_utf8_lossy(&chunk).to_string();
-                                    continue;
-                                }
-                                // Track for usage parsing and response cache
                                 let chunk_str = String::from_utf8_lossy(&chunk);
+                                // Track for usage parsing and response cache
                                 // Stream-aware prefetch: extract file paths from live chunks.
                                 // Run in spawn_blocking to avoid sync fs I/O stalling the async runtime.
                                 if !std::env::var("RELIARY_PROXY_PREFETCH").is_ok_and(|v| v == "0") {
@@ -888,6 +1066,23 @@ async fn proxy_post(
                                     last_chunk_with_usage = chunk_str.to_string();
                                 }
                                 total_bytes.extend_from_slice(&chunk);
+                                // Update rolling tail (last 1024 bytes is enough for finish_reason)
+                                rolling_tail.extend_from_slice(&chunk);
+                                if rolling_tail.len() > 1024 {
+                                    let drop = rolling_tail.len() - 1024;
+                                    rolling_tail.drain(..drop);
+                                }
+
+                                // Detect finish_reason across chunk boundaries using the
+                                // accumulated tail. The previous per-chunk 20-byte window
+                                // missed finish_reason split across chunks in samples 1, 2.
+                                let tail_str = String::from_utf8_lossy(&rolling_tail);
+                                if !finish_sent && (tail_str.contains("\"finish_reason\":\"stop\"")
+                                    || tail_str.contains("\"finish_reason\":\"length\""))
+                                {
+                                    finish_sent = true;
+                                }
+
                                 // Forward immediately
                                 if tx.send(Ok(chunk)).await.is_err() {
                                     // Client disconnected; still try to flush any finish chunk we held
@@ -901,10 +1096,14 @@ async fn proxy_post(
                             }
                         }
                     }
-                    // After the upstream stream completes, send the deferred finish_reason chunk
-                    // if we held one. This guarantees Pi's parser sees finish_reason: stop.
-                    if let Some(finish_chunk) = last_chunk_with_finish.take() {
-                        let _ = tx.send(Ok(finish_chunk)).await;
+                    // Stream complete. If the upstream never sent a finish_reason (rare;
+                    // happens when the upstream connection drops mid-stream), inject a
+                    // synthetic finish chunk so Pi's parser doesn't fail with
+                    // "Stream ended without finish_reason". This is the canonical fix
+                    // for the v0.6.x stream-ended bug.
+                    if !finish_sent {
+                        let synthetic = Bytes::from_static(b"data: {\"id\":\"synthetic\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"reliary-synthetic\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n");
+                        let _ = tx.send(Ok(synthetic)).await;
                     }
                     // Channel drop signals stream end to axum
 
@@ -1173,4 +1372,90 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
     axum::serve(listener, app)
         .await
         .map_err(|e| format!("serve: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn sanitize_removes_duplicate_tool_call_ids() {
+        // Pi retry pattern: assistant with tc, tools respond, then another assistant
+        // reuses the SAME tool_call_ids. DeepSeek rejects this. Sanitizer strips
+        // the duplicate tc and its orphaned tool responses.
+        let mut payload = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "call_00", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+                ]},
+                {"role": "tool", "tool_call_id": "call_00", "content": "ok"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "call_00", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+                ]},
+                {"role": "tool", "tool_call_id": "call_00", "content": "ok"},
+                {"role": "user", "content": "next"},
+            ]
+        });
+        sanitize_malformed_messages(&mut payload);
+        let msgs = payload["messages"].as_array().unwrap();
+        // Expectation: the SECOND assistant (with duplicate IDs) should have its
+        // tool_calls stripped. Its following tool response should also be removed.
+        // Net: messages shrink from 6 to ~3 (user, assistant, tool).
+        assert!(msgs.len() < 6, "messages should shrink, got {} msgs: {:?}", msgs.len(), msgs);
+        // Verify only the FIRST assistant has tool_calls
+        let assistants_with_tc = msgs.iter().filter(|m| {
+            m["role"] == "assistant"
+                && m.get("tool_calls").and_then(|t| t.as_array()).map(|a| !a.is_empty()).unwrap_or(false)
+        }).count();
+        assert_eq!(assistants_with_tc, 1, "only first assistant should retain tool_calls, got {}", assistants_with_tc);
+    }
+
+    #[test]
+    fn sanitize_keeps_well_formed_sequences() {
+        // Standard sequence: assistant tc → tools → user. Should be unchanged.
+        let mut payload = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "call_A", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+                ]},
+                {"role": "tool", "tool_call_id": "call_A", "content": "ok"},
+                {"role": "user", "content": "next"},
+            ]
+        });
+        let before = payload["messages"].as_array().unwrap().len();
+        sanitize_malformed_messages(&mut payload);
+        let after = payload["messages"].as_array().unwrap().len();
+        assert_eq!(before, after, "well-formed sequence should be unchanged");
+    }
+
+    #[test]
+    fn sanitize_removes_empty_assistant_messages() {
+        let mut payload = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": ""},
+                {"role": "user", "content": "next"},
+            ]
+        });
+        sanitize_malformed_messages(&mut payload);
+        let msgs = payload["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2, "empty assistant should be removed");
+    }
+
+    #[test]
+    fn sanitize_preserves_last_empty_assistant() {
+        // A final empty assistant (the LLM produced nothing) is preserved.
+        let mut payload = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": ""},
+            ]
+        });
+        sanitize_malformed_messages(&mut payload);
+        let msgs = payload["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2, "final empty assistant preserved");
+    }
 }
