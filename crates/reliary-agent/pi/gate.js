@@ -32,7 +32,7 @@ function gateLog(level, msg) {
 }
 
 // ── Binary discovery (env var → PATH → hardcoded paths) ──
-let RELIARY_BIN = process.env. || null;
+let RELIARY_BIN = process.env.RELIARY_BIN_PATH || null;
 if (!RELIARY_BIN) {
   // Check PATH first
   try {
@@ -120,7 +120,7 @@ function daemonCmd(cmd) {
 }
 
 // ── Daemon health check: verify binary exists (TCP check would require daemon running) ──
-let  = true; // assume healthy — CLI fallback handles gracefully
+let DAEMON_HEALTHY = true; // assume healthy — CLI fallback handles gracefully
 
 function cacheRead(path, hash, len) {
   return daemonCmd(`cache-read ${path} ${hash} ${len}`);
