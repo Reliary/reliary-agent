@@ -84,12 +84,20 @@ impl CacheFeedback {
     }
 }
 
+const CACHE_FEEDBACK_MAX: usize = 32;
 static CACHE_FEEDBACK: LazyLock<Mutex<FxHashMap<String, CacheFeedback>>> =
     LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
 /// Feed cache metrics from upstream response. Returns true if compression should pause.
 pub fn feed_cache_metrics(auth_key: &str, hit_tokens: u32, total_prompt_tokens: u32) -> bool {
     let mut map = CACHE_FEEDBACK.lock().unwrap_or_else(|e| e.into_inner());
+    // Evict oldest if at cap and this is a new key.
+    if !map.contains_key(auth_key) && map.len() >= CACHE_FEEDBACK_MAX {
+        if let Some(k) = map.keys().next() {
+            let oldest = k.clone();
+            map.remove(&oldest);
+        }
+    }
     let fb = map.entry(auth_key.to_string()).or_insert_with(CacheFeedback::new);
     fb.record_turn(hit_tokens, total_prompt_tokens)
 }

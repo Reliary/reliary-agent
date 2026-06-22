@@ -1254,7 +1254,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reliary-agent"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "axum",
  "bytes",
@@ -1294,7 +1294,7 @@ dependencies = [
 
 [[package]]
 name = "reliary-compress"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "ahash",
  "regex",
@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "reliary-core"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "clap",
  "serde",
@@ -1311,11 +1311,11 @@ dependencies = [
 
 [[package]]
 name = "reliary-dead"
-version = "0.6.5"
+version = "0.6.7"
 
 [[package]]
 name = "reliary-fix"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "regex-lite",
  "serde",
@@ -1324,7 +1324,7 @@ dependencies = [
 
 [[package]]
 name = "reliary-memory"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "chrono",
  "rand 0.8.6",
@@ -1336,18 +1336,18 @@ dependencies = [
 
 [[package]]
 name = "reliary-output"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "regex",
 ]
 
 [[package]]
 name = "reliary-risk"
-version = "0.6.5"
+version = "0.6.7"
 
 [[package]]
 name = "reliary-search"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "rayon",
  "rusqlite",
@@ -1358,7 +1358,7 @@ dependencies = [
 
 [[package]]
 name = "reliary-sift"
-version = "0.6.5"
+version = "0.6.7"
 dependencies = [
  "ahash",
  "flate2",

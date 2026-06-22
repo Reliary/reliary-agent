@@ -32,14 +32,21 @@ static COMPRESSION_DICT: LazyLock<Option<reliary_compress::CompressionDict>> =
 // Synchronization for JSONL logging — prevents interleaved lines from concurrent requests.
 static JSONL_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-static RESPONSE_CACHE: LazyLock<Mutex<FxHashMap<u64, String>>> =
+// Cached response: body + the metric headers we want to preserve on cache hit
+// (x-reliaty-input-tokens, x-reliaty-compressed-tokens, x-reliaty-savings-pct).
+type CachedResponse = (String, Vec<(String, String)>);
+static RESPONSE_CACHE: LazyLock<Mutex<FxHashMap<u64, CachedResponse>>> =
     LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
 static DAEMON_STATE: LazyLock<Mutex<Option<Arc<crate::session_state::SessionState>>>> =
     LazyLock::new(|| Mutex::new(None));
 
 // Guard result cache: keyed by (file_path_hash, content_hash), 60s TTL.
-// Prevents redundant FTS5 queries on retry loops.
+// Prevents redundant FTS5 queries on retry loops. Hard cap at 500 entries with
+// LRU-style eviction; TTL is checked on read and entries are purged on insert
+// every 20 writes to amortize the O(n) scan.
+const GUARD_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+const GUARD_CACHE_MAX: usize = 500;
 struct GuardCacheEntry {
     status: String,
     inserted_at: Instant,
@@ -61,15 +68,22 @@ fn cache_key(auth: &str, body: &str, is_streaming: bool) -> u64 {
     h.finish()
 }
 
-fn cached_response(auth: &str, body: &str, is_streaming: bool) -> Option<String> {
+fn cached_response(auth: &str, body: &str, is_streaming: bool) -> Option<CachedResponse> {
     let key = cache_key(auth, body, is_streaming);
     RESPONSE_CACHE.lock().ok().and_then(|c| c.get(&key).cloned())
 }
 
-fn store_response(auth: &str, body: &str, response: &str, is_streaming: bool) {
+fn store_response(auth: &str, body: &str, response: &str, headers: Vec<(String, String)>, is_streaming: bool) {
     let key = cache_key(auth, body, is_streaming);
     if let Ok(mut cache) = RESPONSE_CACHE.lock() {
-        cache.insert(key, response.to_string());
+        // Filter to the metric headers we want to replay; drop hop-by-hop / content headers.
+        let preserved: Vec<(String, String)> = headers.into_iter()
+            .filter(|(k, _)| {
+                let lk = k.to_lowercase();
+                lk.starts_with("x-reliaty-")
+            })
+            .collect();
+        cache.insert(key, (response.to_string(), preserved));
         if cache.len() > 120 {
             let keys: Vec<u64> = cache.keys().copied().collect();
             for k in keys.iter().take(20) { cache.remove(k); }
@@ -130,12 +144,20 @@ impl PerKeyState {
     }
 }
 
-// Global per-auth-key state store
+// Global per-auth-key state store. Outer map is bounded at 32 entries;
+// when full, the oldest (by insertion order of FxHashMap iteration) is evicted.
+const PER_KEY_STATE_MAX: usize = 32;
 static PER_KEY_STATE: LazyLock<Mutex<FxHashMap<String, PerKeyState>>> =
     LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
 fn get_or_create_state(auth_key: &str) -> std::sync::MutexGuard<'static, FxHashMap<String, PerKeyState>> {
     let mut guard = PER_KEY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    // Evict oldest if at cap and this is a new key (not an existing one).
+    if !guard.contains_key(auth_key) && guard.len() >= PER_KEY_STATE_MAX {
+        if let Some(oldest) = guard.keys().next().cloned() {
+            guard.remove(&oldest);
+        }
+    }
     guard.entry(auth_key.to_string()).or_insert_with(PerKeyState::new);
     guard
 }
@@ -731,6 +753,22 @@ async fn proxy_post(
         Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("json parse: {}", e)}))).into_response(),
     };
 
+    // Anthropic /v1/messages format detection: payload has a top-level "system"
+    // string field and message content blocks as arrays, not strings.
+    // proxy_post only handles OpenAI format. Reject Anthropic requests with a
+    // 501 so the agent doesn't get silently mangled responses.
+    if payload.get("system").map(|v| v.is_string()).unwrap_or(false)
+        && payload.get("messages").map(|v| v.is_array()).unwrap_or(false)
+        && payload.get("messages").and_then(|m| m.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|msg| msg.get("content"))
+            .map(|c| c.is_array()).unwrap_or(false)
+    {
+        return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({
+            "error": "Anthropic /v1/messages format is not yet supported. Set ANTHROPIC_BASE_URL to bypass the proxy, or use a different provider. The proxy currently handles OpenAI-compatible chat completions only."
+        }))).into_response();
+    }
+
     let is_streaming = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
     // Sanitize malformed messages before any routing decision.
@@ -799,27 +837,26 @@ async fn proxy_post(
         }
     }
 
-    // Guard: check edit tool calls for orphaned references (ON by default, disable via RELIARY_PROXY_GUARD_DISABLE=1)
+    // Guard: check edit tool calls for orphaned references (ON by default, disable via RELIARY_PROXY_GUARD_DISABLE=1).
+    // Only fires on actual tool_calls array entries, not prose mentions of "edit" or "write".
     if !std::env::var("RELIARY_PROXY_GUARD_DISABLE").is_ok_and(|v| v == "1") {
         if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
             if let Some(last) = messages.last() {
                 if last.get("role").and_then(|r| r.as_str()) == Some("assistant") {
                     let content = last.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                    let has_edit = content.contains("\"edit\"") || content.contains("\"apply-edit\"")
-                        || content.contains("\"write\"")
-                        || content.contains("sed -i");
-                    // Check tool_calls array for edit/write function names
+                    // Check tool_calls array for edit/write function names (primary, exact check).
                     let has_edit_tool = last.get("tool_calls")
                         .and_then(|tc| tc.as_array())
                         .map(|calls| calls.iter().any(|tc| {
                             tc.get("function")
                                 .and_then(|f| f.get("name"))
                                 .and_then(|n| n.as_str())
-                                .map(|n| n == "edit" || n == "write" || n == "sed")
+                                .map(|n| n == "edit" || n == "write" || n == "sed"
+                                          || n == "apply-edit" || n == "create")
                                 .unwrap_or(false)
                         }))
                         .unwrap_or(false);
-                    if has_edit || has_edit_tool {
+                    if has_edit_tool {
                         if let Some((file_path, new_text)) = extract_edit_from_assistant(content) {
                             if let Some((root, index_path, _)) = crate::daemon::find_reliary_root(&file_path) {
                                 let rel_paths = resolve_index_paths(&file_path, &root);
@@ -843,11 +880,11 @@ async fn proxy_post(
                                         None => {
                                             let result = crate::guard::check_diff(&index_path, rp, &new_text);
                                             let status = result.get("status").and_then(|s| s.as_str()).unwrap_or("error").to_string();
-                                            if let Ok(mut c) = GUARD_CACHE.lock() {
-                                                // Evict stale entries (elapsed > 60s) to bound memory.
-                                                c.retain(|_, e| e.inserted_at.elapsed() < std::time::Duration::from_secs(60));
+                                             if let Ok(mut c) = GUARD_CACHE.lock() {
+                                                // Evict stale entries (elapsed > TTL) to bound memory.
+                                                c.retain(|_, e| e.inserted_at.elapsed() < GUARD_CACHE_TTL);
                                                 // Hard cap to prevent unbounded growth.
-                                                if c.len() >= 500 {
+                                                if c.len() >= GUARD_CACHE_MAX {
                                                     if let Some(&oldest_key) = c.iter()
                                                         .min_by_key(|(_, e)| e.inserted_at)
                                                         .map(|(k, _)| k)
@@ -877,7 +914,11 @@ async fn proxy_post(
     }
 
     // ── Anti-decision: record outcomes from tool results and annotate (off by default) ──
-    if std::env::var("RELIARY_PROXY_FEATURE_ANTI").is_ok_and(|v| v == "1") {
+    // Both env vars are checked: RELIARY_PROXY_FEATURE_ANTI=1 (opt-in) and
+    // RELIARY_PROXY_ANTI_DISABLE=1 (legacy opt-out from docs — if NOT set, enable).
+    let anti_enabled = std::env::var("RELIARY_PROXY_FEATURE_ANTI").is_ok_and(|v| v == "1")
+        || !std::env::var("RELIARY_PROXY_ANTI_DISABLE").is_ok_and(|v| v == "1");
+    if anti_enabled {
         let workdir = get_state().workdir.to_string_lossy().to_string();
         if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
             for msg in messages.iter() {
@@ -998,9 +1039,18 @@ async fn proxy_post(
     // Response cache (streaming and non-streaming)
     if let Some(messages) = payload.get("messages") {
         if let Ok(msg_str) = serde_json::to_string(messages) {
-            if let Some(cached) = cached_response(&auth_key, &msg_str, is_streaming) {
+            if let Some((body, preserved_headers)) = cached_response(&auth_key, &msg_str, is_streaming) {
                 let content_type = if is_streaming { "text/event-stream" } else { "application/json" };
-                return (StatusCode::OK, [("content-type", content_type)], cached).into_response();
+                let mut resp = (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, content_type)], body).into_response();
+                for (k, v) in preserved_headers {
+                    if let (Ok(name), Ok(value)) = (
+                        axum::http::HeaderName::from_bytes(k.as_bytes()),
+                        axum::http::HeaderValue::from_str(&v),
+                    ) {
+                        resp.headers_mut().insert(name, value);
+                    }
+                }
+                return resp;
             }
         }
     }
@@ -1019,6 +1069,10 @@ async fn proxy_post(
 
     match req_builder.send().await {
         Ok(mut upstream_resp) => {
+            // Capture upstream response headers (filtered later when caching).
+            let upstream_headers: Vec<(String, String)> = upstream_resp.headers().iter()
+                .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.as_str().to_string(), s.to_string())))
+                .collect();
             // If upstream returned an error status, forward the error body as JSON
             // (not SSE chunks). Pi's SSE parser fails when non-"data: " prefixed
             // bytes arrive in the stream.
@@ -1139,7 +1193,7 @@ async fn proxy_post(
 
                     // Cache the full body (best-effort — skips if serialization fails)
                     if let Ok(msg_str) = serde_json::to_string(&payload.get("messages").unwrap_or(&Value::Null)) {
-                        store_response(&auth_key, &msg_str, &String::from_utf8_lossy(&total_bytes), true);
+                        store_response(&auth_key, &msg_str, &String::from_utf8_lossy(&total_bytes), upstream_headers.clone(), true);
                     }
                 });
 
@@ -1164,7 +1218,7 @@ async fn proxy_post(
                         let raw_str = String::from_utf8_lossy(&bytes).to_string();
                         // Compress response body before returning to agent
                         let body_str = compress_response_body(&raw_str, false);
-                        store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str, false);
+                        store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str, upstream_headers.clone(), false);
 
                         jsonl_log(&serde_json::json!({
                             "event": "proxy_response",
@@ -1367,7 +1421,9 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
     info!(target: "reliary", "Routes: /health /ping /search /risk /compress /veto /muzzle /prior");
     info!(target: "reliary", "Proxy features: compression=on guard={} anti={} (set RELIARY_PROXY_GUARD_DISABLE=1 to disable guard)",
         if std::env::var("RELIARY_PROXY_GUARD_DISABLE").is_ok_and(|v| v == "1") { "off" } else { "on" },
-        if std::env::var("RELIARY_PROXY_FEATURE_ANTI").is_ok_and(|v| v == "1") { "on" } else { "off" });
+        if std::env::var("RELIARY_PROXY_FEATURE_ANTI").is_ok_and(|v| v == "1")
+            || !std::env::var("RELIARY_PROXY_ANTI_DISABLE").is_ok_and(|v| v == "1")
+        { "on" } else { "off" });
 
     axum::serve(listener, app)
         .await
