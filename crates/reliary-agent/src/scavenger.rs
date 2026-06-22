@@ -77,6 +77,11 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
             if c.confidence != reliary_dead::Confidence::High { continue; }
             let recent = chronicle::recent_events(&chronicle_db, &c.file, 24);
             if recent.iter().any(|e| e.event == "scavenge" && e.detail.contains(&c.name)) { continue; }
+            if let Ok(meta) = std::fs::metadata(&c.file) {
+                if meta.len() > 10_000_000 {
+                    continue; // skip files > 10MB
+                }
+            }
             if let Ok(content) = std::fs::read_to_string(&c.file) {
                 let fixes = vec![(c.name.clone(), String::new())];
                 let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
@@ -88,7 +93,9 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
                     };
                     match result {
                         Ok(()) => {
-                            let _ = std::fs::write(&c.file, &modified);
+                            if let Err(e) = crate::heal::atomic_write(&c.file, &modified) {
+                                eprintln!("[reliary] scavenger: atomic write failed for {}: {} — file may be corrupted", c.file, e);
+                            }
                             chronicle::append(&chronicle_db, "scavenge", &c.file, &c.name, "removed");
                             eprintln!("[reliary] scavenger: removed {} from {}", c.name, c.file);
                         }

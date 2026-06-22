@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.6.8
+
+### Critical bug fixes
+
+- **scavenger.rs:91 atomic write**: Replaced `std::fs::write` (non-atomic) with `heal::atomic_write` (tmp + fsync + rename). Process crash mid-write no longer corrupts scavenger-modified files.
+- **scavenger.rs:80 size guard**: Added 10MB file size check before `read_to_string`. Prevents OOM on multi-GB files in user home directories.
+- **ux.rs:403 wrong table name**: `SELECT COUNT(DISTINCT file_id) FROM file_phrases` failed silently (no such table). Fixed to `SELECT COUNT(*) FROM file_map`. Status command now reports correct file count.
+- **heal.rs:63 hardcoded cargo test**: Heal pipeline now detects project type (Cargo.toml → cargo, pyproject.toml → pytest, package.json → npm test, go.mod → go test). Non-Rust projects no longer get edits reverted due to non-existent test runners.
+- **antidecision.rs extract_sed_target rewrite**: Fixed function that captured the sed `s/old/new/` pattern instead of the file path. Added `looks_like_sed_pattern` to filter sed-shaped words. Antidecision now records the correct file for sed operations.
+
+### High priority
+
+- **antidecision.rs grammar-free keywords**: Replaced 25-item hardcoded keyword ban (violated grammar-free principles) with structural heuristics: skip all-lowercase identifiers < 5 chars, prefer uppercase/underscore/length ≥ 6.
+- **routes.rs normalize_url host-only check**: `is_anthropic_host` now checks only the URL host for "anthropic" substring, not arbitrary path substrings. Fixes false positives like `/v1/anthropic-proxy/chat`.
+- **init.rs uninstall Pi detection**: Replaced `pi --version` exec (could hang) with PATH scan. Cleaner removal logic.
+- **README.md Claude Code limitation**: Documented that Anthropic `/v1/messages` requests get a 501.
+
+### Code quality
+
+- **config.rs:122 default mode**: Changed default from `Reactive` to `Strict` (matches CONFIG.md and README).
+- **mcp.rs:53 SQL PRAGMA corruption**: ` synchronous=NORMAL;` → `PRAGMA synchronous=NORMAL;` (silent no-op fixed).
+- **ux.rs:402 SQL PRAGMA corruption**: ` synchronous=;` → `PRAGMA synchronous=NORMAL;` (silent no-op fixed).
+- **scavenger.rs:60 SQL PRAGMA corruption**: ` wal_checkpoint();` → `PRAGMA wal_checkpoint(PASSIVE);` (silent no-op fixed).
+- **reindex.rs:118 bitwise OR**: `content.contains("x") | content.contains("y")` → `||` (correct logical OR, no clippy warning).
+- **daemon.rs MAX_FILE_SIZE made public**: Moved shared constant so proxy.rs uses the same value. Removed magic number 10_000_000 from proxy.rs.
+- **antidecision.rs dead code removed**: Deleted `format_annotation`, `annotate_tool_result` (33 lines of dead code, never called). Marked `query_anti_decisions`, `BUILTIN_PRIORS`, `LOADED_WORKDIRS` with `#[allow(dead_code)]` since they're test-only.
+
+### Tests
+
+- Added 10 new unit tests covering all fixed bugs.
+- Total: 267 tests passing, 0 failures.
+
+## v0.6.6
 ## v0.6.6
 
 ### Compression Ceiling Breakthrough

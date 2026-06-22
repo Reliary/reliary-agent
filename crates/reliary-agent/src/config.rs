@@ -119,7 +119,7 @@ pub fn resolve_mode_with_source(workdir: Option<&str>) -> ResolvedMode {
     }
 
     ResolvedMode {
-        value: GateMode::Reactive,
+        value: GateMode::Strict,
         source: ConfigSource::Default,
     }
 }
@@ -250,7 +250,8 @@ mod tests {
         isolated_test(|| {
             let result = resolve_mode_with_source(Some("/tmp/nonexistent_test_dir_12345"));
             assert_ne!(result.source, ConfigSource::Env);
-            assert!(result.value.as_str() == "reactive" || result.value.as_str() == "strict");
+            // v0.6.8: default is now strict (was reactive)
+            assert_eq!(result.value, GateMode::Strict);
         });
     }
 

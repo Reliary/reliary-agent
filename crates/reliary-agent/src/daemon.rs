@@ -9,7 +9,7 @@ use std::sync::{Arc, LazyLock};
 use crate::session_state::SessionState;
 
 const MAX_CONCURRENT: usize = 50;
-const MAX_FILE_SIZE: u64 = 10_000_000;
+pub const MAX_FILE_SIZE: u64 = 10_000_000;
 
 /// Known library identifiers to skip during veto (grammar-free: names that appear
 /// in practically every file but aren't project-specific).

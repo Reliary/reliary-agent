@@ -476,8 +476,13 @@ pub fn uninstall() {
     let mut removed_agents = 0;
 
     // 1. Pi Agent
+    // Detect Pi by file existence only (no `pi --version` exec which can hang
+    // on stdin or fail with wrong exit code).
     let pi_bin = home_dir().map(|h| h.join(".local/bin/pi")).unwrap_or_else(|| PathBuf::from("pi"));
-    let has_pi = pi_bin.exists() || Command::new("pi").arg("--version").output().is_ok();
+    let pi_in_path = std::env::var("PATH").map(|p| {
+        p.split(':').any(|dir| std::path::Path::new(dir).join("pi").exists())
+    }).unwrap_or(false);
+    let has_pi = pi_bin.exists() || pi_in_path;
     
     if has_pi {
         println!("Removing Pi Agent extension...");
@@ -486,9 +491,12 @@ pub fn uninstall() {
             let target_path = target_dir.join("gate.js");
             
             if target_path.exists() {
+                // Use 'pi -e' to remove the extension, or fall back to direct file removal.
+                // The 'pi uninstall' subcommand may not exist in all Pi versions, so we
+                // try the Pi command but always remove the file regardless of its result.
                 let pi_cmd = if pi_bin.exists() { pi_bin.to_str().unwrap_or("pi") } else { "pi" };
                 let _ = Command::new(pi_cmd)
-                    .args(["uninstall", target_path.to_str().unwrap_or("/dev/null")])
+                    .args(["-e", &format!("rm {}", target_path.display())])
                     .status();
                 
                 let _ = fs::remove_file(&target_path);

@@ -1281,7 +1281,7 @@ async fn read_validated_handler(Query(params): Query<StdHashMap<String, String>>
         let mut content = String::new();
         if let Ok(mut f) = std::fs::File::open(&full_path) {
             if let Ok(meta) = f.metadata() {
-                if meta.len() > 10_000_000 {
+                if meta.len() > crate::daemon::MAX_FILE_SIZE {
                     return serde_json::json!({"error": "file too large"}).to_string();
                 }
             }
