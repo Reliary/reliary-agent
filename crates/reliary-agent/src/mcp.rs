@@ -109,8 +109,7 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                     let fixes = vec![(old.to_string(), new.to_string())];
                     let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
                     if count > 0 {
-                        let tmp = format!("{}.tmp.{}", file, std::process::id());
-                        if std::fs::write(&tmp, &modified).is_ok() && std::fs::rename(&tmp, file).is_ok() {
+                        if reliary_core::atomic_write(file, &modified).is_ok() {
                             DispatchResult::Success(serde_json::json!({
                                 "content": [{ "type": "text", "text": serde_json::json!({"success": true, "replacements": count, "file": file}).to_string() }]
                             }))

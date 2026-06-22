@@ -130,15 +130,34 @@ pub fn resolve_mode(workdir: Option<&str>) -> GateMode {
 }
 
 /// Resolve feature flags with source tracking.
+/// Single source of truth for feature names and their default state.
+/// Bug 38/44: previously duplicated in main.rs valid_keys and gate.js.
+pub const FEATURE_DEFAULTS: &[(&str, bool)] = &[
+    ("compress", true),
+    ("convWindow", true),
+    ("readEnrichment", true),
+    ("editMerge", false),
+    ("healEdit", true),
+    ("priorInjection", false),
+];
+
+/// Public list of valid config keys (used by CLI validation)
+pub const VALID_CONFIG_KEYS: &[&str] = &[
+    "mode",
+    "features.compress",
+    "features.convWindow",
+    "features.readEnrichment",
+    "features.editMerge",
+    "features.healEdit",
+    "features.priorInjection",
+    "apiMode",
+    "privacyMode",
+    "apiBaseUrl",
+    "serverUrl",
+];
+
 pub fn resolve_features_with_source(workdir: Option<&str>) -> Vec<ResolvedFeature> {
-    let defaults: Vec<(&str, bool)> = vec![
-        ("compress", true),
-        ("convWindow", true),
-        ("readEnrichment", true),
-        ("editMerge", false),
-        ("healEdit", true),
-        ("priorInjection", false),
-    ];
+    let defaults: Vec<(&str, bool)> = FEATURE_DEFAULTS.to_vec();
 
     // Parse env var
     let mut env_overrides: HashMap<String, bool> = HashMap::new();
@@ -196,6 +215,13 @@ pub fn resolve_features(workdir: Option<&str>) -> Vec<(String, bool)> {
 }
 
 pub fn set_config(key: &str, value: &str, project: bool, root: Option<&str>) -> String {
+    // Bug 45: validate values for known keys before storing
+    if key.starts_with("features.") && !matches!(value, "true" | "false") {
+        return format!("Error: feature value must be 'true' or 'false', got '{}'", value);
+    }
+    if key == "mode" && !matches!(value, "fast" | "reactive" | "strict") {
+        return format!("Error: mode must be 'fast', 'reactive', or 'strict', got '{}'", value);
+    }
     let path = if project {
         let base = root.unwrap_or(".");
         project_config_path(base)

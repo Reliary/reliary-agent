@@ -40,7 +40,7 @@ pub fn incremental_reindex(workdir: &str) -> usize {
     // Parallel re-index changed files
     let count = changed_files.par_iter().filter_map(|file| {
         let path_str = file.to_string_lossy().to_string();
-        let content = std::fs::read_to_string(&path_str).ok()?;
+        let content = reliary_core::safe_read(&path_str).ok()?;
         if reindex_file(&db_path_str, &path_str, &content) {
             Some(())
         } else {

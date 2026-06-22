@@ -31,7 +31,7 @@ fn find_workdir(file: &str) -> String {
 
 // Build a structured file summary from FTS5 index data.
 pub fn build(file: &str) -> String {
-    let content = match std::fs::read_to_string(file) {
+    let content = match reliary_core::safe_read(file) {
         Ok(c) => c,
         Err(e) => return format!("ERROR: cannot read {} — {}", file, e),
     };

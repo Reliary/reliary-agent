@@ -33,8 +33,14 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
 
     let results: Vec<FileResult> = paths.par_iter().filter_map(|path| {
         let file = path.to_string_lossy().to_string();
+        // Guard: skip files larger than 10MB to prevent OOM during parallel ingest
+        if let Ok(meta) = path.metadata() {
+            if meta.len() > 10_000_000 {
+                return None;
+            }
+        }
         let content = std::fs::read_to_string(path).ok()?;
-        
+
         let lines: Vec<&str> = content.lines().collect();
         let mut phrase_locations: FxHashMap<String, Vec<(usize, u8)>> = FxHashMap::default();
         let mut lines_is_def = Vec::with_capacity(lines.len());

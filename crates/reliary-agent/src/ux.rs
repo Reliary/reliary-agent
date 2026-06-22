@@ -51,7 +51,7 @@ pub fn daemon_pid() -> Option<(u32, bool)> {
 /// Write PID file for daemon
 pub fn write_pid_file() {
     let pid_path = daemon_pid_path();
-    let _ = std::fs::write(&pid_path, format!("{}\n", std::process::id()));
+    let _ = reliary_core::atomic_write(pid_path.to_string_lossy().as_ref(), &format!("{}\n", std::process::id()));
 }
 
 /// Remove PID file for daemon

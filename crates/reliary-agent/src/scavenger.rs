@@ -69,6 +69,15 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
             rusqlite::params![cutoff],
         );
 
+        // Bug 50: cap edit_cache at 10K rows. Delete oldest excess to bound
+        // table size for long-running daemons with many edits.
+        let _ = chronicle_db.execute(
+            "DELETE FROM edit_cache WHERE rowid IN (
+                SELECT rowid FROM edit_cache ORDER BY timestamp DESC LIMIT -1 OFFSET 10000
+            )",
+            [],
+        );
+
         // WSL2 drvfs detection: skip heal subprocess (cargo test) on /mnt/ paths
         let on_drvfs = workdir.starts_with("/mnt/");
 

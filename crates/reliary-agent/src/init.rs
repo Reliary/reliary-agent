@@ -10,9 +10,20 @@ fn ok(msg: &str) { println!("  \x1b[32m✓\x1b[0m {}", msg); }
 // Embed gate.js at compile time
 
 /// Atomic write: write to tmp, sync, rename. Prevents partial write corruption.
+/// Bug 47: clean up tmp file on write or rename failure (was leaking).
 fn atomic_write(path: &str, content: &str) -> bool {
     let tmp = format!("{}.tmp.{}", path, std::process::id());
-    std::fs::write(&tmp, content).is_ok() && std::fs::rename(&tmp, path).is_ok()
+    let write_ok = std::fs::write(&tmp, content).is_ok();
+    if !write_ok {
+        let _ = std::fs::remove_file(&tmp); // clean up partial write
+        return false;
+    }
+    let rename_ok = std::fs::rename(&tmp, path).is_ok();
+    if !rename_ok {
+        let _ = std::fs::remove_file(&tmp); // clean up orphaned tmp
+        return false;
+    }
+    true
 }
 const EMBEDDED_GATE_JS: &str = include_str!("../pi/gate.js");
 
@@ -899,7 +910,10 @@ pub fn restore_opencode_proxy_routes() -> bool {
                     }
                 }
             });
-            std::fs::write(pi_dir.join("settings.json"), serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+            atomic_write(
+                pi_dir.join("settings.json").to_str().unwrap(),
+                &serde_json::to_string_pretty(&settings).unwrap(),
+            );
 
             let count = install_pi_proxy_routes();
             assert_eq!(count, 1, "1 API key from Pi settings");

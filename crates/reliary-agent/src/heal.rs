@@ -144,7 +144,7 @@ fn extract_first_failure(output: &str) -> String {
 
 // Shadow-apply a reliary_fix and test
 pub fn heal_fix(file: &str, old: &str, new: &str, workdir: &str) -> Result<String, String> {
-    let content = fs::read_to_string(file).map_err(|e| format!("Read: {}", e))?;
+    let content = reliary_core::safe_read(file).map_err(|e| format!("Read: {}", e))?;
     let fixes = vec![(old.to_string(), new.to_string())];
     let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
 
@@ -162,7 +162,7 @@ pub fn heal_fix(file: &str, old: &str, new: &str, workdir: &str) -> Result<Strin
 pub fn batch_heal(edits: &[(String, String, String)], workdir: &str) -> String {
     let mut originals: Vec<(String, String)> = Vec::new();
     for (file, old, new) in edits {
-        let content = match fs::read_to_string(file) {
+        let content = match reliary_core::safe_read(file) {
             Ok(c) => c,
             Err(e) => return format!("FAIL: cannot read {} — {}", file, e),
         };

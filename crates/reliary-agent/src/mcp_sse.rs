@@ -41,6 +41,7 @@ static SSE_SESSIONS: LazyLock<Mutex<HashMap<String, SseSession>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 const SESSION_TTL: Duration = Duration::from_secs(300);
+const SSE_SESSIONS_MAX: usize = 1000; // Bug 40: cap to prevent OOM
 
 fn prune_stale(guard: &mut HashMap<String, SseSession>) {
     let now = Instant::now();
@@ -56,6 +57,13 @@ pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>>
     {
         let mut guard = SSE_SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
         prune_stale(&mut guard);
+        // Bug 40: cap sessions to prevent OOM under high traffic
+        if guard.len() >= SSE_SESSIONS_MAX {
+            // Drop the oldest session to make room (FIFO eviction)
+            if let Some(oldest_key) = guard.keys().next().cloned() {
+                guard.remove(&oldest_key);
+            }
+        }
         guard.insert(session_id.clone(), SseSession { tx, created: Instant::now() });
     }
 
@@ -191,13 +199,15 @@ pub async fn messages_handler(
 
     // Queue response for delivery via SSE
     if let Ok(json_str) = serde_json::to_string(&response) {
-        let sent = {
+        // Bug 41: drop the lock before calling send() to avoid holding it
+        // across potentially-slow channel operations.
+        let sender_opt = {
             let guard = SSE_SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(sess) = guard.get(&session_id) {
-                sess.tx.send(McpEvent::Response(json_str)).is_ok()
-            } else {
-                false
-            }
+            guard.get(&session_id).map(|sess| sess.tx.clone())
+        };
+        let sent = match sender_opt {
+            Some(sender) => sender.send(McpEvent::Response(json_str)).is_ok(),
+            None => false,
         };
         if !sent {
             return (StatusCode::NOT_FOUND, Json(serde_json::json!({
@@ -210,17 +220,23 @@ pub async fn messages_handler(
 }
 
 pub mod uuid {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
+    /// Bug 43: was non-random (counter + PID + timestamp — predictable).
+    /// Now uses getrandom for cryptographic randomness.
     pub fn generate() -> String {
-        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id() as u64;
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        format!("{:x}-{:x}-{:x}", pid, ts, count)
+        let mut bytes = [0u8; 16];
+        if getrandom::getrandom(&mut bytes).is_err() {
+            // Fallback: time-based if getrandom fails
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            return format!("{:032x}", ts);
+        }
+        // Format as hex string (32 chars)
+        let mut s = String::with_capacity(32);
+        for b in &bytes {
+            s.push_str(&format!("{:02x}", b));
+        }
+        s
     }
 }

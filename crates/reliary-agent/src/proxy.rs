@@ -94,6 +94,53 @@ fn extract_auth_key(headers: &HeaderMap) -> String {
         .unwrap_or_default()
 }
 
+// ── Rate Limiting (Bug 49) ──
+//
+// Per-auth-key token bucket. Defaults to 60 requests / 60 seconds.
+// If a single API key makes more than 60 requests in 60s, requests are
+// rejected with HTTP 429. Configurable via RELIARY_PROXY_RATE_PER_MIN.
+
+const RATE_LIMIT_PER_MIN_DEFAULT: u32 = 60;
+static RATE_BUCKETS: LazyLock<Mutex<rustc_hash::FxHashMap<String, (u32, std::time::Instant)>>> =
+    LazyLock::new(|| Mutex::new(rustc_hash::FxHashMap::default()));
+static RATE_LAST_PRUNE: LazyLock<Mutex<std::time::Instant>> =
+    LazyLock::new(|| Mutex::new(std::time::Instant::now()));
+const RATE_PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn check_rate_limit(auth_key: &str) -> Option<u32> {
+    if auth_key.is_empty() { return None; } // No key, no rate limit (let auth check handle it)
+
+    let per_min = std::env::var("RELIARY_PROXY_RATE_PER_MIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(RATE_LIMIT_PER_MIN_DEFAULT);
+
+    let now = std::time::Instant::now();
+    let mut buckets = RATE_BUCKETS.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Periodic sweep: remove entries older than 60s to prevent memory growth
+    {
+        let mut last_prune = RATE_LAST_PRUNE.lock().unwrap_or_else(|e| e.into_inner());
+        if now.duration_since(*last_prune) > RATE_PRUNE_INTERVAL {
+            buckets.retain(|_, (_, t)| now.duration_since(*t) < std::time::Duration::from_secs(60));
+            *last_prune = now;
+        }
+    }
+
+    let entry = buckets.entry(auth_key.to_string()).or_insert((0, now));
+    // Reset bucket if more than 60s have passed
+    if now.duration_since(entry.1) > std::time::Duration::from_secs(60) {
+        entry.0 = 0;
+        entry.1 = now;
+    }
+    if entry.0 >= per_min {
+        let retry_after = 60u32.saturating_sub(now.duration_since(entry.1).as_secs() as u32);
+        return Some(retry_after.max(1));
+    }
+    entry.0 += 1;
+    None
+}
+
 fn daemon_cmd_str(cmd: &str) -> String {
     crate::daemon::daemon_handle_cmd_str(cmd, &get_state())
 }
@@ -721,6 +768,14 @@ async fn proxy_post(
     body: Bytes,
 ) -> axum::response::Response {
     let auth_key = extract_auth_key(&headers);
+
+    // Bug 49: per-auth-key rate limit (token bucket, 60 req/min default)
+    if let Some(retry_after) = check_rate_limit(&auth_key) {
+        return (StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", retry_after.to_string())],
+            Json(serde_json::json!({"error": "rate limit exceeded"}))).into_response();
+    }
+
     let upstream_url = match resolve_upstream(&auth_key) {
         Some(url) => url,
         None => return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error":"unknown api key"}))).into_response(),

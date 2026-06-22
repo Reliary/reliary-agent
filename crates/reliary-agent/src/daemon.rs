@@ -155,7 +155,7 @@ fn open_index_db(path: &str) -> Option<rusqlite::Connection> {
 
 fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str, state: &SessionState) -> String {
     // Generic file size guard for all file-reading endpoints
-    if !p1.is_empty() && (p0 == "risk" || p0 == "read-summary" || p0 == "veto" || p0 == "fix") && Path::new(p1).exists() {
+    if !p1.is_empty() && (p0 == "risk" || p0 == "read-summary" || p0 == "veto" || p0 == "fix" || p0 == "apply-edit" || p0 == "sed-apply") && Path::new(p1).exists() {
         if let Ok(meta) = std::fs::metadata(p1) {
             if meta.len() > MAX_FILE_SIZE {
                 return format!("ERROR: file too large ({}). Max: {}MB\n", meta.len(), MAX_FILE_SIZE / 1_000_000);
@@ -216,7 +216,7 @@ fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str
                         return text + "\n";
                     }
                 }
-                match std::fs::read_to_string(p1) {
+                match reliary_core::safe_read(p1) {
                     Ok(content) => {
                         let risk = reliary_risk::compute_file_risk(p1, &content);
                         let text = format!("{:?}: {}", risk.risk, risk.reason);
@@ -231,7 +231,7 @@ fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str
             if p4.is_empty() {
                 "ERROR: usage: fix <file> <old> <new> <workdir>\n".to_string()
             } else {
-                match std::fs::read_to_string(p1) {
+                match reliary_core::safe_read(p1) {
                     Ok(content) => {
                         let fixes = vec![(p2.to_string(), p3.to_string())];
                         let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
@@ -299,7 +299,7 @@ fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str
             }
         }
         "apply-edit" => {
-            match std::fs::read_to_string(p2) {
+            match reliary_core::safe_read(p2) {
                 Ok(new_content) => {
                     match crate::heal::heal_edit(p1, &new_content, p3) {
                         Ok(()) => "OK: tests pass\n".to_string(),
@@ -313,7 +313,7 @@ fn daemon_handle_cmd(p0: &str, p1: &str, p2: &str, p3: &str, p4: &str, cmd: &str
             if p2.is_empty() || p3.is_empty() || p4.is_empty() {
                 "ERROR: usage: sed-apply <file> <old> <new> <workdir>\n".to_string()
             } else {
-                match std::fs::read_to_string(p1) {
+                match reliary_core::safe_read(p1) {
                     Ok(content) => {
                         let new_content = content.replace(p2, p3);
                         if new_content == content {
