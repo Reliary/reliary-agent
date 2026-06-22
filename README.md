@@ -55,6 +55,25 @@ After `init`, your agents get MCP tools for search, risk, compression, fix, dead
 detection, healing, and prior session memory. For conversation compression, point your
 agent's `*_BASE_URL` at http://localhost:9090.
 
+## Validation
+
+Compression preserves reading comprehension. Measured on SQuAD v2 (3 runs × 30
+samples = 270 calls), the proxy achieves F1 retention > 100% of baseline:
+
+| Condition   | F1    | EM    | Acc    | F1 Retention |
+|-------------|-------|-------|--------|--------------|
+| baseline    | 0.770 | 0.711 | 80.00% | 100%         |
+| recommended | 0.777 | 0.733 | 78.89% | 100.9% PASS  |
+| passthrough | 0.791 | 0.756 | 80.00% | 102.6% PASS  |
+
+Run the benchmark yourself:
+
+```bash
+python3 scripts/benchmarks/accuracy/bench_squad.py --runs 3 --samples 30
+```
+
+See `scripts/benchmarks/accuracy/README.md` for full methodology.
+
 ## Usage by Agent
 
 There are two separate things reliary gives your agent. Understanding the difference
