@@ -30,6 +30,23 @@ python3 scripts/benchmarks/accuracy/bench_squad.py --runs 3 --samples 30
 **Conclusion:** Compression preserves reading comprehension. F1 retention is
 slightly above 100% on both proxy conditions (within 2.7x LLM variance).
 
+## Caveats
+
+**F1 retention > 100% is not a real improvement.** With 90 samples per condition,
+the standard error on F1 is roughly ±0.05. A 2.7% gap (0.791 vs 0.770) is
+well within the 2.7x LLM stochastic variance — not statistically significant.
+
+The 95% pass criterion is a **floor** (regression detection), not an equality.
+Our result rules out regression (compression doesn't degrade comprehension
+by more than 5%) but does not validate that compression improves it.
+
+For a tighter confidence interval, run `--runs 10 --samples 100` (~6 hours).
+That distinguishes 100% vs 95% retention but not 100% vs 100.9%.
+
+For a multi-turn variant where compression actually fires on accumulated
+content, that bench does not exist yet — single-turn SQuAD skips compression
+because user messages are never compressed by design.
+
 ## BFCL — Tool Calling
 
 Tests whether the proxy preserves function-calling accuracy.

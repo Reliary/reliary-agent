@@ -57,8 +57,9 @@ agent's `*_BASE_URL` at http://localhost:9090.
 
 ## Validation
 
-Compression preserves reading comprehension. Measured on SQuAD v2 (3 runs × 30
-samples = 270 calls), the proxy achieves F1 retention > 100% of baseline:
+Compression preserves reading comprehension on SQuAD v2 within 2.7x LLM
+variance. Measured on 3 runs × 30 samples (270 calls), both proxy conditions
+achieve F1 retention ≥ 95% of baseline (the regression-detection floor):
 
 | Condition   | F1    | EM    | Acc    | F1 Retention |
 |-------------|-------|-------|--------|--------------|
@@ -66,13 +67,15 @@ samples = 270 calls), the proxy achieves F1 retention > 100% of baseline:
 | recommended | 0.777 | 0.733 | 78.89% | 100.9% PASS  |
 | passthrough | 0.791 | 0.756 | 80.00% | 102.6% PASS  |
 
+F1 retention > 100% is within 2.7x LLM variance — not a real improvement, but
+proof that compression does not regress reading comprehension. See
+`scripts/benchmarks/accuracy/README.md` for full methodology and caveats.
+
 Run the benchmark yourself:
 
 ```bash
 python3 scripts/benchmarks/accuracy/bench_squad.py --runs 3 --samples 30
 ```
-
-See `scripts/benchmarks/accuracy/README.md` for full methodology.
 
 ## Usage by Agent
 
