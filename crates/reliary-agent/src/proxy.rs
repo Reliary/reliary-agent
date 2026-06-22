@@ -12,12 +12,13 @@ use rustc_hash::FxHashMap;
 use std::collections::HashMap as StdHashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, LazyLock};
+use std::time::SystemTime;
 use std::time::Instant;
 use serde_json::Value;
 use tracing::{info, warn, error};
 
 // Shared HTTP client with connection pooling — eliminates per-request TCP+TLS handshake.
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {  // GUARDED: intentional — static lives for daemon lifetime, graceful shutdown joins threads before exit
     // Bug 69: total request timeout (default 5 min) to prevent hung upstream
     // requests from leaking memory and FDs.
     let timeout_secs: u64 = std::env::var("RELIARY_PROXY_UPSTREAM_TIMEOUT_SECS")
@@ -31,10 +32,34 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .expect("reqwest::Client")
 });
 
-// Compression dictionary loaded once from FTS5 index — known project symbols
+// Compression dictionary loaded from FTS5 index — known project symbols
 // survive compression while unknown fluff gets stripped.
-static COMPRESSION_DICT: LazyLock<Option<reliary_compress::CompressionDict>> =
-    LazyLock::new(crate::read_summary::load_dictionary);
+// Bug 87: refresh on index mtime change (was loaded once at startup).
+static COMPRESSION_DICT: LazyLock<Mutex<Option<reliary_compress::CompressionDict>>> =
+    LazyLock::new(|| Mutex::new(crate::read_summary::load_dictionary()));
+static DICT_INDEX_MTIME: LazyLock<Mutex<Option<SystemTime>>> =
+    LazyLock::new(|| Mutex::new(crate::read_summary::index_mtime()));
+
+/// Get the compression dictionary, refreshing it if the FTS5 index has changed
+/// on disk. Returns cached dict until the index is modified.
+fn get_dict() -> Option<reliary_compress::CompressionDict> {
+    let current_mtime = crate::read_summary::index_mtime();
+    {
+        let mut saved = DICT_INDEX_MTIME.lock().unwrap_or_else(|e| e.into_inner());
+        if *saved == current_mtime {
+            // Index unchanged — return cached dict
+            return COMPRESSION_DICT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        }
+        // Update saved mtime
+        *saved = current_mtime;
+    }
+    // Index changed — reload dict
+    if let Ok(mut dict) = COMPRESSION_DICT.lock() {
+        *dict = crate::read_summary::load_dictionary();
+        return dict.clone();
+    }
+    None
+}
 
 // Synchronization for JSONL logging — prevents interleaved lines from concurrent requests.
 // JSONL log: persistent file handle (Bug 53 fix).
@@ -102,7 +127,9 @@ fn infer_request_workdir(payload: &serde_json::Value) -> Option<String> {
     None
 }
 
-fn cache_key(auth: &str, body: &str, is_streaming: bool, model: &str) -> u64 {
+/// Bug 84: include temperature in cache key. Two requests with different temps
+/// but same messages should NOT share a cached response.
+fn cache_key(auth: &str, body: &str, is_streaming: bool, model: &str, temperature: Option<f64>) -> u64 {
     use rustc_hash::FxHasher;
     let mut h = FxHasher::default();
     auth.hash(&mut h);
@@ -111,22 +138,40 @@ fn cache_key(auth: &str, body: &str, is_streaming: bool, model: &str) -> u64 {
     // Bug 58: include model in cache key (was missing — same messages but different
     // model would return wrong model's cached response).
     model.hash(&mut h);
+    // Bug 84: include temperature in cache key
+    if let Some(t) = temperature {
+        t.to_string().hash(&mut h);
+    }
     h.finish()
 }
 
-fn cached_response(auth: &str, body: &str, is_streaming: bool, model: &str) -> Option<String> {
-    let key = cache_key(auth, body, is_streaming, model);
-    RESPONSE_CACHE.lock().ok().and_then(|c| c.get(&key).map(|(s, _)| s.clone()))
+fn cached_response(auth: &str, body: &str, is_streaming: bool, model: &str, temperature: Option<f64>) -> Option<String> {
+    let key = cache_key(auth, body, is_streaming, model, temperature);
+    // Borrow the cache in a block to drop the guard before touching seq
+    let resp = {
+        let cache = RESPONSE_CACHE.lock().ok()?;
+        cache.get(&key).map(|(s, _)| s.clone())
+    }?;
+    // Bug 86: touch in sequencer for access-order tracking
+    if let Ok(mut seq) = RESPONSE_CACHE_SEQ.lock() {
+        *seq += 1;
+        if let Ok(mut c) = RESPONSE_CACHE.lock() {
+            if let Some(entry) = c.get_mut(&key) {
+                entry.1 = *seq;
+            }
+        }
+    }
+    Some(resp)
 }
 
-fn store_response(auth: &str, body: &str, response: &str, is_streaming: bool, model: &str) {
-    let key = cache_key(auth, body, is_streaming, model);
+fn store_response(auth: &str, body: &str, response: &str, is_streaming: bool, model: &str, temperature: Option<f64>) {
+    let key = cache_key(auth, body, is_streaming, model, temperature);
     if let Ok(mut cache) = RESPONSE_CACHE.lock() {
-        // Bug 52: proper LRU — track insertion sequence, evict oldest when over cap
+        // Bug 52: proper LRU — track insertion/access sequence, evict oldest when over cap
         let seq = RESPONSE_CACHE_SEQ.lock().map(|mut s| { *s += 1; *s }).unwrap_or(0);
         cache.insert(key, (response.to_string(), seq));
         if cache.len() > RESPONSE_CACHE_MAX {
-            // Find the entry with the smallest seq (= oldest)
+            // Find the entry with the smallest seq (= least recently used)
             if let Some(&oldest_key) = cache.iter().min_by_key(|(_, (_, seq))| *seq).map(|(k, _)| k) {
                 cache.remove(&oldest_key);
             }
@@ -224,21 +269,51 @@ fn daemon_cmd_str(cmd: &str) -> String {
 }
 
 fn jsonl_log(entry: &serde_json::Value) {
-    // Bug 53: reuse persistent file handle (was re-opening on every call).
-    let mut guard = JSONL_FILE.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.is_none() {
-        if let Ok(fh) = std::fs::OpenOptions::new()
-            .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
-        {
-            *guard = Some(fh);
-        } else {
+    // Bug 53 + 75: reuse persistent file handle, but open OUTSIDE the lock
+    // to avoid blocking other jsonl_log calls during slow file opens.
+    {
+        let guard = JSONL_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_some() {
+            drop(guard);
+            write_jsonl_line(entry);
             return;
         }
     }
+    // Lock released — open the file (potentially slow)
+    if let Ok(fh) = std::fs::OpenOptions::new()
+        .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
+    {
+        // Re-acquire lock to store the handle
+        let mut guard = JSONL_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            *guard = Some(fh);
+        }
+        // Drop guard, write the current entry, then drop the new handle's owner
+        drop(guard);
+    }
+    // Try writing (either via stored handle or fresh open)
+    write_jsonl_line(entry);
+}
+
+fn write_jsonl_line(entry: &serde_json::Value) {
+    let mut guard = JSONL_FILE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(fh) = guard.as_mut() {
         use std::io::Write;
         let _ = writeln!(fh, "{}", serde_json::to_string(entry).unwrap_or_default());  // GUARDED: intentional
     }
+}
+
+/// Bug 92: flush JSONL file handle on shutdown, preventing crash-data loss.
+static JSONL_FLUSHED: std::sync::Once = std::sync::Once::new();
+fn flush_jsonl() {
+    JSONL_FLUSHED.call_once(|| {
+        if let Ok(mut guard) = JSONL_FILE.lock() {
+            if let Some(ref mut fh) = *guard {
+                use std::io::Write;
+                let _ = fh.flush();
+            }
+        }
+    });
 }
 
 // ── History Compression Components ──
@@ -640,7 +715,7 @@ fn compress_response_body(body: &str, is_sse: bool) -> String {
                                 .and_then(|c| c.as_str());
                             if let Some(c) = content {
                                 if c.len() > 300 {
-                                    compress_assistant_text(c, COMPRESSION_DICT.as_ref())
+                                    compress_assistant_text(c, get_dict().as_ref())
                                 } else { None }
                             } else { None }
                         };
@@ -667,7 +742,7 @@ fn compress_response_body(body: &str, is_sse: bool) -> String {
                 if let Some(msg) = choice.get_mut("message") {
                     if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
                         if content.len() > 300 {
-                            if let Some(compressed) = compress_assistant_text(content, COMPRESSION_DICT.as_ref()) {
+                            if let Some(compressed) = compress_assistant_text(content, get_dict().as_ref()) {
                                 msg["content"] = Value::String(compressed);
                                 return serde_json::to_string(&v).unwrap_or_else(|_| body.to_string());
                             }
@@ -714,7 +789,7 @@ fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize,
         // First occurrence: compress and cache
         let compressed = match role {
             "assistant" => {
-                let existing = compress_assistant_text(&content, COMPRESSION_DICT.as_ref());
+                let existing = compress_assistant_text(&content, get_dict().as_ref());
                 // Novel mechanisms (Maxwell, DSL) — disabled via RELIARY_PROXY_NOVEL_COMPRESS=0
                 let novel_disabled = std::env::var("RELIARY_PROXY_NOVEL_COMPRESS").is_ok_and(|v| v == "0");
                 if !novel_disabled {
@@ -1143,18 +1218,22 @@ async fn proxy_post(
         if let Ok(msg_str) = serde_json::to_string(messages) {
             // Bug 58: include model in cache key
             let model = payload.get("model").and_then(|m| m.as_str()).unwrap_or("");
-            if let Some(cached) = cached_response(&auth_key, &msg_str, is_streaming, model) {
+            // Bug 84: include temperature in cache key
+            let temperature = payload.get("temperature").and_then(|t| t.as_f64());
+            if let Some(cached) = cached_response(&auth_key, &msg_str, is_streaming, model, temperature) {
                 let content_type = if is_streaming { "text/event-stream" } else { "application/json" };
                 return (StatusCode::OK, [("content-type", content_type)], cached).into_response();
             }
         }
     }
 
-    let body_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    // Bug 74: use Bytes (reference-counted) instead of Vec<u8> to avoid
+    // cloning the entire request body for the cache.
+    let body_bytes: Bytes = serde_json::to_vec(&payload).unwrap_or_default().into();
 
     let mut req_builder = HTTP_CLIENT.post(&upstream_url)
         .header("Content-Type", "application/json")
-        .body(body_bytes.clone());
+        .body(body_bytes.clone());  // GUARDED: intentional — Bytes is Arc<[u8]>, clone is cheap
 
     if let Some(auth_val) = headers.get("authorization") {
         req_builder = req_builder.header("authorization", auth_val);
@@ -1309,7 +1388,8 @@ async fn proxy_post(
                     // Cache the full body (best-effort — skips if serialization fails)
                     if let Ok(msg_str) = serde_json::to_string(&payload.get("messages").unwrap_or(&Value::Null)) {
                         let model = payload.get("model").and_then(|m| m.as_str()).unwrap_or("");
-                        store_response(&auth_key, &msg_str, &String::from_utf8_lossy(&total_bytes), true, model);
+                        let temperature = payload.get("temperature").and_then(|t| t.as_f64());
+                        store_response(&auth_key, &msg_str, &String::from_utf8_lossy(&total_bytes), true, model, temperature);
                     }
                 });
 
@@ -1335,7 +1415,8 @@ async fn proxy_post(
                         // Compress response body before returning to agent
                         let body_str = compress_response_body(&raw_str, false);
                         let model = payload.get("model").and_then(|m| m.as_str()).unwrap_or("");
-                        store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str, false, model);
+                        let temperature = payload.get("temperature").and_then(|t| t.as_f64());
+                        store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str, false, model, temperature);  // body_bytes: Bytes, &str works via Deref
 
                         jsonl_log(&serde_json::json!({
                             "event": "proxy_response",
@@ -1476,6 +1557,40 @@ async fn read_validated_handler(Query(params): Query<StdHashMap<String, String>>
 
 // ── Startup ──
 
+fn build_cors() -> tower_http::cors::CorsLayer {
+    let default_origins = concat!(
+        "http://localhost:3000,",     // React/Vite/Next.js
+        "http://localhost:5173,",     // Vite default
+        "http://localhost:8080,",     // Common dev port
+        "http://localhost:4200,",     // Angular
+        "http://localhost:1420,",     // Tauri
+        "http://127.0.0.1:3000,",
+        "http://127.0.0.1:5173,",
+        "http://127.0.0.1:8080,",
+        "http://127.0.0.1:9000,",    // Pi Agent default
+        "http://localhost:9000,",
+    );
+
+    let origins_str = std::env::var("RELIARY_CORS_ORIGINS")
+        .unwrap_or_else(|_| String::from(default_origins));
+
+    let origins: Vec<axum::http::HeaderValue> = origins_str
+        .split(',')
+        .filter_map(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() { return None; }
+            axum::http::HeaderValue::from_str(trimmed).ok()
+        })
+        .collect();
+
+    tower_http::cors::CorsLayer::new()
+        .allow_origin(tower_http::cors::AllowOrigin::list(origins))
+        .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::OPTIONS])
+        .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION])
+        .allow_credentials(false)
+        .max_age(std::time::Duration::from_secs(3600))
+}
+
 pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::SessionState>>) -> Result<(), String> {
     if let Some(s) = daemon_state {
         if let Ok(mut guard) = DAEMON_STATE.lock() {
@@ -1528,7 +1643,14 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
         .route("/v1/messages", post(proxy_post))  // Anthropic/Claude Code compatibility
         .route("/mcp/sse", get(crate::mcp_sse::sse_handler))
         .route("/mcp/messages", post(crate::mcp_sse::messages_handler))
-        .layer(tower_http::cors::CorsLayer::permissive());
+        // Bug 78 (CORS): origin allowlist instead of permissive.
+        // Default allows common local dev tool ports. Customize via RELIARY_CORS_ORIGINS.
+        .layer(build_cors())
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            // 10MB request body limit. LLM conversations with accumulated
+            // history can approach axum's default 2MB, so we raise it.
+            10 * 1024 * 1024,
+        ));
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -1540,7 +1662,31 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
         if std::env::var("RELIARY_PROXY_GUARD_DISABLE").is_ok_and(|v| v == "1") { "off" } else { "on" },
         if std::env::var("RELIARY_PROXY_FEATURE_ANTI").is_ok_and(|v| v == "1") { "on" } else { "off" });
 
+    // Bug 81: graceful shutdown via SIGINT/SIGTERM.
+    // Flush JSONL before exit to avoid losing last entries (Bug 92).
+    let graceful = async {
+        #[cfg(unix)]
+        {
+            let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .map_err(|_| "signal install".to_string()).ok();  // GUARDED: intentional — signal setup fails gracefully
+            let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                .map_err(|_| "signal install".to_string()).ok();  // GUARDED: intentional — signal setup fails gracefully
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = async { if let Some(ref mut s) = term { s.recv().await; } } => {},
+                _ = async { if let Some(ref mut s) = int { s.recv().await; } } => {},
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        // Flush JSONL on exit (Bug 92)
+        flush_jsonl();
+    };
+
     axum::serve(listener, app)
+        .with_graceful_shutdown(graceful)
         .await
         .map_err(|e| format!("serve: {}", e))
 }

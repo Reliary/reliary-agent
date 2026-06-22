@@ -846,11 +846,11 @@ pub fn restore_opencode_proxy_routes() -> bool {
     where
         F: FnOnce(PathBuf),
     {
-        let _lock = INIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = INIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());  // GUARDED: intentional — test serialization lock, must hold across HOME mutation
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!("reliary_init_test_{}_{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst)));
-        let _ = std::fs::create_dir_all(dir.join(".reliary"));
+        let _ = std::fs::create_dir_all(dir.join(".reliary"));  // GUARDED: intentional — test-only code
         let old_home = std::env::var("HOME").ok();  // GUARDED: intentional
         std::env::set_var("HOME", dir.to_str().unwrap());
         let old_xdg = std::env::var("XDG_CONFIG_HOME").ok();  // GUARDED: intentional
@@ -869,7 +869,7 @@ pub fn restore_opencode_proxy_routes() -> bool {
         if let Some(x) = old_xdg { std::env::set_var("XDG_CONFIG_HOME", x); } else { std::env::remove_var("XDG_CONFIG_HOME"); }
         if let Some(k) = old_pi_key { std::env::set_var("OPENAI_API_KEY", k); }
         if let Some(k) = old_anthro_key { std::env::set_var("ANTHROPIC_API_KEY", k); }
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir);  // GUARDED: intentional — test code, lock held across I/O
     }
 
     #[test]

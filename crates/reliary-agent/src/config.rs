@@ -263,12 +263,12 @@ mod tests {
         std::env::remove_var("RELIARY_MODE");
         std::env::remove_var("RELIARY_FEATURES");
         let tmp = std::env::temp_dir().join(format!("reliary_config_test_{}_{}", std::process::id(), ctr));
-        let _ = std::fs::create_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);  // GUARDED: intentional — test code, lock held across I/O
         let old_home = std::env::var("HOME").ok();  // GUARDED: intentional — Option::ok() in test helper
         std::env::set_var("HOME", tmp.to_str().unwrap());
         f();
         if let Some(h) = old_home { std::env::set_var("HOME", h); } else { std::env::remove_var("HOME"); }
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&tmp);  // GUARDED: intentional — test code, lock held across I/O
     }
 
     #[test]

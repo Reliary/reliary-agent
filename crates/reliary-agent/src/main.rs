@@ -694,11 +694,12 @@ fn validate_config(workdir: &str) {
                         }
                     }
                 }
-                // Validate features
+                // Validate features (reads from config::FEATURE_DEFAULTS to avoid drift)
+                let valid_features: Vec<&str> = config::FEATURE_DEFAULTS.iter().map(|(k, _)| *k).collect();
                 if let Some(features) = obj.get("features") {
                     if let Some(fobj) = features.as_object() {
                         for (k, v) in fobj {
-                            if !matches!(k.as_str(), "compress" | "convWindow" | "readEnrichment" | "editMerge" | "healEdit" | "priorInjection") {
+                            if !valid_features.contains(&k.as_str()) {
                                 eprintln!("{} Unknown feature '{}' in {}", color::yellow("⚠"), k, path.display());
                             }
                             if !v.is_boolean() {
@@ -1137,7 +1138,7 @@ fn main() {
                         let p = entry.path();
                         if p.is_file() {
                             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-                            if matches!(ext, "rs" | "py" | "js" | "ts" | "go" | "java" | "rb" | "c" | "cpp" | "h" | "hpp" | "sh" | "toml" | "yaml" | "yml" | "json" | "md") {
+                            if reliary_search::SUPPORTED_EXTS_DEAD.contains(&ext) {
                                 // Use safe_read with size cap (Bug 39: OOM on huge files)
                                 if let Ok(content) = reliary_core::safe_read(p.to_string_lossy().as_ref()) {
                                     let display = p.strip_prefix(std::env::current_dir().unwrap_or_default()).unwrap_or(p);

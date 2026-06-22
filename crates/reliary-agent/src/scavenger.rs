@@ -39,6 +39,9 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
             .map(|e| e.path().to_path_buf())
             .filter(|fp| {
                 let ext = fp.extension().and_then(|e| e.to_str()).unwrap_or("");
+                // Intentionally restricted to common code extensions for
+                // performance (runs every 120s background). Uses inline match
+                // rather than SUPPORTED_EXTS to avoid scanning config/md/yaml.
                 matches!(ext, "py" | "rs" | "js")
             })
             .collect();

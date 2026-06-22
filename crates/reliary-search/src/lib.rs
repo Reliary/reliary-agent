@@ -4,6 +4,19 @@ pub mod search;
 pub mod ingest;
 pub mod ft_weight;
 
+/// Extensions indexed by FTS5 (search + ingest can find identifiers in these).
+pub const SUPPORTED_EXTS: &[&str] = &[
+    "rs", "py", "js", "ts", "tsx", "jsx", "go", "rb", "c", "cpp", "h", "hpp",
+    "sh", "toml", "yaml", "yml", "json", "md",
+];
+
+/// Extensions scanned by dead-code detection. Wider than SUPPORTED_EXTS
+/// because dead code can detect references in non-indexed config files.
+pub const SUPPORTED_EXTS_DEAD: &[&str] = &[
+    "rs", "py", "js", "ts", "go", "java", "rb", "c", "cpp", "h", "hpp",
+    "sh", "toml", "yaml", "yml", "json", "md",
+];
+
 /// BM25 IDF: ((N - df + 0.5) / (df + 0.5) + 1.0).ln()
 pub fn bm25_idf(n_docs: f64, df: f64) -> f64 {
     ((n_docs - df + 0.5) / (df + 0.5) + 1.0).ln()

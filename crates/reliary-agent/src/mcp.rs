@@ -1,4 +1,17 @@
 use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
+
+/// Bug 76-78: canonicalize an agent-provided path relative to a workdir.
+/// Returns an error if the path escapes the workdir or doesn't exist.
+fn safe_path(agent_path: &str, workdir: &str) -> Result<PathBuf, String> {
+    let candidate = Path::new(workdir).join(agent_path);
+    let canonical = candidate.canonicalize().map_err(|e| format!("invalid path: {}", e))?;
+    let wd = Path::new(workdir).canonicalize().map_err(|e| format!("invalid workdir: {}", e))?;
+    if !canonical.starts_with(&wd) {
+        return Err("path escapes workdir".into());
+    }
+    Ok(canonical)
+}
 
 fn respond(id: u64, result: serde_json::Value) {
     let response = serde_json::json!({
@@ -47,7 +60,12 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
         "reliary_search" => {
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            let db_path = format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'));
+            // Bug 76: restrict search to workdir
+            let sp = match safe_path(path, ".") {
+                Ok(p) => p,
+                Err(e) => return DispatchResult::Error(-1, e),
+            };
+            let db_path = format!("{}/.reliary/index.sqlite", sp.to_string_lossy().trim_end_matches('/'));
             match rusqlite::Connection::open(&db_path) {
                 Ok(db) => {
                     let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
@@ -79,57 +97,74 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
             }))
         }
         "reliary_risk" => {
-            let file = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
-            if let Ok(meta) = std::fs::metadata(file) {
+            let file_arg = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
+            // Bug 77: restrict file reads to workdir
+            let fp = match safe_path(file_arg, ".") {
+                Ok(p) => p,
+                Err(e) => return DispatchResult::Error(-1, e),
+            };
+            let file_str = fp.to_string_lossy().to_string();
+            if let Ok(meta) = std::fs::metadata(&file_str) {
                 if meta.len() > 10_000_000 {
                     return DispatchResult::Error(-1, "file too large".into());
                 }
             }
-            match std::fs::read_to_string(file) {
+            match std::fs::read_to_string(&file_str) {
                 Ok(content) => {
-                    let risk = reliary_risk::compute_file_risk(file, &content);
+                    let risk = reliary_risk::compute_file_risk(&file_str, &content);
                     DispatchResult::Success(serde_json::json!({
                         "content": [{ "type": "text", "text": serde_json::json!({"file": risk.file, "risk": format!("{:?}", risk.risk), "reason": risk.reason}).to_string() }]
                     }))
                 }
-                Err(e) => DispatchResult::Error(-1, format!("cannot read {}: {}", file, e)),
+                Err(e) => DispatchResult::Error(-1, format!("cannot read: {}", e)),
             }
         }
         "reliary_fix" => {
-            let file = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
+            let file_arg = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
             let old = args.get("old").and_then(|v| v.as_str()).unwrap_or("");
             let new = args.get("new").and_then(|v| v.as_str()).unwrap_or("");
-            if let Ok(meta) = std::fs::metadata(file) {
+            // Bug 77: restrict file writes to workdir
+            let fp = match safe_path(file_arg, ".") {
+                Ok(p) => p,
+                Err(e) => return DispatchResult::Error(-1, e),
+            };
+            let file_str = fp.to_string_lossy().to_string();
+            if let Ok(meta) = std::fs::metadata(&file_str) {
                 if meta.len() > 10_000_000 {
                     return DispatchResult::Error(-1, "file too large".into());
                 }
             }
-            match std::fs::read_to_string(file) {
+            match std::fs::read_to_string(&file_str) {
                 Ok(content) => {
                     let fixes = vec![(old.to_string(), new.to_string())];
                     let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
                     if count > 0 {
-                        if reliary_core::atomic_write(file, &modified).is_ok() {
+                        if reliary_core::atomic_write(&file_str, &modified).is_ok() {
                             DispatchResult::Success(serde_json::json!({
-                                "content": [{ "type": "text", "text": serde_json::json!({"success": true, "replacements": count, "file": file}).to_string() }]
+                                "content": [{ "type": "text", "text": serde_json::json!({"success": true, "replacements": count, "file": file_str}).to_string() }]
                             }))
                         } else {
-                            DispatchResult::Error(-1, format!("cannot write: {}", std::io::Error::last_os_error()))
+                            DispatchResult::Error(-1, "cannot write file".into())
                         }
                     } else {
                         DispatchResult::Error(-1, "no matches found".into())
                     }
                 }
-                Err(e) => DispatchResult::Error(-1, format!("cannot read {}: {}", file, e)),
+                Err(e) => DispatchResult::Error(-1, format!("cannot read: {}", e)),
             }
         }
         "reliary_dead" => {
-            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+            let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+            // Bug 78: restrict dead code scan to workdir
+            let dp = match safe_path(path_arg, ".") {
+                Ok(p) => p,
+                Err(e) => return DispatchResult::Error(-1, e),
+            };
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let min_confidence = args.get("confidence").and_then(|v| v.as_str()).unwrap_or("all");
             let config = reliary_dead::DeadConfig::default();
             let mut candidates = Vec::new();
-            if let Ok(entries) = std::fs::read_dir(path) {
+            if let Ok(entries) = std::fs::read_dir(&dp) {
                 for entry in entries.flatten() {
                     let fp = entry.path();
                     if fp.extension().map(|e| e == "py" || e == "rs" || e == "js").unwrap_or(false) {
@@ -177,11 +212,17 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
             }))
         }
         "reliary_heal" => {
-            let file = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
+            let file_arg = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
             let old = args.get("old").and_then(|v| v.as_str()).unwrap_or("");
             let new = args.get("new").and_then(|v| v.as_str()).unwrap_or("");
             let workdir = args.get("workdir").and_then(|v| v.as_str()).unwrap_or(".");
-            match crate::heal::heal_fix(file, old, new, workdir) {
+            // Bug 76: restrict heal to workdir
+            let fp = match safe_path(file_arg, workdir) {
+                Ok(p) => p,
+                Err(e) => return DispatchResult::Error(-1, e),
+            };
+            let file_str = fp.to_string_lossy().to_string();
+            match crate::heal::heal_fix(&file_str, old, new, workdir) {
                 Ok(msg) => DispatchResult::Success(serde_json::json!({
                     "content": [{ "type": "text", "text": serde_json::json!({"success": true, "message": msg}).to_string() }]
                 })),
@@ -189,8 +230,13 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
             }
         }
         "reliary_prior" => {
-            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            let prior = match std::fs::read_to_string(format!("{}/.reliary/prior_block", path.trim_end_matches('/'))) {
+            let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+            // Bug 76: restrict prior file reads to workdir
+            let dp = match safe_path(path_arg, ".") {
+                Ok(p) => p,
+                Err(e) => return DispatchResult::Error(-1, e),
+            };
+            let prior = match std::fs::read_to_string(dp.join(".reliary").join("prior_block")) {
                 Ok(p) => p.trim().to_string(),
                 Err(_) => String::new(),
             };

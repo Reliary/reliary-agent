@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use crate::schema::{classify_line, pack_flags, pack_line_nos};
 use crate::{scan_identifiers, porter_stem};
 
-const SUPPORTED_EXTS: [&str; 12] = ["rs", "py", "js", "ts", "tsx", "jsx", "go", "c", "cpp", "h", "hpp", "rb"];
+use crate::SUPPORTED_EXTS;
 
 struct FileResult {
     file: String,

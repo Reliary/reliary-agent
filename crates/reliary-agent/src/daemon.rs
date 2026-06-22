@@ -1,14 +1,9 @@
-#![allow(dead_code)]
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tracing::{info, warn, error};
-use std::sync::{Arc, LazyLock};
+use tracing::warn;
+use std::sync::{LazyLock, Mutex};
 use crate::session_state::SessionState;
 
-const MAX_CONCURRENT: usize = 50;
 pub const MAX_FILE_SIZE: u64 = 10_000_000;
 
 /// Known library identifiers to skip during veto (grammar-free: names that appear
@@ -81,43 +76,6 @@ fn identifier_veto(new_text: &str, file_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn daemon_handle(mut stream: TcpStream, state: Arc<SessionState>) {
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(30)));
-    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
-    let mut line = String::new();
-    let mut reader = BufReader::new(&stream);
-
-    if reader.read_line(&mut line).is_err() || line.trim().is_empty() {  // GUARDED: intentional
-        return;
-    }
-    let cmd = line.trim();
-
-    // Input validation: max length + reject non-printable / null bytes
-    if cmd.len() > 4096 {
-        let _ = writeln!(stream, "ERROR: command too long\n");
-        return;
-    }
-    if cmd.bytes().any(|b| b == 0 || (b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')) {
-        let _ = writeln!(stream, "ERROR: invalid input characters\n");
-        return;
-    }
-
-    let (p0, p1, p2, p3, p4) = {
-        let parts: Vec<&str> = cmd.splitn(6, ' ').collect();
-        let a = parts.first().copied().unwrap_or("");
-        let b = parts.get(1).copied().unwrap_or("");
-        let c = parts.get(2).copied().unwrap_or("");
-        let d = parts.get(3).copied().unwrap_or("");
-        let e = parts.get(4).copied().unwrap_or("");
-        (a, b, c, d, e)
-    };
-
-    let response = daemon_handle_cmd(p0, p1, p2, p3, p4, cmd, &state);
-    let mut writer = BufWriter::new(&stream);
-    let _ = writer.write_all(response.as_bytes());
-    let _ = writer.flush();
-}
-
 /// Parse a command string and dispatch to daemon_handle_cmd.
 pub fn daemon_handle_cmd_str(cmd: &str, state: &SessionState) -> String {
     let parts: Vec<&str> = cmd.splitn(6, ' ').collect();
@@ -129,6 +87,10 @@ pub fn daemon_handle_cmd_str(cmd: &str, state: &SessionState) -> String {
     daemon_handle_cmd(p0, p1, p2, p3, p4, cmd, state)
 }
 
+// Bug 72: global rebuild mutex. Prevents two threads from concurrently
+// rebuilding the same index (TOCTOU race that could cause write conflicts).
+static REBUILD_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
 fn open_index_db(path: &str) -> Option<rusqlite::Connection> {
     if let Ok(db) = rusqlite::Connection::open(path) {
         let _ = db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -8000;");
@@ -136,10 +98,19 @@ fn open_index_db(path: &str) -> Option<rusqlite::Connection> {
             return Some(db);
         }
         drop(db);
+        // Acquire global rebuild lock so only one thread rebuilds at a time.
+        let _rebuild_guard = REBUILD_LOCK.lock().unwrap_or_else(|e| e.into_inner());  // GUARDED: intentional — must hold lock across I/O to prevent concurrent rebuild races
+        // Re-check after acquiring lock — another thread may have already rebuilt.
+        if let Ok(db) = rusqlite::Connection::open(path) {
+            let _ = db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -8000;");
+            if reliary_search::schema::open_existing_db(&db).is_ok() {
+                return Some(db);
+            }
+        }
         warn!("search index corrupted — rebuilding...");
-        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path);  // GUARDED: intentional — must hold lock across I/O to prevent concurrent rebuild races
         if let Some(parent) = std::path::Path::new(path).parent() {
-            let _ = std::fs::create_dir_all(parent);
+            let _ = std::fs::create_dir_all(parent);  // GUARDED: intentional — must hold lock across I/O
         }
         if let Ok(new_db) = rusqlite::Connection::open(path) {
             let _ = new_db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
@@ -380,52 +351,5 @@ fn append_chronicle(file: &str, event: &str, detail: &str, outcome: &str) {
     }
 }
 
-pub fn start(port: u16, workdir: &str) -> std::io::Result<()> {
-    // Initialize session state
-    let state = if workdir == "." {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        Arc::new(SessionState::new(cwd.to_string_lossy().as_ref()))
-    } else {
-        Arc::new(SessionState::new(workdir))
-    };
-
-    // Start scavenger thread
-    let scavenger_state = Arc::clone(&state);
-    if let Err(e) = std::thread::Builder::new()
-        .name("scavenger".into())
-        .spawn(move || crate::scavenger::scavenger_loop(scavenger_state))
-    {
-        error!("scavenger thread: {}", e);
-    }
-
-    let connections = Arc::new(AtomicUsize::new(0));
-
-    let addr = format!("127.0.0.1:{}", port);
-    let listener = TcpListener::bind(&addr)?;
-    info!("daemon listening on {} (workdir: {}, max connections: {})", addr, workdir, MAX_CONCURRENT);
-
-    for stream in listener.incoming() {
-        match stream {
-            Ok(s) => {
-                let conns = Arc::clone(&connections);
-                let prev = conns.fetch_add(1, Ordering::Relaxed);
-                if prev >= MAX_CONCURRENT {
-                    conns.fetch_sub(1, Ordering::Relaxed);
-                    warn!("max connections ({}) reached, rejecting", MAX_CONCURRENT);
-                    continue;
-                }
-                let state = Arc::clone(&state);
-                let spawn_result = std::thread::Builder::new()
-                    .name("handler".into())
-                    .spawn(move || { daemon_handle(s, state); conns.fetch_sub(1, Ordering::Relaxed); });
-                if let Err(e) = spawn_result {
-                    // Bug 51: decrement counter on thread spawn failure (was leaking)
-                    connections.fetch_sub(1, Ordering::Relaxed);
-                    error!("handler thread spawn failed: {}", e);
-                }
-            }
-            Err(e) => error!("accept error: {}", e),
-        }
-    }
-    Ok(())
-}
+// daemon::start removed in v0.6.11 — the TCP listener was dead code.
+// All daemon functionality is served through axum at crates/reliary-agent/src/proxy.rs.

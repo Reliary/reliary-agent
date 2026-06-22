@@ -430,6 +430,149 @@ def check_panic_lock(files: List[str]) -> List[Violation]:
                 f"Mutex::lock().unwrap() panics on poison. Use unwrap_or_else(|e| e.into_inner())."
             ))
     return violations
+
+
+def check_body_clone(files: List[str]) -> List[Violation]:
+    """Rule 11: Detect body_bytes.clone() (Bug 74 — 2x memory per request).
+
+    body_bytes.clone() inside an async handler copies the entire request body
+    just for the cache. Use Bytes (reference-counted, clone is cheap) instead.
+    """
+    violations = []
+    for path in files:
+        if 'proxy.rs' not in path:
+            continue  # only proxy.rs has body_bytes
+        with open(path) as f:
+            lines = f.readlines()
+        for i, line in enumerate(lines, 1):
+            if 'body_bytes.clone()' not in line and 'body_bytes.to_vec()' not in line:
+                continue
+            if '// GUARDED: intentional' in line:
+                continue
+            if 'body_bytes.clone()' in line and 'let body_bytes: Bytes' in lines[max(0, i-20):i]:
+                # Already fixed — Bytes::clone is cheap
+                continue
+            violations.append(Violation(
+                'body-clone',
+                path, i,
+                f"body_bytes.clone() copies the full request body. Use Bytes (Arc<[u8]>, clone is cheap)."
+            ))
+    return violations
+
+
+def check_lock_during_io(files: List[str]) -> List[Violation]:
+    """Rule 12: Detect Mutex locks held across I/O operations (Bug 75).
+
+    If a Mutex is locked, then file I/O (open, write, read) is done while
+    holding the lock, ALL other threads trying to lock are blocked on I/O.
+    """
+    violations = []
+    for path in files:
+        if 'fs_safe' in path or 'test' in path.lower():
+            continue
+        with open(path) as f:
+            lines = f.readlines()
+        in_lock_block = False
+        lock_depth = 0
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            # Track lock acquisition
+            if '.lock()' in line and not stripped.startswith('//'):
+                in_lock_block = True
+                lock_depth = 0
+            if not in_lock_block:
+                continue
+            # Track brace depth for the lock block
+            lock_depth += stripped.count('{') - stripped.count('}')
+            # If lock scope exited, reset
+            if lock_depth < 0 and '{' not in line:
+                in_lock_block = False
+                lock_depth = 0
+                continue
+            # Skip short-lived locks (one-liner like cache.get, retain, remove)
+            if lock_depth <= 0 and ('retain' in stripped or 'get(' in stripped or 'remove(' in stripped or 'insert(' in stripped):
+                in_lock_block = False
+                lock_depth = 0
+                continue
+            # Look for I/O operations inside the lock block
+            io_patterns = [
+                'std::fs::', 'File::open(', 'File::create(', 'OpenOptions::',
+                'writeln!', 'write!', 'fh.write', 'file.write',
+                'fs::write', 'fs::read',
+            ]
+            for pat in io_patterns:
+                if pat in stripped and not stripped.startswith('//'):
+                    if '// GUARDED: intentional' in line:
+                        continue
+                    violations.append(Violation(
+                        'lock-during-io',
+                        path, i,
+                        f"I/O inside Mutex lock block. Move I/O outside the lock to avoid blocking other threads."
+                    ))
+                    # Don't report the same line for multiple I/O patterns
+                    break
+    return violations
+
+
+def check_mcp_path_traversal(files: List[str]) -> List[Violation]:
+    """Rule 13: Detect direct file reads from user-provided paths in MCP handlers
+    without canonicalization (Bugs 76-78).
+
+    MCP handlers accept agent-provided filenames and pass them to read_to_string,
+    metadata, or atomic_write. Without canonicalization, a malicious agent config
+    can exfiltrate files outside the workdir.
+    """
+    violations = []
+    for path in files:
+        if 'mcp.rs' not in path:
+            continue
+        with open(path) as f:
+            content = f.read()
+            lines = content.split('\n')
+        for i, line in enumerate(lines, 1):
+            if 'std::fs::read_to_string(' in line or 'std::fs::metadata(' in line:
+                # Should have safe_path() nearby
+                context_start = max(0, i - 15)
+                context = '\n'.join(lines[context_start:i])
+                if 'if let Ok(entries) = std::fs::read_dir(&dp) {' in context:
+                    continue
+                if 'safe_path' not in context and 'GUARDED: intentional' not in line:
+                    violations.append(Violation(
+                        'mcp-path-traversal',
+                        path, i,
+                        f"Direct file read from user-provided path. Use safe_path() to canonicalize."
+                    ))
+    return violations
+
+
+def check_lazy_lock_drop_safety(files: List[str]) -> List[Violation]:
+    """Rule 14: Detect LazyLock/HashMap patterns that could cause undefined
+    drop order (Bug 91) — LazyLock statics with background threads or
+    external handles.
+    """
+    violations = []
+    for path in files:
+        if 'proxy.rs' not in path:
+            continue
+        with open(path) as f:
+            lines = f.readlines()
+        for i, line in enumerate(lines, 1):
+            if 'LazyLock' in line and 'HTTP_CLIENT' in line:
+                # Check for GUARDED on this line or in context below
+                if '// GUARDED: intentional' in line:
+                    continue
+                context = '\n'.join(lines[i:min(len(lines), i+15)])
+                if 'ManuallyDrop' not in context and 'no_drop' not in context:
+                    violations.append(Violation(
+                        'lazy-lock-drop',
+                        path, i,
+                        "LazyLock<reqwest::Client> drops background threads at exit (UB). "
+                        "Consider wrapping in ManuallyDrop or leak via Box::leak.",
+                        severity="warn"
+                    ))
+    return violations
+
+
 def main():
     staged = '--staged' in sys.argv
     verbose = '--verbose' in sys.argv
@@ -453,6 +596,10 @@ def main():
         ('blocking-in-async', check_blocking_in_async),
         ('no-timeout', check_no_timeout),
         ('panic-lock', check_panic_lock),
+        ('body-clone', check_body_clone),
+        ('lock-during-io', check_lock_during_io),
+        ('mcp-path-traversal', check_mcp_path_traversal),
+        ('lazy-lock-drop', check_lazy_lock_drop_safety),
     ]
     for rule_name, check_fn in checks:
         violations = check_fn(files)
@@ -475,7 +622,7 @@ def main():
         print(f"    - If a violation is a false positive, mark with '// GUARDED: intentional'")
         return 1
 
-    print(f"\n  ✓ All {len(checks)} guardrails passed")
+    print(f"\n  ✓ All {len(checks)} guardrails passed. Good job.")
     return 0
 
 

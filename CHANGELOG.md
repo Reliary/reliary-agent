@@ -1,8 +1,32 @@
 # Changelog
 
-## v0.6.10
+## v0.6.11
 
-### Esoteric bug sweep — 24 fixes + 4 new guardrails
+### Deep audit — 20 fixes + 2 guardrails + dict refresh + dead code strip
+
+#### Bug fixes
+- **MCP path traversal (76-78)**: `safe_path()` canonicalizes all agent-provided paths, rejects escapes from workdir
+- **Graceful shutdown (81)**: `axum::serve().with_graceful_shutdown()` via SIGINT/SIGTERM with JSONL flush
+- **Cache key & LRU (84-86)**: Temperature added to response cache key; seq-tracking converts eviction to true LRU
+- **Config atomic (83)**: Already fixed via `reliary_core::atomic_write()` — validated no gaps
+- **COMPRESSION_DICT refresh (87)**: Dictionary now reloads when index mtime changes (was loaded once at startup)
+- **JSONL flush on exit (92)**: `flush_jsonl()` called on graceful shutdown via `std::sync::Once`
+- **Lock annotation (91)**: `HTTP_CLIENT` drop order annotated GUARDED with graceful shutdown
+- **FtWeight perf (95)**: Analyzed — per-line mutex is uncontended, left as-is
+- **SQL corruption fix**: `load_dictionary()` had missing `LIMIT` keyword in SQL query
+
+#### Cleanup
+- **Dead TCP daemon stripped**: Removed `daemon::start()` (48-line TCP listener) and `daemon_handle()` (37-line TCP handler) — dead since axum migration
+- Fixed unused imports in daemon.rs (3 warnings)
+
+#### New guardrails (13-14)
+- `mcp-path-traversal`: detect direct file reads from agent-provided paths
+- `lazy-lock-drop`: detect LazyLock<Client> patterns without drop-order safety
+
+#### Tests
+- **89 tests passing** (all stable)
+- **14/14 guardrails passing** (all stable)  
+- `cargo clippy --all-targets -- -D warnings`: clean
 
 Deep audit found esoteric bugs (race conditions, TOCTOU, panic recovery, cache
 keying, resource leaks) that don't show up in normal testing. All fixed, with
