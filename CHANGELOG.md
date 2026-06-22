@@ -1,208 +1,149 @@
 # Changelog
 
-## v0.6.6
+## v0.6.11
 
-### Compression Ceiling Breakthrough
-- **Aggressive skeleton compression:** Tokenizes all alphanumeric runs to `{w}` while preserving version/number placeholders. Cargo `Compiling X v1.0` lines now share skeletons and group together. Gate restricts activation to content where ≥80% of lines share the same aggressive skeleton AND line lengths are similar — prevents file reads with similar function signatures from collapsing.
-- **Information-preserving zone truncation:** Replaces blind first-30 + last-15 zone with score-based selection. Error lines (`FAILED`, `error[`, `panic`, `Traceback`) get +10 score bonus. Allows top-15 selection (vs blind 45 lines) without signal loss.
-- **FTS5 document frequency weighting:** Grammar-free pseudo-perplexity proxy (LLM Lingua analog without an LM). Tokens appearing in many files are "predictable" boilerplate; tokens in few files are "surprising" project-specific. Opt-in via `RELIARY_PROXY_FT_WEIGHT=1` (off by default until validated in live sessions).
-- **SRCR safety floor:** `preservation × compression` metric. Default `RELIARY_PROXY_SRCR_FLOOR=0.3` blocks destructive compression — if post-compression SRCR is below the floor, the proxy ships the pre-compression content instead. Set `0` to disable.
-- **Smoke test:** Cargo test output (6100 chars, 205 lines) compresses to ~225 chars (96% savings, `history_saved=5878`).
+### Deep audit — 20 fixes + 2 guardrails + dict refresh + dead code strip
 
-### Tunable
-- `RELIARY_PROXY_SRCR_FLOOR` — default `0.3`, set `0` to disable
-- `RELIARY_PROXY_FT_WEIGHT` — default `0` (off), set `1` to enable
+#### Bug fixes
+- **MCP path traversal (76-78)**: `safe_path()` canonicalizes all agent-provided paths, rejects escapes from workdir
+- **Graceful shutdown (81)**: `axum::serve().with_graceful_shutdown()` via SIGINT/SIGTERM with JSONL flush
+- **Cache key & LRU (84-86)**: Temperature added to response cache key; seq-tracking converts eviction to true LRU
+- **Config atomic (83)**: Already fixed via `reliary_core::atomic_write()` — validated no gaps
+- **COMPRESSION_DICT refresh (87)**: Dictionary now reloads when index mtime changes (was loaded once at startup)
+- **JSONL flush on exit (92)**: `flush_jsonl()` called on graceful shutdown via `std::sync::Once`
+- **Lock annotation (91)**: `HTTP_CLIENT` drop order annotated GUARDED with graceful shutdown
+- **FtWeight perf (95)**: Analyzed — per-line mutex is uncontended, left as-is
+- **SQL corruption fix**: `load_dictionary()` had missing `LIMIT` keyword in SQL query
 
-### Test counts
-- 81 sift + 13 compress + 14 search + 7 sr_floor + 9 ft_weight_gate = 124 tests passing
+#### Cleanup
+- **Dead TCP daemon stripped**: Removed `daemon::start()` (48-line TCP listener) and `daemon_handle()` (37-line TCP handler) — dead since axum migration
+- Fixed unused imports in daemon.rs (3 warnings)
 
-## v0.6.4
+#### New guardrails (13-14)
+- `mcp-path-traversal`: detect direct file reads from agent-provided paths
+- `lazy-lock-drop`: detect LazyLock<Client> patterns without drop-order safety
 
-### Scorecard Security (June 2026)
-- **CodeQL analysis:** Runs on every push/PR with Rust, JavaScript/TypeScript, Python (SAST: 0→10)
-- **Per-tarball cosign signing:** Each release artifact signed individually (Signed-Releases: 0→10)
-- **Repository Rulesets:** Branch protection migrated from classic rules to Repository Rules (Branch-Protection: -1→10)
-- **SCORECARD_TOKEN wired:** Fine-grained PAT support for Branch-Protection check (fallback to GITHUB_TOKEN)
-- **Docker digest pin:** `FROM ubuntu:24.04@sha256:...` (Pinned-Dependencies: 9→10)
-- **SECURITY.md:** Updated with branch protection, SAST, and security practices documentation
+#### Tests
+- **89 tests passing** (all stable)
+- **14/14 guardrails passing** (all stable)  
+- `cargo clippy --all-targets -- -D warnings`: clean
 
-### Quality of Life
-- **Doctor multi-install detection:** Scans PATH + cargo + brew + npm installations. Warns on stale or duplicate copies
-- **Daemon lifecycle polish:** `start` waits for health check, writes PID file, confirms "started on :9090". `stop` uses PID file → graceful SIGTERM → wait → `pkill` fallback. `status` shows daemon PID
-- **Update per-method hints:** `update --check` shows upgrade commands for each install method (`cargo`, `brew`, `npm`)
+Deep audit found esoteric bugs (race conditions, TOCTOU, panic recovery, cache
+keying, resource leaks) that don't show up in normal testing. All fixed, with
+new guardrails to prevent the patterns from recurring.
 
-### CI & Release
-- **NPM trusted publishing:** OIDC provenance via `npm publish --provenance`
-- **brew formula auto-push:** Fixed `mkdir -p` bug, PAT-based push to `Reliary/homebrew-tap`
-- **Release YAML cleanup:** Removed YAML parser corruption from repeated edits
+**Critical fixes (7):**
+- ux.rs:402 and mcp.rs:53 — SQL PRAGMA corruption (` synchronous=;` with no
+  value, no `PRAGMA` prefix) fixed to `PRAGMA synchronous=NORMAL;`
 
-## v0.6.0
+**High-severity fixes (11):**
+- **Bug 51** — Daemon connection counter now decrements on thread spawn failure
+  (was leaking forever)
+- **Bug 52** — RESPONSE_CACHE now uses proper LRU eviction (was removing
+  arbitrary hash-order entries, not oldest)
+- **Bug 53** — JSONL log uses persistent file handle (was reopening per call,
+  60+ open() syscalls per minute)
+- **Bug 56** — try_prefetch debounced to 32KB chunks (was 1000+ spawn_blocking
+  per second on streaming responses)
+- **Bug 57** — Replaced `Mutex::lock().unwrap()` with `unwrap_or_else(|e| e.into_inner())`
+  for poison recovery (was panicking whole daemon on any thread panic)
+- **Bug 58** — Response cache key now includes `model` (was returning wrong
+  model's response on cache hit)
+- **Bug 59** — Guard reverts to tool_calls-only check (regression from v0.6.7
+  — was checking prose mentions of "edit")
+- **Bug 64** — Agent config lookups now cached for 30s (was re-reading 4+
+  config files per request)
+- **Bug 68** — Antidecision now uses request's workdir inferred from message
+  file paths (was using daemon's startup workdir)
+- **Bug 69** — HTTP client now has 5-minute timeout (was hanging forever on
+  slow upstream)
+- **Bug 71** — Error response body capped at 10MB (was unbounded — 100MB HTML
+  error page = OOM)
 
-### UX Polish (June 2026)
-- **Shell completions:** `reliary-agent completions {bash,zsh,fish,powershell,elvish}` via clap_complete. Optionally write to file with `--outdir`.
-- **Man page generation:** `reliary-agent man [--outdir ./man/man1]` via clap_mangen.
-- **Pager integration:** Long output from `search`, `dead`, and `status` pipes through `$PAGER` when stdout is a TTY.
-- **NO_COLOR support:** All ANSI color helpers respect the no-color.org standard. Also respects `TERM=dumb`.
-- **Verbosity flags:** `-v`/`-vv`/`-vvv` and `-q` available on every command.
-- **Progress spinner:** `index` and `dead` now show a progress indicator while working.
+**Medium-severity fixes (7):**
+- **Bug 60** — FTS5 search tokens sanitized to strip `"` and FTS5 special chars
+  (was corrupting search syntax)
+- **Bug 61** — Added `open_existing_db_safe()` with WAL+NORMAL PRAGMAs for
+  crash-safe read access (was synchronous=OFF, no crash safety)
+- **Bug 62** — ANTI_DB outer map capped at 1000 workdirs with LRU eviction
+  (was unbounded across workdirs)
+- **Bug 63** — `extract_auth_key` now case-insensitive on "Bearer"/"bearer"/"BEARER"
+- **Bug 66** — Upstream URL scheme validated to http/https only (was accepting
+  file://, gopher://, etc.)
+- **Bug 67** — RATE_BUCKETS capped at 1000 entries (was unbounded under unique
+  auth_key attack)
 
-### New Commands
-- **`reliary-agent trust .`:** One-shot project setup -- creates `.reliary/` and builds the search index.
-- **`reliary-agent update [--check]`:** Downloads the latest release from GitHub and replaces the current binary.
-- **`reliary-agent completions`:** Shell completion generator for bash/zsh/fish/powershell/elvish.
-- **`reliary-agent man`:** Man page generator.
+**Low-severity fixes (1):**
+- **Bug 70** — Auth keys > 1KB rejected (was using full key as map key, memory
+  waste attack)
 
-### Config Validation
-- **Unknown key warnings:** If you type `reliary-agent config mode strict` and misspell (`mod`), it warns.
-- **Invalid mode detection:** Values other than `fast`/`reactive`/`strict` trigger a warning.
-- **Invalid JSON detection:** Malformed config.json prints a clear warning instead of silently parsing as empty.
+### 4 new guardrail rules
 
-### Init Wizard
-- **Setup wizard UI:** Fancy ASCII art banner, welcome message, and summary box at the end showing how many agents were configured plus next steps.
+Added to `scripts/ci_guards.py` (now **10 rules total**):
 
-### README Overhaul
-- **Crystal-clear agent wiring:** Usage by Agent section rewritten with exact, copy-paste steps for every agent. Each agent's section lists what you get, what you don't get, and how to verify it's working.
-- **Hidden commands documented:** `apply-edit`, `fix-dir`, `fix-file`, `mcp`, `memory`, `session-state`, `veto` now listed (with explanation of what they do internally).
-- **MCP tools section fixed:** Lists all 7 tools (search, compress, risk, fix, dead, heal, prior) instead of stale subset.
-- **Default mode corrected:** Every reference says `strict` (not `reactive`).
-- **Troubleshooting section:** Common failure modes and their fixes.
+7. **unbounded-collection** — flags `Mutex<HashMap>` without visible eviction
+   (catches bug class behind 62, 67, 40)
+8. **blocking-in-async** — flags `std::fs` operations in async fn without
+   `spawn_blocking` (catches bug class behind 56, 69)
+9. **no-timeout** — flags `reqwest::Client` without `.timeout()` (catches
+   bug class behind 69)
+10. **panic-lock** — flags `Mutex::lock().unwrap()` (catches bug class behind 57)
 
-### Internal
-- 70 unit tests passing (was 57 at v0.5.0). Zero compiler warnings.
-- Clean build with `-D warnings` enforced in CI.
+### Tests
 
-### Documentation fixes
-- **Pi agent setup:** README now includes the `export OPENAI_BASE_URL=...` step (was missing — Pi would bypass the proxy). Removed false "routed automatically" claim.
-- **Stale provider detection text:** Replaced with accurate description of upstream discovery via agent configs or `RELIARY_UPSTREAM_URL`.
-- **Env var table:** Clarified `RELIARY_UPSTREAM_URL` example is just an example, replace with your provider's URL.
+- 89 unit tests passing
+- 10/10 guardrails passing on clean build
+- Pre-commit hook: passes
 
-## v0.5.2
+## v0.6.9
 
-### Provider-agnostic (June 2026)
+### Guardrails (the big new thing)
 
-- **Removed `scan_env_vars()`:** The proxy no longer hardcodes mappings like `DEEPSEEK_API_KEY` → `api.deepseek.com`. Auto-discovery now uses agent configs only (OpenCode, Pi, Claude, Cline). Unknown API keys fall through to `RELIARY_UPSTREAM_URL`.
-- **Fixed `normalize_url()` for generic upstreams:** URLs without a known path suffix now get `/v1/chat/completions` appended instead of bare `/chat/completions`. Fixes routing for LiteLLM and other non-standard endpoints.
-- **Cleaner `init` prompts:** No provider names in Pi proxy routing or fallback messages. Documents `RELIARY_UPSTREAM_URL` as the generic fallback.
-- **Docs:** README/CONFIG.md examples use neutral provider references. `RELIARY_UPSTREAM_URL` documented.
-- **Test data:** All `DEEPSEEK_API_KEY` references replaced with `OPENAI_API_KEY` in test fixtures.
+This release adds **6 pre-commit + CI guardrails** that detect the bug classes
+that have repeatedly appeared in audits. Combined with a new `reliary-core::fs_safe`
+module, this makes the correct pattern the easy pattern.
 
-## v0.5.1
+**`reliary-core::fs_safe` module** (Phase A):
+- `atomic_write(path, content)` — atomic file write (tmp + fsync + rename)
+- `safe_read(path)` — read file with 10MB cap
+- `safe_read_stdin()` — read stdin with 10MB cap
+- `safe_open_db(path)` — open SQLite with correct PRAGMAs
 
-### Bugfix
-- **cargo install from crates.io:** Fixed `include_str!` path for `gate.js`. The old `../../../pi/gate.js` path resolved outside the crate directory and failed when installing via crates.io. Moved `gate.js` into the crate (`crates/reliary-agent/pi/gate.js`) and CI guard added to keep workspace-root and crate copies in sync.
+**`scripts/ci_guards.py`** (Phase B + C):
+1. **non-atomic-write** — flags `std::fs::write` outside `atomic_write` pattern
+2. **uncapped-read** — flags `read_to_string` without size guard
+3. **curl-subprocess** — flags `curl`/`wget` subprocesses (we use reqwest)
+4. **sql-unknown-table** — flags SQL queries against tables not in schema
+5. **uncapped-stdin** — flags stdin reads without size cap
+6. **hardcoded-list** — flags `let valid_keys = [...]` (drift risk)
 
-## v0.5.0
+Runs in pre-commit AND in CI. Mark false positives with `// GUARDED: intentional`.
 
-### Pi Readiness & Transport (June 2026)
-- **SSE MCP Transport:** MCP server now available via SSE on the same port as the proxy (:9090). No subprocess per agent — tools share memory with the proxy for anti-decision, session hashes, and response cache. Stdio fallback remains for agents without SSE support.
-- **Structured Logging:** New `log.rs` module with `tracing` + `tracing-subscriber`. `RELIARY_LOG` env var controls verbosity (error/warn/info/debug/trace). `logs --tail` and `logs --level` for live log watching. `RELIARY_LOG_FILE` for persistent file logging with 10MB rotation.
-- **Gate.js Log Levels:** RELEASE_LOG env var filters gate.js output. Default `info` — quiet until something breaks. `debug` shows compression ratios, tool redirects, heal events.
-- **Binary Discovery:** Gate.js now checks `RELIARY_BIN_PATH` → `which reliary-agent` → hardcoded fallbacks. No more silent degradation on PATH-only installs.
-- **Pi Proxy Routing:** `init` prompts to configure proxy routing after gate.js install. Scans Pi settings.json + env vars for API keys, writes proxy-routes.json automatically.
-- **Daemon Service Verification:** After systemctl/launchctl install, verifies the service is actually active. Prints manual recovery command on silent failure.
+**Single source of truth for feature names** (Phase D):
+- `config::FEATURE_DEFAULTS` const — feature name + default value
+- `config::VALID_CONFIG_KEYS` const — all valid config keys
+- `main.rs` uses these consts instead of duplicating the list
 
-### Testing
-- **ISTQB Tests:** 10 new Rust unit tests (log rotation, boundary conditions, Pi proxy routing from env/settings, MCP config injection, SSE config, removal). 20 gate.js JavaScript tests (log levels, binary discovery priority, feature flag parsing, syntax validation).
-- **CI:** Gate.js test suite added to CI workflow. Test count threshold raised to 96.
-- **MCP Dispatch Fix:** `e2e_heal` test corrected from non-standard `tools/fix` to standard `tools/call` dispatch. Full MCP round-trip verified.
+### Bug fixes (Phase E)
 
-### Internal
-- All operational `eprintln!` replaced with `tracing::{info, warn, error, debug}` macros. Tracing writes to stderr (never stdout) — MCP JSON protocol on stdout stays clean.
-- 966 lines changed across 17 files.
+21 bugs from round 3 audit, including:
+- **Bug 30** — `run_index` now backs up old index before delete (was `remove_file` directly)
+- **Bug 33** — `do_update` now extracts to correct path (was copying from non-existent file)
+- **Bug 35-36, 39** — `compress`/`risk`/`dead` commands use size-capped helpers
+- **Bug 37** — `start` command captures daemon stderr to log file (was null)
+- **Bug 40** — `SSE_SESSIONS` map capped at 1000 (was unbounded)
+- **Bug 41** — `messages_handler` drops lock before send (was holding lock)
+- **Bug 43** — UUID generation now uses getrandom (was monotonic counter)
+- **Bug 46** — Pi `settings.json` write uses `atomic_write`
+- **Bug 47** — `atomic_write` cleans up tmp on failure (was leaking)
+- **Bug 48** — Env var checks still inlined (helper would be larger)
+- **Bug 49** — Proxy has per-auth-key rate limit (60 req/min default)
+- **Bug 50** — `edit_cache` table capped at 10K rows
 
-## v0.4.1
+### Tests
 
-### Polish & Stability
-- **Massive Integrity Pass:** Fixed 131 internal issues across the codebase.
-- **SQL Hardening:** Added `PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL` to all 15+ SQLite connections.
-- **I/O Safety:** Switched to atomic file writes (tmp + fsync + rename) for config and service files. Replaced 20+ silent `.ok()` error swallows with proper logging.
-- **Regex Performance:** Compiled all hot-path regexes once using `LazyLock` (16 instances).
-- **Security:** Added 10MB file size guard to proxy/MCP endpoints to prevent memory exhaustion attacks.
-- **Documentation Overhaul:** Rewrote documentation to improve flow, remove legacy academic jargon, and clearly explain agent configuration setups.
-- **CI Guardrails:** Added rigorous CI checks for silent error swallows, SQL PRAGMAs, regex compilation, atomic writes, and CLI documentation coverage.
+- 272 tests passing (was 267)
+- 4 new tests for `fs_safe` module
+- Pre-commit hook: passes
 
-## v0.4.0
-
-### Safety & Guardrails
-- **Anti-Decision Memory:** Added a cross-session learning system using chronicle (SQLite). The LLM is subtly warned when reusing identifiers that failed repeatedly in the past.
-- **Transparent Strict Mode:** Pi Agent's strict mode now transparently redirects blocked commands (`bash`, `write`, `grep`) to safe sandbox tools without returning confusing error messages. 100% pass rate on benchmarks.
-- **Guard on by default:** The proxy intercepts edits to check against the search index, warning the LLM if an edit orphans cross-file references.
-
-### Compression
-- **First-appearance freeze:** Proxy compresses messages on first occurrence and freezes them in cache.
-- **Sift Everywhere:** Sift (structural terminal output collapse) now compresses all tool results over 300 characters, not just `bash`.
-
-## v0.2.0 (unreleased)
-
-### Major Features
-
-- **Unified port architecture** — daemon and proxy now on a single HTTP server (:9090). Removed the separate TCP daemon on :9799. One port, one process, one protocol.
-- **Provider-agnostic proxy** — routes by Authorization header, not model name. No hardcoded providers, no model lists, no per-provider configuration.
-- **Self-healing edits for bash+sed** — intercepts `sed -i` commands and routes them through heal-apply. Zero-distraction failure recovery.
-- **Grammar-free design throughout** — zero AST, zero tree-sitter, zero language detection. All analysis uses identifier scanning, Porter stemming, byte DFA, and indentation-based boundary detection.
-
-### Compression
-
-- **Gate.js at -42% reasoning compression** (proven on standard benchmark)
-- **Proxy conversation compression** — feed-forward compression of old assistant messages (~15-25% savings)
-- **Response cache** — repeated edit requests return cached results (zero API cost)
-- **Tool schema stripping** — removes redundant tool descriptions (~150t saved per turn)
-- **Context filter** — drops verbose tool results after 8 turns, capping unbounded conversation growth
-
-### Crates
-
-- **reliary-search** — BM25 + FTS5, Porter stemming, grammar-free phrase extraction
-- **reliary-compress** — IR reasoning compression, format coercion
-- **reliary-sift** — zone truncation, entropy gate, structural compression
-- **reliary-risk** — pre-edit risk scores, blast radius, chronicle failure tracking
-- **reliary-memory** — HDC 10K-bit vectors, Hebbian learning, cross-session recall
-- **reliary-fix** — pattern extraction, content matching, forgiving signature matching
-- **reliary-dead** — grammar-free dead code via occurrence counting
-
-### Safety
-
-- **Identifier veto** — blocks edits referencing hallucinated API names (checks against FTS5 index)
-- **Self-healing edits** — shadow-applies edits, runs tests, reverts on failure. LLM never sees the failure spiral.
-- **Bash guard** — blocks destructive patterns (rm -rf /) while allowing build/test commands
-- **Muzzle** — pauses background scavenger during active LLM sessions (auto-expires after 30 min)
-- **Secrets scanning** — pre-commit hook with gitleaks + cargo audit + cargo deny
-
-### Security
-
-- **Supply chain hardening** — GitHub Actions pinned by SHA (not version tags), deny.toml with license allowlist and crate bans
-- **MSRV policy** — minimum Rust 1.75
-- **Release integrity** — SHA256SUMS in release artifacts
-- **Vulnerability monitoring** — cargo audit in CI, weekly dependency updates via Dependabot
-- **Binary hardening** — LTO, panic=abort, strip, all crate roots #[forbid(unsafe_code)]
-
-### Developer Experience
-
-- **Unified CLI** — 15 subcommands under one binary
-- **MCP server** — all tools exposed for any agent framework
-- **Agent auto-detection** — `rel init` detects Pi, Claude Code, Cline, OpenCode
-- **Platform support** — Linux (x64 + ARM), macOS (x64 + ARM), Windows (x64)
-- **Config cascade** — env var > project config > user config > built-in defaults
-- **Feature toggles** — per-mechanism enable/disable via config file or env var
-- **Benchmark guard** — automated regression detection against known baselines
-
-### Testing
-
-- **57 unit tests** across 9 crates
-- **Integration test** covering all 11 daemon endpoints
-- **18 feature branches**, 24 merged to master, 20 experimental preserved
-
-### Performance
-
-- **mimalloc** global allocator
-- **rayon** parallel indexing and dead code scanning
-- **FxHashMap** and **AHashMap** for fast hashing in hot paths
-- **LTO** via release profile
-- **Binary size**: 6.9MB stripped
-
-## v0.1.0
-
-- Initial release
-- 9 crate workspace with BM25 search, IR compression, risk, memory, fix, dead code
-- TCP daemon on :9799
-- MCP server for agent integration
-- Gate.js Pi extension at -42% savings
+## v0.6.8

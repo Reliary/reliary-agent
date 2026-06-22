@@ -51,7 +51,7 @@ pub fn daemon_pid() -> Option<(u32, bool)> {
 /// Write PID file for daemon
 pub fn write_pid_file() {
     let pid_path = daemon_pid_path();
-    let _ = std::fs::write(&pid_path, format!("{}\n", std::process::id()));
+    let _ = reliary_core::atomic_write(pid_path.to_string_lossy().as_ref(), &format!("{}\n", std::process::id()));
 }
 
 /// Remove PID file for daemon
@@ -399,8 +399,8 @@ fn status_data() -> StatusData {
 
     if index_exists {
         if let Ok(db) = rusqlite::Connection::open(&index_path) {
-            let _ = db.execute_batch(" synchronous=;");
-            if let Ok(mut stmt) = db.prepare("SELECT COUNT(DISTINCT file_id) FROM file_phrases") {
+            let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+            if let Ok(mut stmt) = db.prepare("SELECT COUNT(*) FROM file_map") {
                 if let Ok(mut rows) = stmt.query([]) {
                     if let Ok(Some(row)) = rows.next() { index_files = row.get(0).unwrap_or(0); }
                 }

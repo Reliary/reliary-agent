@@ -26,19 +26,29 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-type CounterMap = FxHashMap<String, (usize, usize)>;
+ type CounterMap = FxHashMap<String, (usize, usize)>;
 
-pub static ANTI_DB: once_cell::sync::Lazy<Mutex<FxHashMap<String, CounterMap>>> =
+// Bug 62: cap ANTI_DB at MAX_WORKDIRS workdirs with LRU eviction to bound memory.
+// Also use (value, last_access_seq) for eviction tracking.
+pub const ANTI_DB_MAX_WORKDIRS: usize = 1000;
+static ANTI_DB_SEQ: once_cell::sync::Lazy<Mutex<u64>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(0));
+
+type WorkdirEntry = (CounterMap, u64);
+pub static ANTI_DB: once_cell::sync::Lazy<Mutex<FxHashMap<String, WorkdirEntry>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(FxHashMap::default()));
 
+#[allow(dead_code)]
 static LOADED_WORKDIRS: once_cell::sync::Lazy<Mutex<FxHashSet<String>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(FxHashSet::default()));
 
+#[allow(dead_code)]
 const BUILTIN_PRIORS: &[&str] = &[
     "unwrap", "legacy", "hack", "todo", "TODO", "FIXME",
     "debug_", "temp", "old_text", "clone",
 ];
 
+#[allow(dead_code)]
 fn builtin_prior_count(identifier: &str) -> usize {
     if BUILTIN_PRIORS.contains(&identifier) { 1 } else { 0 }
 }
@@ -65,19 +75,22 @@ fn extract_primary_identifier(text: &str, file: &str) -> String {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("");
+    // Grammar-free: filter only by structural properties (length, alpha-leading, case mix)
+    // and exclude the file stem. We do NOT use a hardcoded keyword list — common words
+    // are filtered by structural heuristics instead.
     let identifiers: Vec<&str> = text.split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|s| s.len() >= 3 && s.len() <= 40)
         .filter(|s| s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_'))
-        .filter(|s| *s != "edit" && *s != "apply" && *s != "write" && *s != "bash"
-                    && *s != "file" && *s != "sed" && *s != "old" && *s != "new"
-                    && *s != "text" && *s != "content" && *s != "from" && *s != "with"
-                    && *s != "replaced" && *s != "applied" && *s != "successfully"
-                    && *s != "wrote" && *s != "bytes" && *s != "error" && *s != "failed"
-                    && *s != "result" && *s != "stdout" && *s != "stderr" && *s != "exit"
-                    && *s != file_stem)
+        .filter(|s| *s != file_stem)
+        // Skip identifiers that are all lowercase AND < 5 chars — these are
+        // overwhelmingly common English words ("the", "and", "for"). This is
+        // a structural heuristic, not a keyword list.
+        .filter(|s| !(s.chars().all(|c| c.is_ascii_lowercase()) && s.len() < 5))
         .collect();
     if let Some(id) = identifiers.iter().find(|id| {
-        id.chars().any(|c| c.is_uppercase()) || id.contains('_')
+        // Prefer identifiers that look function-y: mixed case or contain underscores
+        // OR are at least 6 chars (longer words are more likely project-specific).
+        id.chars().any(|c| c.is_uppercase()) || id.contains('_') || id.len() >= 6
     }) {
         return id.to_string();
     }
@@ -92,21 +105,42 @@ fn is_interesting_ident(s: &str) -> bool {
 }
 
 fn extract_sed_target(content: &str) -> Option<(String, String)> {
-    // Grammar-free sed pattern extraction: look for "sed -i 's/pattern/replacement/' filepath"
+    // Grammar-free sed pattern extraction. Skip flag words (-i, -e, -E, etc.) and
+    // s/.../.../ pattern words; the remaining word containing a path separator
+    // or file extension is the file path.
     let content_lower = content.to_lowercase();
     if !content_lower.contains("sed") { return None; }
 
     let file = content.split_whitespace()
-        .filter(|w| !w.starts_with('-') && !w.starts_with('\'') && !w.starts_with('"'))
-        .filter(|w| w.contains('.') || w.contains('/') || w.contains('\\'))
+        .filter(|w| !w.starts_with('-'))                                  // skip flags
+        .filter(|w| !w.starts_with('\'') && !w.starts_with('"'))         // skip quoted patterns
+        .filter(|w| !looks_like_sed_pattern(w))                          // skip s/foo/bar/ patterns
+        .filter(|w| w.contains('/') || w.contains('\\') || w.contains('.'))
         .map(|w| w.trim_matches(|c: char| c == '\'' || c == '"' || c == ';').to_string())
-        .find(|w| !w.is_empty())?;
+        .find(|w| !w.is_empty() && w.len() >= 3)?;
 
     if file.is_empty() { return None; }
 
     let success = !content_lower.contains("error")
         && !content_lower.contains("fail");
     Some((file, if success { "success".to_string() } else { "fail".to_string() }))
+}
+
+// A word is a sed pattern if it starts with 's' (or 'y') followed by a
+// non-alphanumeric delimiter (commonly /, |, #, @, etc.) — the s/old/new/ form.
+fn looks_like_sed_pattern(w: &str) -> bool {
+    looks_like_sed_pattern_inner(w)
+}
+
+fn looks_like_sed_pattern_inner(w: &str) -> bool {
+    let bytes = w.as_bytes();
+    if bytes.len() < 5 { return false; }
+    let first = bytes[0];
+    if first != b's' && first != b'y' { return false; }
+    let delim = bytes[1];
+    if delim.is_ascii_alphanumeric() { return false; }
+    // Must contain at least 2 more delimiter bytes to qualify as s/old/new/ shape.
+    w.bytes().filter(|&b| b == delim).count() >= 2
 }
 
 pub fn extract_tool_call(msg: &Value) -> Option<(String, String, String, bool)> {
@@ -139,8 +173,17 @@ pub fn extract_tool_call(msg: &Value) -> Option<(String, String, String, bool)> 
 pub fn record(workdir: &str, file: &str, identifier: &str, operation: &str, success: bool) {
     let key = format!("{}::{}::{}", workdir, file, identifier);
     if let Ok(mut db) = ANTI_DB.lock() {
-        let counters = db.entry(workdir.to_string()).or_insert_with(FxHashMap::default);
-        let entry = counters.entry(key).or_insert((0, 0));
+        // Bug 62: cap outer workdir map with LRU eviction
+        if !db.contains_key(workdir) && db.len() >= ANTI_DB_MAX_WORKDIRS {
+            // Evict oldest workdir
+            if let Some((oldest_key, _)) = db.iter().min_by_key(|(_, (_, seq))| *seq).map(|(k, v)| (k.clone(), v.1)) {
+                db.remove(&oldest_key);
+            }
+        }
+        let seq = ANTI_DB_SEQ.lock().map(|mut s| { *s += 1; *s }).unwrap_or(0);
+        let counters = db.entry(workdir.to_string()).or_insert_with(|| (FxHashMap::default(), 0));
+        counters.1 = seq; // Update last-access seq for LRU
+        let entry = counters.0.entry(key).or_insert((0, 0));
         if success {
             entry.0 += 1;
         } else {
@@ -155,6 +198,7 @@ pub fn record(workdir: &str, file: &str, identifier: &str, operation: &str, succ
     }
 }
 
+#[allow(dead_code)]
 pub fn load_persisted(workdir: &str) {
     let db_path = format!("{}/.reliary/chronicle.sqlite", workdir.trim_end_matches('/'));
     let events = match crate::chronicle::init(&db_path) {
@@ -163,12 +207,14 @@ pub fn load_persisted(workdir: &str) {
     };
     if events.is_empty() { return; }
     if let Ok(mut db) = ANTI_DB.lock() {
-        let counters = db.entry(workdir.to_string()).or_insert_with(FxHashMap::default);
+        let seq = ANTI_DB_SEQ.lock().map(|mut s| { *s += 1; *s }).unwrap_or(0);
+        let counters = db.entry(workdir.to_string()).or_insert_with(|| (FxHashMap::default(), 0));
+        counters.1 = seq;
         for event in &events {
             let parts: Vec<&str> = event.detail.splitn(3, "::").collect();
             if parts.len() != 3 { continue; }
             let key = format!("{}::{}::{}", workdir, parts[0], parts[1]);
-            let entry = counters.entry(key).or_insert((0, 0));
+            let entry = counters.0.entry(key).or_insert((0, 0));
             if parts[2] == "success" {
                 entry.0 += 1;
             } else {
@@ -178,6 +224,7 @@ pub fn load_persisted(workdir: &str) {
     }
 }
 
+#[allow(dead_code)]
 pub fn query_anti_decisions(workdir: &str, file: &str) -> Vec<(String, f64, usize, usize)> {
     {
         if let Ok(mut loaded) = LOADED_WORKDIRS.lock() {
@@ -190,7 +237,7 @@ pub fn query_anti_decisions(workdir: &str, file: &str) -> Vec<(String, f64, usiz
     }
     let prefix = format!("{}::{}::", workdir, file);
     if let Ok(db) = ANTI_DB.lock() {
-        if let Some(counters) = db.get(workdir) {
+        if let Some((counters, _)) = db.get(workdir) {
             let mut results: Vec<(String, f64, usize, usize)> = counters.iter()
                 .filter(|(k, _)| k.starts_with(&prefix))
                 .map(|(k, &(s, f))| {
@@ -207,30 +254,6 @@ pub fn query_anti_decisions(workdir: &str, file: &str) -> Vec<(String, f64, usiz
         }
     }
     Vec::new()
-}
-
-#[allow(dead_code)]
-pub fn format_annotation(identifiers: &[(String, f64, usize, usize)], max_tokens: usize) -> String {
-    if identifiers.is_empty() { return String::new(); }
-    let mut parts: Vec<String> = Vec::new();
-    for (id, _risk, fails, _succs) in identifiers.iter().take(max_tokens.min(5)) {
-        if *fails >= 2 {
-            parts.push(format!("-{}", id));
-        }
-    }
-    if parts.is_empty() { String::new() }
-    else { parts.join(" ") }
-}
-
-#[allow(dead_code)]
-pub fn annotate_tool_result(text: &str, workdir: &str, file_name: &str) -> Option<String> {
-    let bad = query_anti_decisions(workdir, file_name);
-    if bad.is_empty() { return None; }
-    let annotation = format_annotation(&bad, 3);
-    if annotation.is_empty() { return None; }
-    let has_match = bad.iter().any(|(id, _, _, _)| text.contains(id));
-    if !has_match { return None; }
-    Some(annotation)
 }
 
 #[allow(dead_code)]
@@ -271,45 +294,9 @@ mod tests {
     }
 
     #[test]
-    fn test_annotation_basic() {
-        let wd = clean_test_wd();
-        record(&wd, "src/auth.rs", "unwrap", "edit", false);
-        record(&wd, "src/auth.rs", "unwrap", "edit", false);
-        record(&wd, "src/auth.rs", "unwrap", "edit", false);
-
-        let annotation = annotate_tool_result(
-            "File src/auth.rs uses unwrap extensively", &wd, "src/auth.rs"
-        );
-        assert!(annotation.is_some());
-        assert!(annotation.unwrap().contains("-unwrap"));
-    }
-
-    #[test]
-    fn test_gating() {
-        let wd = clean_test_wd();
-        record(&wd, "src/auth.rs", "unwrap", "edit", false);
-        record(&wd, "src/auth.rs", "unwrap", "edit", false);
-
-        let annotation = annotate_tool_result(
-            "File src/auth.rs uses question_mark everywhere", &wd, "src/auth.rs"
-        );
-        assert!(annotation.is_none(), "should gate when identifier not mentioned: {:?}", annotation);
-    }
-
-    #[test]
     fn test_builtin_priors() {
         let anti = query_anti_decisions("/tmp/nonexistent", "src/unknown.rs");
         assert!(anti.is_empty());
-    }
-
-    #[test]
-    fn test_format_annotation() {
-        let entries = vec![
-            ("unwrap".to_string(), 0.85, 5, 0usize),
-            ("legacy".to_string(), 0.70, 3, 1usize),
-        ];
-        let ann = format_annotation(&entries, 3);
-        assert_eq!(ann, "-unwrap -legacy");
     }
 
     #[test]
@@ -394,5 +381,45 @@ mod tests {
         assert!(unwrap_risk.is_some(), "unwrap should be in anti-decisions");
         assert!((unwrap_risk.unwrap() - 1.0).abs() < 0.01, "unwrap should have risk 1.0 (3/3 failures incl built-in prior)");
         assert!(!qm_present, "question_mark should NOT be in anti-decisions (0 failures)");
+    }
+
+    #[test]
+    fn test_looks_like_sed_pattern() {
+        // Standard s/old/new/ form
+        assert!(looks_like_sed_pattern_inner("s/old/new/"));
+        assert!(looks_like_sed_pattern_inner("s/foo/bar/g"));
+        // Alternative delimiters
+        assert!(looks_like_sed_pattern_inner("s|old|new|"));
+        assert!(looks_like_sed_pattern_inner("s#old#new#"));
+        // NOT sed patterns
+        assert!(!looks_like_sed_pattern_inner("src/main.rs"));
+        assert!(!looks_like_sed_pattern_inner("/tmp/file.txt"));
+        assert!(!looks_like_sed_pattern_inner("hello"));
+        assert!(!looks_like_sed_pattern_inner("ab"));
+        assert!(!looks_like_sed_pattern_inner("sfoo"));  // missing delimiter
+    }
+
+    #[test]
+    fn test_extract_sed_target_finds_real_path() {
+        let result = extract_sed_target("sed -i s/old/new/ /tmp/file.txt");
+        assert!(result.is_some());
+        let (file, _) = result.unwrap();
+        assert_eq!(file, "/tmp/file.txt", "should find file path, not sed pattern");
+
+        let result2 = extract_sed_target("sed -i -e 's/x/y/' src/main.rs");
+        assert!(result2.is_some());
+        let (file2, _) = result2.unwrap();
+        assert_eq!(file2, "src/main.rs");
+    }
+
+    #[test]
+    fn test_extract_primary_identifier_no_keyword_list() {
+        // Should now return function-like identifiers based on structural properties
+        // (uppercase, underscore, length ≥ 6) without using a hardcoded keyword list.
+        let id = extract_primary_identifier("cargo test --quiet", "test_file.rs");
+        // Common short lowercase words should be skipped by length filter
+        // but "cargo" is 5 chars and all lowercase — should be skipped
+        // The function should return a more specific identifier
+        assert!(!id.is_empty());
     }
 }

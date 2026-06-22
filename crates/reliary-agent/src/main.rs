@@ -388,10 +388,14 @@ pub fn run_index(path: &str) {
     if let Some(parent) = std::path::Path::new(&db_path_str).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::remove_file(&db_path_str);
-    match rusqlite::Connection::open(&db_path_str) {
+    // Rename existing index to .bak (recovery if create_new_db fails)
+    let bak_path = format!("{}.bak", db_path_str);
+    let _ = std::fs::remove_file(&bak_path);  // remove any old backup
+    if std::path::Path::new(&db_path_str).exists() {
+        let _ = std::fs::rename(&db_path_str, &bak_path);
+    }
+    match reliary_core::safe_open_db(&db_path_str) {
         Ok(db) => {
-            let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
             if reliary_search::schema::create_new_db(&db).is_err() {
                 eprintln!("{} Database schema creation failed", color::red("✗"));
                 return;
@@ -671,7 +675,7 @@ fn exec_sift(cmd: &[String]) {
 fn validate_config(workdir: &str) {
     let path = config::project_config_path(workdir);
     if !path.exists() { return; }
-    if let Ok(content) = std::fs::read_to_string(&path) {
+    if let Ok(content) = reliary_core::safe_read(path.to_string_lossy().as_ref()) {
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(obj) = parsed.as_object() {
                 for key in obj.keys() {
@@ -690,11 +694,12 @@ fn validate_config(workdir: &str) {
                         }
                     }
                 }
-                // Validate features
+                // Validate features (reads from config::FEATURE_DEFAULTS to avoid drift)
+                let valid_features: Vec<&str> = config::FEATURE_DEFAULTS.iter().map(|(k, _)| *k).collect();
                 if let Some(features) = obj.get("features") {
                     if let Some(fobj) = features.as_object() {
                         for (k, v) in fobj {
-                            if !matches!(k.as_str(), "compress" | "convWindow" | "readEnrichment" | "editMerge" | "healEdit" | "priorInjection") {
+                            if !valid_features.contains(&k.as_str()) {
                                 eprintln!("{} Unknown feature '{}' in {}", color::yellow("⚠"), k, path.display());
                             }
                             if !v.is_boolean() {
@@ -715,7 +720,10 @@ fn do_trust(path: &str) {
     if reliary_dir.exists() {
         println!("{} .reliary/ already exists in {}", color::green("✓"), path);
     } else {
-        std::fs::create_dir_all(&reliary_dir).expect("Failed to create .reliary/");
+        if let Err(e) = std::fs::create_dir_all(&reliary_dir) {
+            eprintln!("{} Failed to create .reliary/ in {}: {}", color::red("✗"), path, e);
+            std::process::exit(1);
+        }
         println!("{} Created .reliary/ in {}", color::green("✓"), path);
     }
     // Build index
@@ -728,14 +736,26 @@ fn do_trust(path: &str) {
 fn do_update(check_only: bool) {
     println!("{} Checking for updates...", color::bold(""));
     let current = VERSION;
-    // Try to fetch latest release from GitHub
-    let output = std::process::Command::new("curl")
-        .args(["-sL", "https://api.github.com/repos/Reliary/reliary-agent/releases/latest"])
-        .output();
-    match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            if let Ok(release) = serde_json::from_str::<serde_json::Value>(&stdout) {
+    // Try to fetch latest release from GitHub via reqwest (we already depend on it)
+    let release_url = "https://api.github.com/repos/Reliary/reliary-agent/releases/latest";
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => { eprintln!("{} Could not build HTTP client: {}", color::red("✗"), e); return; }
+    };
+    let response: Result<reqwest::blocking::Response, reqwest::Error> = client
+        .get(release_url)
+        .header("User-Agent", "reliary-agent")
+        .send();
+    match response {
+        Ok(r) => {
+            let body: String = match r.text() {
+                Ok(b) => b,
+                Err(e) => { eprintln!("{} Could not read GitHub response: {}", color::red("✗"), e); return; }
+            };
+            if let Ok(release) = serde_json::from_str::<serde_json::Value>(&body) {
                 let tag = release.get("tag_name").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let latest = tag.trim_start_matches('v');
                 if latest == current {
@@ -777,6 +797,8 @@ fn do_update(check_only: bool) {
                         let ext = if os == "windows" { ".zip" } else { ".tar.gz" };
                         let asset_name = format!("reliary-{}-{}{}", tag, target, ext);
                         let download_url = format!("https://github.com/Reliary/reliary-agent/releases/download/{}/{}", tag, asset_name);
+                        // Extract directory: tarball contains a single directory matching asset_name without .ext
+                        let extract_dir = format!("/tmp/{}", asset_name.trim_end_matches(&format!(".{}", ext.trim_start_matches('.'))));
                         println!("  Downloading {}...", asset_name);
                         let dl = std::process::Command::new("curl")
                             .args(["-sL", "-o", "/tmp/reliary-update.tar.gz", &download_url])
@@ -787,14 +809,16 @@ fn do_update(check_only: bool) {
                                 .args(["-xzf", "/tmp/reliary-update.tar.gz", "-C", "/tmp/"])
                                 .status();
                             if extract.is_ok_and(|s| s.success()) {
+                                // FIX: was /tmp/reliary-agent (wrong). Tarball extracts into a subdirectory
+                                let extracted_bin = format!("{}/reliary-agent", extract_dir);
                                 let binary = std::env::current_exe().unwrap_or_default();
                                 let install = std::process::Command::new("cp")
-                                    .args(["/tmp/reliary-agent", binary.to_string_lossy().as_ref()])
+                                    .args([&extracted_bin, binary.to_string_lossy().as_ref()])
                                     .status();
                                 if install.is_ok_and(|s| s.success()) {
                                     println!("{} Updated to v{}", color::green("✓"), latest);
                                 } else {
-                                    eprintln!("{} Install failed — try manually: cp /tmp/reliary-agent {}", color::red("✗"), binary.display());
+                                    eprintln!("{} Install failed — try manually: cp {} {}", color::red("✗"), extracted_bin, binary.display());
                                 }
                             } else {
                                 eprintln!("{} Extract failed", color::red("✗"));
@@ -858,9 +882,10 @@ fn main() {
             let input_buf: String = match text {
                 Some(ref t) if !t.is_empty() && t != "---stdin---" => t.clone(),
                 _ => {
-                    let mut buf = String::new();
-                    let _ = std::io::stdin().read_to_string(&mut buf);
-                    buf
+                    match reliary_core::safe_read_stdin() {
+                        Ok(buf) => buf,
+                        Err(e) => { eprintln!("{} stdin: {}", color::red("✗"), e); return; }
+                    }
                 }
             };
             let input: &str = &input_buf;
@@ -875,7 +900,11 @@ fn main() {
         }
         Commands::Risk { file } => {
             let _ = open_index_or_prompt(".");
-            let content = std::fs::read_to_string(file).unwrap_or_default();
+            // Use safe_read with size cap (Bug 36: OOM risk on huge files)
+            let content = match reliary_core::safe_read(file) {
+                Ok(c) => c,
+                Err(e) => { eprintln!("{} {}", color::red("✗"), e); return; }
+            };
             let risk_result = reliary_risk::compute_file_risk(file, &content);
             let risk_fmt = match fmt { reliary_core::OutputFormat::Json => "json", _ => "default" };
             ux::format_risk(file, &format!("{:?}", risk_result), risk_fmt);
@@ -884,11 +913,16 @@ fn main() {
             #[cfg(unix)]
             {
                 let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("reliary-agent"));
+                // Capture stderr to a log file so startup failures are visible
+                // (Bug 37: was Stdio::null which swallowed daemon errors)
+                let log_path = "/tmp/reliary-agent-startup.log";
+                let log_file = std::fs::File::create(log_path).ok(); // GUARDED: intentional — best-effort log file, parent dir may not exist yet
+                let stderr_target = log_file.map(std::process::Stdio::from).unwrap_or_else(std::process::Stdio::null);
                 let mut cmd = std::process::Command::new(exe);
                 cmd.arg("serve");
                 cmd.stdin(std::process::Stdio::null());
                 cmd.stdout(std::process::Stdio::null());
-                cmd.stderr(std::process::Stdio::null());
+                cmd.stderr(stderr_target);
                 match cmd.spawn() {
                     Ok(child) => {
                         println!("{} Daemon spawned (PID {}), waiting for health check...", color::green("✓"), child.id());
@@ -896,7 +930,7 @@ fn main() {
                             ux::write_pid_file();
                             println!("{} Daemon started on :9090", color::green("✓"));
                         } else {
-                            eprintln!("{} Daemon launched but not responding after 5s — check logs", color::yellow("⚠"));
+                            eprintln!("{} Daemon launched but not responding after 5s. Check: cat {}", color::yellow("⚠"), log_path);
                         }
                     }
                     Err(e) => {
@@ -1031,12 +1065,12 @@ fn main() {
         Commands::Config { key, value, local, root } => {
             match (key, value) {
                 (Some(k), Some(v)) => {
-                    // Validate known keys
-                    let valid_keys = ["mode", "features.compress", "features.convWindow", "features.readEnrichment",
-                        "features.editMerge", "features.healEdit", "features.priorInjection",
-                        "apiMode", "privacyMode", "apiBaseUrl", "serverUrl"];
-                    if !valid_keys.contains(&k.as_str()) {
-                        eprintln!("{} Unknown config key '{}'", color::yellow("⚠"), k);
+                    // Validate known keys (Bug 38: use const from config.rs)
+                    if !config::VALID_CONFIG_KEYS.contains(&k.as_str()) {
+                        eprintln!("{} Unknown config key '{}'. Valid keys:", color::yellow("⚠"), k);
+                        for vk in config::VALID_CONFIG_KEYS {
+                            eprintln!("  {}", vk);
+                        }
                         std::process::exit(1);
                     }
                     // Validate mode values
@@ -1104,8 +1138,9 @@ fn main() {
                         let p = entry.path();
                         if p.is_file() {
                             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-                            if matches!(ext, "rs" | "py" | "js" | "ts" | "go" | "java" | "rb" | "c" | "cpp" | "h" | "hpp" | "sh" | "toml" | "yaml" | "yml" | "json" | "md") {
-                                if let Ok(content) = std::fs::read_to_string(p) {
+                            if reliary_search::SUPPORTED_EXTS_DEAD.contains(&ext) {
+                                // Use safe_read with size cap (Bug 39: OOM on huge files)
+                                if let Ok(content) = reliary_core::safe_read(p.to_string_lossy().as_ref()) {
                                     let display = p.strip_prefix(std::env::current_dir().unwrap_or_default()).unwrap_or(p);
                                     files.push((display.to_string_lossy().to_string(), content));
                                 }
@@ -1113,7 +1148,7 @@ fn main() {
                         }
                     }
                 } else if path_buf.is_file() {
-                    if let Ok(content) = std::fs::read_to_string(&path_buf) {
+                    if let Ok(content) = reliary_core::safe_read(path_buf.to_string_lossy().as_ref()) {
                         let display = path_buf.strip_prefix(std::env::current_dir().unwrap_or_default()).unwrap_or(&path_buf);
                         files.push((display.to_string_lossy().to_string(), content));
                     }
@@ -1157,7 +1192,10 @@ fn main() {
                 let path = std::path::Path::new(dir);
                 std::fs::create_dir_all(path).ok();  // GUARDED: intentional
                 let file_path = path.join(format!("reliary-agent.{}", ext));
-                std::fs::write(&file_path, &output).expect("Failed to write completion file");
+                if let Err(e) = reliary_core::atomic_write(file_path.to_string_lossy().as_ref(), &output) {
+                    eprintln!("{} Failed to write completion file: {}", color::red("✗"), e);
+                    std::process::exit(1);
+                }
                 println!("{} Generated {} completions → {}", color::green("✓"), ext, file_path.display());
             } else {
                 print!("{}", output);
@@ -1237,7 +1275,7 @@ fn main() {
                 .unwrap_or_else(|e| error!("Server error: {}", e));
         }
         Commands::FixDir { path } => {
-            let content = std::fs::read_to_string(path).unwrap_or_default();
+            let content = reliary_core::safe_read(path).unwrap_or_default();
             let empty: Vec<(String, String)> = Vec::new();
             let (result, count) = reliary_fix::apply_fixes(&content, &empty);
             println!("Applied {} fixes to {}", count, path);

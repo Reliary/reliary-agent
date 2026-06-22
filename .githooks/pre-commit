@@ -115,4 +115,12 @@ if ! git config --get user.signingkey >/dev/null 2>&1; then
 fi
 echo "  signing check: done"
 
+# 12. ci_guards.py — bug-class pattern detection (non-atomic writes, OOM reads, curl, etc.)
+if command -v python3 >/dev/null 2>&1; then
+    python3 scripts/ci_guards.py --staged 2>&1 || {
+        echo "FAIL: guardrail violations found. Mark with // GUARDED: intentional if a false positive."
+        exit 1
+    }
+fi
+
 echo "[guard] All checks passed."

@@ -19,6 +19,29 @@ pub fn atomic_write(path: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
+// Detect the test command for a project. Returns (cmd, args) or (empty, empty)
+// if no recognized project files exist. Grammar-free: pure file existence checks.
+fn detect_test_command(workdir: &str) -> (String, Vec<String>) {
+    detect_test_command_inner(workdir)
+}
+
+fn detect_test_command_inner(workdir: &str) -> (String, Vec<String>) {
+    let wd = std::path::Path::new(workdir);
+    if wd.join("Cargo.toml").exists() {
+        ("cargo".to_string(), vec!["test".to_string(), "--quiet".to_string()])
+    } else if wd.join("pyproject.toml").exists() || wd.join("pytest.ini").exists() || wd.join("setup.py").exists() {
+        ("pytest".to_string(), vec!["-q".to_string()])
+    } else if wd.join("package.json").exists() {
+        ("npm".to_string(), vec!["test".to_string(), "--silent".to_string()])
+    } else if wd.join("go.mod").exists() {
+        ("go".to_string(), vec!["test".to_string()])
+    } else if wd.join("Cargo.lock").exists() {
+        ("cargo".to_string(), vec!["test".to_string(), "--quiet".to_string()])
+    } else {
+        (String::new(), Vec::new())
+    }
+}
+
 fn change_hash(file: &str, new_content: &str) -> (u64, u64) {
     let mut h = DefaultHasher::new();
     file.hash(&mut h);
@@ -59,9 +82,14 @@ pub fn heal_edit(file: &str, new_content: &str, workdir: &str) -> Result<(), Str
     // Atomic write with fsync + rename
     atomic_write(file, new_content)?;
 
-    // Run tests and capture output
-    let output = Command::new("cargo")
-        .args(["test", "--quiet"])
+    // Run tests and capture output. Detect project type to pick the right test command;
+    // defaults to `cargo test` for Rust projects. Falls back to no-op on unknown projects.
+    let (test_cmd, test_args) = detect_test_command(workdir);
+    if test_cmd.is_empty() {
+        return Ok(()); // Unknown project type — skip tests
+    }
+    let output = Command::new(&test_cmd)
+        .args(&test_args)
         .current_dir(workdir)
         .output()
         .map_err(|e| format!("Test exec: {}", e))?;
@@ -116,7 +144,7 @@ fn extract_first_failure(output: &str) -> String {
 
 // Shadow-apply a reliary_fix and test
 pub fn heal_fix(file: &str, old: &str, new: &str, workdir: &str) -> Result<String, String> {
-    let content = fs::read_to_string(file).map_err(|e| format!("Read: {}", e))?;
+    let content = reliary_core::safe_read(file).map_err(|e| format!("Read: {}", e))?;
     let fixes = vec![(old.to_string(), new.to_string())];
     let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
 
@@ -134,7 +162,7 @@ pub fn heal_fix(file: &str, old: &str, new: &str, workdir: &str) -> Result<Strin
 pub fn batch_heal(edits: &[(String, String, String)], workdir: &str) -> String {
     let mut originals: Vec<(String, String)> = Vec::new();
     for (file, old, new) in edits {
-        let content = match fs::read_to_string(file) {
+        let content = match reliary_core::safe_read(file) {
             Ok(c) => c,
             Err(e) => return format!("FAIL: cannot read {} — {}", file, e),
         };
@@ -146,7 +174,11 @@ pub fn batch_heal(edits: &[(String, String, String)], workdir: &str) -> String {
             return format!("FAIL: atomic write error {} — {}", file, e);
         }
     }
-    let output = Command::new("cargo").args(["test", "--quiet"]).current_dir(workdir).output();
+    let (test_cmd, test_args) = detect_test_command(workdir);
+    if test_cmd.is_empty() {
+        return format!("OK: {} files edited (no test command for project type)", edits.len());
+    }
+    let output = Command::new(&test_cmd).args(&test_args).current_dir(workdir).output();
     match output {
         Ok(out) if out.status.success() => {
             format!("OK: {} files edited, tests pass", edits.len())
@@ -193,5 +225,46 @@ mod tests {
         let output = "line1\nline2\nline3\nline4\n";
         let r = extract_first_failure(output);
         assert!(r.contains("line2"), "Got: {}", r);
+    }
+
+    #[test]
+    fn test_detect_test_command_rust() {
+        let dir = std::env::temp_dir().join("reliary_heal_test_rust");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname=\"x\"\nversion=\"0.1.0\"\n").unwrap();
+        let (cmd, args) = detect_test_command_inner(dir.to_str().unwrap());
+        assert_eq!(cmd, "cargo");
+        assert!(args.iter().any(|a| a == "test"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_detect_test_command_python() {
+        let dir = std::env::temp_dir().join("reliary_heal_test_py");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("pyproject.toml"), "[project]\nname=\"x\"\n").unwrap();
+        let (cmd, _) = detect_test_command_inner(dir.to_str().unwrap());
+        assert_eq!(cmd, "pytest");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_detect_test_command_node() {
+        let dir = std::env::temp_dir().join("reliary_heal_test_node");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        let (cmd, _) = detect_test_command_inner(dir.to_str().unwrap());
+        assert_eq!(cmd, "npm");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_detect_test_command_unknown() {
+        let dir = std::env::temp_dir().join("reliary_heal_test_unknown");
+        let _ = std::fs::create_dir_all(&dir);
+        let (cmd, args) = detect_test_command_inner(dir.to_str().unwrap());
+        assert_eq!(cmd, "");
+        assert!(args.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

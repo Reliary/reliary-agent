@@ -119,7 +119,7 @@ pub fn resolve_mode_with_source(workdir: Option<&str>) -> ResolvedMode {
     }
 
     ResolvedMode {
-        value: GateMode::Reactive,
+        value: GateMode::Strict,
         source: ConfigSource::Default,
     }
 }
@@ -130,15 +130,34 @@ pub fn resolve_mode(workdir: Option<&str>) -> GateMode {
 }
 
 /// Resolve feature flags with source tracking.
+/// Single source of truth for feature names and their default state.
+/// Bug 38/44: previously duplicated in main.rs valid_keys and gate.js.
+pub const FEATURE_DEFAULTS: &[(&str, bool)] = &[
+    ("compress", true),
+    ("convWindow", true),
+    ("readEnrichment", true),
+    ("editMerge", false),
+    ("healEdit", true),
+    ("priorInjection", false),
+];
+
+/// Public list of valid config keys (used by CLI validation)
+pub const VALID_CONFIG_KEYS: &[&str] = &[
+    "mode",
+    "features.compress",
+    "features.convWindow",
+    "features.readEnrichment",
+    "features.editMerge",
+    "features.healEdit",
+    "features.priorInjection",
+    "apiMode",
+    "privacyMode",
+    "apiBaseUrl",
+    "serverUrl",
+];
+
 pub fn resolve_features_with_source(workdir: Option<&str>) -> Vec<ResolvedFeature> {
-    let defaults: Vec<(&str, bool)> = vec![
-        ("compress", true),
-        ("convWindow", true),
-        ("readEnrichment", true),
-        ("editMerge", false),
-        ("healEdit", true),
-        ("priorInjection", false),
-    ];
+    let defaults: Vec<(&str, bool)> = FEATURE_DEFAULTS.to_vec();
 
     // Parse env var
     let mut env_overrides: HashMap<String, bool> = HashMap::new();
@@ -196,6 +215,13 @@ pub fn resolve_features(workdir: Option<&str>) -> Vec<(String, bool)> {
 }
 
 pub fn set_config(key: &str, value: &str, project: bool, root: Option<&str>) -> String {
+    // Bug 45: validate values for known keys before storing
+    if key.starts_with("features.") && !matches!(value, "true" | "false") {
+        return format!("Error: feature value must be 'true' or 'false', got '{}'", value);
+    }
+    if key == "mode" && !matches!(value, "fast" | "reactive" | "strict") {
+        return format!("Error: mode must be 'fast', 'reactive', or 'strict', got '{}'", value);
+    }
     let path = if project {
         let base = root.unwrap_or(".");
         project_config_path(base)
@@ -233,16 +259,16 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static TEST_CTR: AtomicU64 = AtomicU64::new(0);
         let ctr = TEST_CTR.fetch_add(1, Ordering::Relaxed);
-        let _guard = CONFIG_TEST_MUTEX.lock().unwrap();
+        let _guard = CONFIG_TEST_MUTEX.lock().unwrap(); // GUARDED: intentional - test mutex
         std::env::remove_var("RELIARY_MODE");
         std::env::remove_var("RELIARY_FEATURES");
         let tmp = std::env::temp_dir().join(format!("reliary_config_test_{}_{}", std::process::id(), ctr));
-        let _ = std::fs::create_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);  // GUARDED: intentional — test code, lock held across I/O
         let old_home = std::env::var("HOME").ok();  // GUARDED: intentional — Option::ok() in test helper
         std::env::set_var("HOME", tmp.to_str().unwrap());
         f();
         if let Some(h) = old_home { std::env::set_var("HOME", h); } else { std::env::remove_var("HOME"); }
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&tmp);  // GUARDED: intentional — test code, lock held across I/O
     }
 
     #[test]
@@ -250,7 +276,8 @@ mod tests {
         isolated_test(|| {
             let result = resolve_mode_with_source(Some("/tmp/nonexistent_test_dir_12345"));
             assert_ne!(result.source, ConfigSource::Env);
-            assert!(result.value.as_str() == "reactive" || result.value.as_str() == "strict");
+            // v0.6.8: default is now strict (was reactive)
+            assert_eq!(result.value, GateMode::Strict);
         });
     }
 

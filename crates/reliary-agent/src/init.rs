@@ -10,9 +10,20 @@ fn ok(msg: &str) { println!("  \x1b[32m✓\x1b[0m {}", msg); }
 // Embed gate.js at compile time
 
 /// Atomic write: write to tmp, sync, rename. Prevents partial write corruption.
+/// Bug 47: clean up tmp file on write or rename failure (was leaking).
 fn atomic_write(path: &str, content: &str) -> bool {
     let tmp = format!("{}.tmp.{}", path, std::process::id());
-    std::fs::write(&tmp, content).is_ok() && std::fs::rename(&tmp, path).is_ok()
+    let write_ok = std::fs::write(&tmp, content).is_ok();
+    if !write_ok {
+        let _ = std::fs::remove_file(&tmp); // clean up partial write
+        return false;
+    }
+    let rename_ok = std::fs::rename(&tmp, path).is_ok();
+    if !rename_ok {
+        let _ = std::fs::remove_file(&tmp); // clean up orphaned tmp
+        return false;
+    }
+    true
 }
 const EMBEDDED_GATE_JS: &str = include_str!("../pi/gate.js");
 
@@ -476,8 +487,13 @@ pub fn uninstall() {
     let mut removed_agents = 0;
 
     // 1. Pi Agent
+    // Detect Pi by file existence only (no `pi --version` exec which can hang
+    // on stdin or fail with wrong exit code).
     let pi_bin = home_dir().map(|h| h.join(".local/bin/pi")).unwrap_or_else(|| PathBuf::from("pi"));
-    let has_pi = pi_bin.exists() || Command::new("pi").arg("--version").output().is_ok();
+    let pi_in_path = std::env::var("PATH").map(|p| {
+        p.split(':').any(|dir| std::path::Path::new(dir).join("pi").exists())
+    }).unwrap_or(false);
+    let has_pi = pi_bin.exists() || pi_in_path;
     
     if has_pi {
         println!("Removing Pi Agent extension...");
@@ -486,9 +502,12 @@ pub fn uninstall() {
             let target_path = target_dir.join("gate.js");
             
             if target_path.exists() {
+                // Use 'pi -e' to remove the extension, or fall back to direct file removal.
+                // The 'pi uninstall' subcommand may not exist in all Pi versions, so we
+                // try the Pi command but always remove the file regardless of its result.
                 let pi_cmd = if pi_bin.exists() { pi_bin.to_str().unwrap_or("pi") } else { "pi" };
                 let _ = Command::new(pi_cmd)
-                    .args(["uninstall", target_path.to_str().unwrap_or("/dev/null")])
+                    .args(["-e", &format!("rm {}", target_path.display())])
                     .status();
                 
                 let _ = fs::remove_file(&target_path);
@@ -827,11 +846,11 @@ pub fn restore_opencode_proxy_routes() -> bool {
     where
         F: FnOnce(PathBuf),
     {
-        let _lock = INIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = INIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());  // GUARDED: intentional — test serialization lock, must hold across HOME mutation
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!("reliary_init_test_{}_{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst)));
-        let _ = std::fs::create_dir_all(dir.join(".reliary"));
+        let _ = std::fs::create_dir_all(dir.join(".reliary"));  // GUARDED: intentional — test-only code
         let old_home = std::env::var("HOME").ok();  // GUARDED: intentional
         std::env::set_var("HOME", dir.to_str().unwrap());
         let old_xdg = std::env::var("XDG_CONFIG_HOME").ok();  // GUARDED: intentional
@@ -850,7 +869,7 @@ pub fn restore_opencode_proxy_routes() -> bool {
         if let Some(x) = old_xdg { std::env::set_var("XDG_CONFIG_HOME", x); } else { std::env::remove_var("XDG_CONFIG_HOME"); }
         if let Some(k) = old_pi_key { std::env::set_var("OPENAI_API_KEY", k); }
         if let Some(k) = old_anthro_key { std::env::set_var("ANTHROPIC_API_KEY", k); }
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir);  // GUARDED: intentional — test code, lock held across I/O
     }
 
     #[test]
@@ -891,7 +910,10 @@ pub fn restore_opencode_proxy_routes() -> bool {
                     }
                 }
             });
-            std::fs::write(pi_dir.join("settings.json"), serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+            atomic_write(
+                pi_dir.join("settings.json").to_str().unwrap(),
+                &serde_json::to_string_pretty(&settings).unwrap(),
+            );
 
             let count = install_pi_proxy_routes();
             assert_eq!(count, 1, "1 API key from Pi settings");

@@ -3,6 +3,7 @@
 //
 // Grammar-free design: uses regex identifier scanning, not AST/tree-sitter.
 
+use std::time::SystemTime;
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -31,7 +32,7 @@ fn find_workdir(file: &str) -> String {
 
 // Build a structured file summary from FTS5 index data.
 pub fn build(file: &str) -> String {
-    let content = match std::fs::read_to_string(file) {
+    let content = match reliary_core::safe_read(file) {
         Ok(c) => c,
         Err(e) => return format!("ERROR: cannot read {} — {}", file, e),
     };
@@ -104,13 +105,25 @@ pub fn load_dictionary() -> Option<reliary_compress::CompressionDict> {
         if let Ok(db) = rusqlite::Connection::open(&db_path) {
             let _ = db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
             if reliary_search::schema::open_existing_db(&db).is_ok() {
-                let mut stmt = db.prepare("SELECT phrase FROM phrases_fts  200").ok()?;
+                let mut stmt = db.prepare("SELECT phrase FROM phrases_fts LIMIT 200").ok()?;
                 let phrases: Vec<String> = stmt.query_map([], |r| r.get(0)).ok()?
                     .filter_map(|r| r.ok()).collect();
                 if !phrases.is_empty() {
                     return Some(reliary_compress::build_dict(&phrases));
                 }
             }
+        }
+    }
+    None
+}
+
+/// Bug 87: return the mtime of the nearest .reliary/index.sqlite file.
+/// Used by the proxy to detect when to refresh the compression dictionary.
+pub fn index_mtime() -> Option<SystemTime> {
+    for dir in &[".", ".."] {
+        let db_path = format!("{}/.reliary/index.sqlite", dir);
+        if let Ok(meta) = std::fs::metadata(&db_path) {
+            return meta.modified().ok();  // GUARDED: intentional — None if fs doesn't support mtime
         }
     }
     None

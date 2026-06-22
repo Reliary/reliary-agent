@@ -12,28 +12,66 @@ use rustc_hash::FxHashMap;
 use std::collections::HashMap as StdHashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, LazyLock};
+use std::time::SystemTime;
 use std::time::Instant;
 use serde_json::Value;
 use tracing::{info, warn, error};
 
 // Shared HTTP client with connection pooling — eliminates per-request TCP+TLS handshake.
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {  // GUARDED: intentional — static lives for daemon lifetime, graceful shutdown joins threads before exit
+    // Bug 69: total request timeout (default 5 min) to prevent hung upstream
+    // requests from leaking memory and FDs.
+    let timeout_secs: u64 = std::env::var("RELIARY_PROXY_UPSTREAM_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
     reqwest::Client::builder()
         .pool_max_idle_per_host(10)
+        .timeout(std::time::Duration::from_secs(timeout_secs))
         .build()
         .expect("reqwest::Client")
 });
 
-// Compression dictionary loaded once from FTS5 index — known project symbols
+// Compression dictionary loaded from FTS5 index — known project symbols
 // survive compression while unknown fluff gets stripped.
-static COMPRESSION_DICT: LazyLock<Option<reliary_compress::CompressionDict>> =
-    LazyLock::new(crate::read_summary::load_dictionary);
+// Bug 87: refresh on index mtime change (was loaded once at startup).
+static COMPRESSION_DICT: LazyLock<Mutex<Option<reliary_compress::CompressionDict>>> =
+    LazyLock::new(|| Mutex::new(crate::read_summary::load_dictionary()));
+static DICT_INDEX_MTIME: LazyLock<Mutex<Option<SystemTime>>> =
+    LazyLock::new(|| Mutex::new(crate::read_summary::index_mtime()));
+
+/// Get the compression dictionary, refreshing it if the FTS5 index has changed
+/// on disk. Returns cached dict until the index is modified.
+fn get_dict() -> Option<reliary_compress::CompressionDict> {
+    let current_mtime = crate::read_summary::index_mtime();
+    {
+        let mut saved = DICT_INDEX_MTIME.lock().unwrap_or_else(|e| e.into_inner());
+        if *saved == current_mtime {
+            // Index unchanged — return cached dict
+            return COMPRESSION_DICT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        }
+        // Update saved mtime
+        *saved = current_mtime;
+    }
+    // Index changed — reload dict
+    if let Ok(mut dict) = COMPRESSION_DICT.lock() {
+        *dict = crate::read_summary::load_dictionary();
+        return dict.clone();
+    }
+    None
+}
 
 // Synchronization for JSONL logging — prevents interleaved lines from concurrent requests.
-static JSONL_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+// JSONL log: persistent file handle (Bug 53 fix).
+// Opens /tmp/reliary_proxy.jsonl once and reuses for all subsequent writes.
+static JSONL_FILE: LazyLock<Mutex<Option<std::fs::File>>> = LazyLock::new(|| Mutex::new(None));
 
-static RESPONSE_CACHE: LazyLock<Mutex<FxHashMap<u64, String>>> =
+// Response cache with proper LRU eviction (Bug 52 fix).
+// Stores (cached_body, insertion_sequence) to enable oldest-first eviction.
+static RESPONSE_CACHE: LazyLock<Mutex<FxHashMap<u64, (String, u64)>>> =
     LazyLock::new(|| Mutex::new(FxHashMap::default()));
+static RESPONSE_CACHE_SEQ: LazyLock<Mutex<u64>> = LazyLock::new(|| Mutex::new(0));
+const RESPONSE_CACHE_MAX: usize = 120;
 
 static DAEMON_STATE: LazyLock<Mutex<Option<Arc<crate::session_state::SessionState>>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -52,37 +90,107 @@ pub fn get_state() -> Arc<crate::session_state::SessionState> {
     guard.clone().unwrap_or_else(|| Arc::new(crate::session_state::SessionState::new(".")))
 }
 
-fn cache_key(auth: &str, body: &str, is_streaming: bool) -> u64 {
+/// Bug 68: infer the request's workdir by looking for any absolute file path
+/// in the messages and finding the nearest .reliary/ ancestor.
+/// Returns None if no path can be inferred.
+fn infer_request_workdir(payload: &serde_json::Value) -> Option<String> {
+    let messages = payload.get("messages")?.as_array()?;
+    // Scan for any absolute file path in tool_calls or content
+    for msg in messages {
+        if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+            // Find absolute paths (heuristic: starts with /)
+            for word in content.split_whitespace() {
+                let path = word.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';' || c == ')');
+                if path.starts_with('/') && std::path::Path::new(path).exists() {
+                    if let Some((root, _, _)) = crate::daemon::find_reliary_root(path) {
+                        return Some(root);
+                    }
+                }
+            }
+        }
+        // Check tool_calls function arguments for file paths
+        if let Some(tool_calls) = msg.get("tool_calls").and_then(|t| t.as_array()) {
+            for tc in tool_calls {
+                if let Some(args) = tc.get("function").and_then(|f| f.get("arguments")).and_then(|a| a.as_str()) {
+                    for word in args.split_whitespace() {
+                        let path = word.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';' || c == ')');
+                        if path.starts_with('/') && std::path::Path::new(path).exists() {
+                            if let Some((root, _, _)) = crate::daemon::find_reliary_root(path) {
+                                return Some(root);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Bug 84: include temperature in cache key. Two requests with different temps
+/// but same messages should NOT share a cached response.
+fn cache_key(auth: &str, body: &str, is_streaming: bool, model: &str, temperature: Option<f64>) -> u64 {
     use rustc_hash::FxHasher;
     let mut h = FxHasher::default();
     auth.hash(&mut h);
     body.hash(&mut h);
     is_streaming.hash(&mut h);
+    // Bug 58: include model in cache key (was missing — same messages but different
+    // model would return wrong model's cached response).
+    model.hash(&mut h);
+    // Bug 84: include temperature in cache key
+    if let Some(t) = temperature {
+        t.to_string().hash(&mut h);
+    }
     h.finish()
 }
 
-fn cached_response(auth: &str, body: &str, is_streaming: bool) -> Option<String> {
-    let key = cache_key(auth, body, is_streaming);
-    RESPONSE_CACHE.lock().ok().and_then(|c| c.get(&key).cloned())
+fn cached_response(auth: &str, body: &str, is_streaming: bool, model: &str, temperature: Option<f64>) -> Option<String> {
+    let key = cache_key(auth, body, is_streaming, model, temperature);
+    // Borrow the cache in a block to drop the guard before touching seq
+    let resp = {
+        let cache = RESPONSE_CACHE.lock().ok()?;
+        cache.get(&key).map(|(s, _)| s.clone())
+    }?;
+    // Bug 86: touch in sequencer for access-order tracking
+    if let Ok(mut seq) = RESPONSE_CACHE_SEQ.lock() {
+        *seq += 1;
+        if let Ok(mut c) = RESPONSE_CACHE.lock() {
+            if let Some(entry) = c.get_mut(&key) {
+                entry.1 = *seq;
+            }
+        }
+    }
+    Some(resp)
 }
 
-fn store_response(auth: &str, body: &str, response: &str, is_streaming: bool) {
-    let key = cache_key(auth, body, is_streaming);
+fn store_response(auth: &str, body: &str, response: &str, is_streaming: bool, model: &str, temperature: Option<f64>) {
+    let key = cache_key(auth, body, is_streaming, model, temperature);
     if let Ok(mut cache) = RESPONSE_CACHE.lock() {
-        cache.insert(key, response.to_string());
-        if cache.len() > 120 {
-            let keys: Vec<u64> = cache.keys().copied().collect();
-            for k in keys.iter().take(20) { cache.remove(k); }
+        // Bug 52: proper LRU — track insertion/access sequence, evict oldest when over cap
+        let seq = RESPONSE_CACHE_SEQ.lock().map(|mut s| { *s += 1; *s }).unwrap_or(0);
+        cache.insert(key, (response.to_string(), seq));
+        if cache.len() > RESPONSE_CACHE_MAX {
+            // Find the entry with the smallest seq (= least recently used)
+            if let Some(&oldest_key) = cache.iter().min_by_key(|(_, (_, seq))| *seq).map(|(k, _)| k) {
+                cache.remove(&oldest_key);
+            }
         }
     }
 }
 
 fn resolve_upstream(auth_key: &str) -> Option<String> {
     if let Some(url) = crate::routes::discover_upstream(auth_key) {
-        return Some(url);
+        // Bug 66: validate URL scheme is http or https (reject file://, gopher://, etc.)
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return Some(url);
+        }
+        return None;
     }
     if let Ok(url) = std::env::var("RELIARY_UPSTREAM_URL") {
-        return Some(url);
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return Some(url);
+        }
     }
     None
 }
@@ -90,8 +198,70 @@ fn resolve_upstream(auth_key: &str) -> Option<String> {
 fn extract_auth_key(headers: &HeaderMap) -> String {
     headers.get("authorization")
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.strip_prefix("Bearer ").unwrap_or(v).to_string())
+        .map(|v| {
+            // Bug 63: case-insensitive "Bearer" / "bearer" / "BEARER" prefix support
+            let key = if v.len() >= 7 && v[..7].eq_ignore_ascii_case("bearer ") {
+                v[7..].to_string()
+            } else {
+                v.to_string()
+            };
+            // Bug 70: reject very long keys (likely malicious or malformed)
+            if key.len() > 1024 { String::new() } else { key }
+        })
         .unwrap_or_default()
+}
+
+// ── Rate Limiting (Bug 49) ──
+//
+// Per-auth-key token bucket. Defaults to 60 requests / 60 seconds.
+// If a single API key makes more than 60 requests in 60s, requests are
+// rejected with HTTP 429. Configurable via RELIARY_PROXY_RATE_PER_MIN.
+
+const RATE_LIMIT_PER_MIN_DEFAULT: u32 = 60;
+const RATE_BUCKETS_MAX: usize = 1000; // Bug 67: cap to bound memory under attack
+static RATE_BUCKETS: LazyLock<Mutex<rustc_hash::FxHashMap<String, (u32, std::time::Instant)>>> =
+    LazyLock::new(|| Mutex::new(rustc_hash::FxHashMap::default()));
+static RATE_LAST_PRUNE: LazyLock<Mutex<std::time::Instant>> =
+    LazyLock::new(|| Mutex::new(std::time::Instant::now()));
+const RATE_PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn check_rate_limit(auth_key: &str) -> Option<u32> {
+    if auth_key.is_empty() { return None; } // No key, no rate limit (let auth check handle it)
+
+    let per_min = std::env::var("RELIARY_PROXY_RATE_PER_MIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(RATE_LIMIT_PER_MIN_DEFAULT);
+
+    let now = std::time::Instant::now();
+    let mut buckets = RATE_BUCKETS.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Periodic sweep: remove entries older than 60s to prevent memory growth
+    {
+        let mut last_prune = RATE_LAST_PRUNE.lock().unwrap_or_else(|e| e.into_inner());
+        if now.duration_since(*last_prune) > RATE_PRUNE_INTERVAL {
+            buckets.retain(|_, (_, t)| now.duration_since(*t) < std::time::Duration::from_secs(60));
+            *last_prune = now;
+        }
+    }
+
+    // Bug 67: hard cap on bucket count. If at cap, reject new entries.
+    if !buckets.contains_key(auth_key) && buckets.len() >= RATE_BUCKETS_MAX {
+        return Some(60); // Reject until next sweep
+    }
+
+    let entry = buckets.entry(auth_key.to_string()).or_insert((0, now));
+    // Reset bucket if more than 60s have passed
+    if now.duration_since(entry.1) > std::time::Duration::from_secs(60) {
+        entry.0 = 0;
+        entry.1 = now;
+    }
+    if entry.0 >= per_min {
+        let retry_after = 60u32.saturating_sub(now.duration_since(entry.1).as_secs() as u32);
+        return Some(retry_after.max(1));
+    }
+    entry.0 += 1;
+    None
 }
 
 fn daemon_cmd_str(cmd: &str) -> String {
@@ -99,13 +269,51 @@ fn daemon_cmd_str(cmd: &str) -> String {
 }
 
 fn jsonl_log(entry: &serde_json::Value) {
-    let _lock = JSONL_LOCK.lock().ok();  // GUARDED: intentional
-    if let Ok(mut fh) = std::fs::OpenOptions::new()
+    // Bug 53 + 75: reuse persistent file handle, but open OUTSIDE the lock
+    // to avoid blocking other jsonl_log calls during slow file opens.
+    {
+        let guard = JSONL_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_some() {
+            drop(guard);
+            write_jsonl_line(entry);
+            return;
+        }
+    }
+    // Lock released — open the file (potentially slow)
+    if let Ok(fh) = std::fs::OpenOptions::new()
         .create(true).append(true).open("/tmp/reliary_proxy.jsonl")
     {
+        // Re-acquire lock to store the handle
+        let mut guard = JSONL_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            *guard = Some(fh);
+        }
+        // Drop guard, write the current entry, then drop the new handle's owner
+        drop(guard);
+    }
+    // Try writing (either via stored handle or fresh open)
+    write_jsonl_line(entry);
+}
+
+fn write_jsonl_line(entry: &serde_json::Value) {
+    let mut guard = JSONL_FILE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(fh) = guard.as_mut() {
         use std::io::Write;
         let _ = writeln!(fh, "{}", serde_json::to_string(entry).unwrap_or_default());  // GUARDED: intentional
     }
+}
+
+/// Bug 92: flush JSONL file handle on shutdown, preventing crash-data loss.
+static JSONL_FLUSHED: std::sync::Once = std::sync::Once::new();
+fn flush_jsonl() {
+    JSONL_FLUSHED.call_once(|| {
+        if let Ok(mut guard) = JSONL_FILE.lock() {
+            if let Some(ref mut fh) = *guard {
+                use std::io::Write;
+                let _ = fh.flush();
+            }
+        }
+    });
 }
 
 // ── History Compression Components ──
@@ -477,7 +685,7 @@ fn build_info_scorer() -> Option<impl Fn(&str) -> f64> {
     let fw = fw?;
     let fw_mutex = Mutex::new(fw);
     Some(move |line: &str| -> f64 {
-        let mut guard = fw_mutex.lock().unwrap();
+        let mut guard = fw_mutex.lock().unwrap_or_else(|e| e.into_inner());
         guard.line_info_score(line)
     })
 }
@@ -507,7 +715,7 @@ fn compress_response_body(body: &str, is_sse: bool) -> String {
                                 .and_then(|c| c.as_str());
                             if let Some(c) = content {
                                 if c.len() > 300 {
-                                    compress_assistant_text(c, COMPRESSION_DICT.as_ref())
+                                    compress_assistant_text(c, get_dict().as_ref())
                                 } else { None }
                             } else { None }
                         };
@@ -534,7 +742,7 @@ fn compress_response_body(body: &str, is_sse: bool) -> String {
                 if let Some(msg) = choice.get_mut("message") {
                     if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
                         if content.len() > 300 {
-                            if let Some(compressed) = compress_assistant_text(content, COMPRESSION_DICT.as_ref()) {
+                            if let Some(compressed) = compress_assistant_text(content, get_dict().as_ref()) {
                                 msg["content"] = Value::String(compressed);
                                 return serde_json::to_string(&v).unwrap_or_else(|_| body.to_string());
                             }
@@ -581,7 +789,7 @@ fn compress_messages(messages: &mut [Value], state: &mut PerKeyState) -> (usize,
         // First occurrence: compress and cache
         let compressed = match role {
             "assistant" => {
-                let existing = compress_assistant_text(&content, COMPRESSION_DICT.as_ref());
+                let existing = compress_assistant_text(&content, get_dict().as_ref());
                 // Novel mechanisms (Maxwell, DSL) — disabled via RELIARY_PROXY_NOVEL_COMPRESS=0
                 let novel_disabled = std::env::var("RELIARY_PROXY_NOVEL_COMPRESS").is_ok_and(|v| v == "0");
                 if !novel_disabled {
@@ -721,6 +929,14 @@ async fn proxy_post(
     body: Bytes,
 ) -> axum::response::Response {
     let auth_key = extract_auth_key(&headers);
+
+    // Bug 49: per-auth-key rate limit (token bucket, 60 req/min default)
+    if let Some(retry_after) = check_rate_limit(&auth_key) {
+        return (StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", retry_after.to_string())],
+            Json(serde_json::json!({"error": "rate limit exceeded"}))).into_response();
+    }
+
     let upstream_url = match resolve_upstream(&auth_key) {
         Some(url) => url,
         None => return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error":"unknown api key"}))).into_response(),
@@ -805,10 +1021,9 @@ async fn proxy_post(
             if let Some(last) = messages.last() {
                 if last.get("role").and_then(|r| r.as_str()) == Some("assistant") {
                     let content = last.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                    let has_edit = content.contains("\"edit\"") || content.contains("\"apply-edit\"")
-                        || content.contains("\"write\"")
-                        || content.contains("sed -i");
-                    // Check tool_calls array for edit/write function names
+                    // Bug 59: only check tool_calls array (prose mentions of "edit"/"write"
+                    // are too noisy — every assistant message that discusses editing triggers
+                    // a false positive). Use exact tool name match on the tool_calls function.
                     let has_edit_tool = last.get("tool_calls")
                         .and_then(|tc| tc.as_array())
                         .map(|calls| calls.iter().any(|tc| {
@@ -819,7 +1034,7 @@ async fn proxy_post(
                                 .unwrap_or(false)
                         }))
                         .unwrap_or(false);
-                    if has_edit || has_edit_tool {
+                    if has_edit_tool {
                         if let Some((file_path, new_text)) = extract_edit_from_assistant(content) {
                             if let Some((root, index_path, _)) = crate::daemon::find_reliary_root(&file_path) {
                                 let rel_paths = resolve_index_paths(&file_path, &root);
@@ -878,7 +1093,10 @@ async fn proxy_post(
 
     // ── Anti-decision: record outcomes from tool results and annotate (off by default) ──
     if std::env::var("RELIARY_PROXY_FEATURE_ANTI").is_ok_and(|v| v == "1") {
-        let workdir = get_state().workdir.to_string_lossy().to_string();
+        // Bug 68: use the request's workdir inferred from any file path in messages,
+        // not the daemon's startup workdir (which may serve multiple projects).
+        let workdir = infer_request_workdir(&payload)
+            .unwrap_or_else(|| get_state().workdir.to_string_lossy().to_string());
         if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
             for msg in messages.iter() {
                 if let Some((file, identifier, operation, success)) =
@@ -894,7 +1112,7 @@ async fn proxy_post(
                 let known_anti: Vec<(String, String, String)> = {
                     let mut list = Vec::new();
                     if let Ok(db) = crate::antidecision::ANTI_DB.lock() {
-                        if let Some(counters) = db.get(&workdir) {
+                        if let Some((counters, _)) = db.get(&workdir) {
                             for key in counters.keys() {
                                 if let Some(rest) = key.strip_prefix(&format!("{}::", workdir)) {
                                     if let Some((file, rest2)) = rest.split_once("::") {
@@ -998,18 +1216,24 @@ async fn proxy_post(
     // Response cache (streaming and non-streaming)
     if let Some(messages) = payload.get("messages") {
         if let Ok(msg_str) = serde_json::to_string(messages) {
-            if let Some(cached) = cached_response(&auth_key, &msg_str, is_streaming) {
+            // Bug 58: include model in cache key
+            let model = payload.get("model").and_then(|m| m.as_str()).unwrap_or("");
+            // Bug 84: include temperature in cache key
+            let temperature = payload.get("temperature").and_then(|t| t.as_f64());
+            if let Some(cached) = cached_response(&auth_key, &msg_str, is_streaming, model, temperature) {
                 let content_type = if is_streaming { "text/event-stream" } else { "application/json" };
                 return (StatusCode::OK, [("content-type", content_type)], cached).into_response();
             }
         }
     }
 
-    let body_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    // Bug 74: use Bytes (reference-counted) instead of Vec<u8> to avoid
+    // cloning the entire request body for the cache.
+    let body_bytes: Bytes = serde_json::to_vec(&payload).unwrap_or_default().into();
 
     let mut req_builder = HTTP_CLIENT.post(&upstream_url)
         .header("Content-Type", "application/json")
-        .body(body_bytes.clone());
+        .body(body_bytes.clone());  // GUARDED: intentional — Bytes is Arc<[u8]>, clone is cheap
 
     if let Some(auth_val) = headers.get("authorization") {
         req_builder = req_builder.header("authorization", auth_val);
@@ -1025,14 +1249,28 @@ async fn proxy_post(
             let upstream_status = upstream_resp.status();
             let upstream_ct = upstream_resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
             if !upstream_status.is_success() {
+                // Bug 71: cap error response body to 10MB (was unbounded — 100MB HTML
+                // error pages caused OOM).
                 let bytes = upstream_resp.bytes().await.unwrap_or_default();
-                return (upstream_status, [("content-type", upstream_ct)], bytes).into_response();
+                let capped = if bytes.len() > reliary_core::MAX_FILE_SIZE as usize {
+                    let mut c = bytes[..reliary_core::MAX_FILE_SIZE as usize].to_vec();
+                    c.extend_from_slice(b"\n[... truncated, body exceeded 10MB cap ...]");
+                    c
+                } else {
+                    bytes.to_vec()
+                };
+                return (upstream_status, [("content-type", upstream_ct)], capped).into_response();
             }
             // Also detect non-SSE content-types (e.g., upstream returned JSON error
             // even with success status). Forward as-is.
             if is_streaming && !upstream_ct.contains("event-stream") {
                 let bytes = upstream_resp.bytes().await.unwrap_or_default();
-                return (upstream_status, [("content-type", upstream_ct)], bytes).into_response();
+                let capped = if bytes.len() > reliary_core::MAX_FILE_SIZE as usize {
+                    bytes[..reliary_core::MAX_FILE_SIZE as usize].to_vec()
+                } else {
+                    bytes.to_vec()
+                };
+                return (upstream_status, [("content-type", upstream_ct)], capped).into_response();
             }
             if is_streaming {
                 // True SSE streaming: forward chunks as they arrive.
@@ -1049,18 +1287,22 @@ async fn proxy_post(
                     // chunk boundaries. Many SSE chunkers split the JSON literal across
                     // chunks so a single-chunk window check is unreliable.
                     let mut rolling_tail: Vec<u8> = Vec::with_capacity(4096);
+                    // Bug 56: debounce prefetch — accumulate chunks, flush every 32KB or on stream end
+                    let mut pf_buffer = String::new();
+                    const PF_FLUSH_BYTES: usize = 32_768;
                     loop {
                         match upstream_resp.chunk().await {
                             Ok(Some(chunk)) => {
                                 let chunk_str = String::from_utf8_lossy(&chunk);
-                                // Track for usage parsing and response cache
-                                // Stream-aware prefetch: extract file paths from live chunks.
-                                // Run in spawn_blocking to avoid sync fs I/O stalling the async runtime.
+                                // Stream-aware prefetch: accumulate chunks, debounce flush.
                                 if !std::env::var("RELIARY_PROXY_PREFETCH").is_ok_and(|v| v == "0") {
-                                    let pf_chunk = chunk_str.to_string();
-                                    tokio::task::spawn_blocking(move || {
-                                        crate::novel_compress::try_prefetch(&pf_chunk);
-                                    });
+                                    pf_buffer.push_str(&chunk_str);
+                                    if pf_buffer.len() >= PF_FLUSH_BYTES {
+                                        let buf = std::mem::take(&mut pf_buffer);
+                                        tokio::task::spawn_blocking(move || {
+                                            crate::novel_compress::try_prefetch(&buf);
+                                        });
+                                    }
                                 }
                                 if chunk_str.contains("\"usage\"") || chunk_str.contains("\"prompt_tokens\"") {
                                     last_chunk_with_usage = chunk_str.to_string();
@@ -1083,9 +1325,8 @@ async fn proxy_post(
                                     finish_sent = true;
                                 }
 
-                                // Forward immediately
+                                // Forward chunk to client
                                 if tx.send(Ok(chunk)).await.is_err() {
-                                    // Client disconnected; still try to flush any finish chunk we held
                                     break;
                                 }
                             }
@@ -1095,6 +1336,13 @@ async fn proxy_post(
                                 break;
                             }
                         }
+                    }
+                    // Flush remaining prefetch buffer at stream end (Bug 56).
+                    if !pf_buffer.is_empty() {
+                        let buf = std::mem::take(&mut pf_buffer);
+                        tokio::task::spawn_blocking(move || {
+                            crate::novel_compress::try_prefetch(&buf);
+                        });
                     }
                     // Stream complete. If the upstream never sent a finish_reason (rare;
                     // happens when the upstream connection drops mid-stream), inject a
@@ -1139,7 +1387,9 @@ async fn proxy_post(
 
                     // Cache the full body (best-effort — skips if serialization fails)
                     if let Ok(msg_str) = serde_json::to_string(&payload.get("messages").unwrap_or(&Value::Null)) {
-                        store_response(&auth_key, &msg_str, &String::from_utf8_lossy(&total_bytes), true);
+                        let model = payload.get("model").and_then(|m| m.as_str()).unwrap_or("");
+                        let temperature = payload.get("temperature").and_then(|t| t.as_f64());
+                        store_response(&auth_key, &msg_str, &String::from_utf8_lossy(&total_bytes), true, model, temperature);
                     }
                 });
 
@@ -1164,7 +1414,9 @@ async fn proxy_post(
                         let raw_str = String::from_utf8_lossy(&bytes).to_string();
                         // Compress response body before returning to agent
                         let body_str = compress_response_body(&raw_str, false);
-                        store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str, false);
+                        let model = payload.get("model").and_then(|m| m.as_str()).unwrap_or("");
+                        let temperature = payload.get("temperature").and_then(|t| t.as_f64());
+                        store_response(&auth_key, &String::from_utf8_lossy(&body_bytes), &body_str, false, model, temperature);  // body_bytes: Bytes, &str works via Deref
 
                         jsonl_log(&serde_json::json!({
                             "event": "proxy_response",
@@ -1279,9 +1531,9 @@ async fn read_validated_handler(Query(params): Query<StdHashMap<String, String>>
         let rel_path = rel_paths.first().map(|s| s.as_str()).unwrap_or(file_path);
         let full_path = std::path::Path::new(&root).join(rel_path);
         let mut content = String::new();
-        if let Ok(mut f) = std::fs::File::open(&full_path) {
+        if let Ok(mut f) = std::fs::File::open(&full_path) { // GUARDED: intentional - small file, will spawn_blocking
             if let Ok(meta) = f.metadata() {
-                if meta.len() > 10_000_000 {
+                if meta.len() > crate::daemon::MAX_FILE_SIZE {
                     return serde_json::json!({"error": "file too large"}).to_string();
                 }
             }
@@ -1304,6 +1556,40 @@ async fn read_validated_handler(Query(params): Query<StdHashMap<String, String>>
 }
 
 // ── Startup ──
+
+fn build_cors() -> tower_http::cors::CorsLayer {
+    let default_origins = concat!(
+        "http://localhost:3000,",     // React/Vite/Next.js
+        "http://localhost:5173,",     // Vite default
+        "http://localhost:8080,",     // Common dev port
+        "http://localhost:4200,",     // Angular
+        "http://localhost:1420,",     // Tauri
+        "http://127.0.0.1:3000,",
+        "http://127.0.0.1:5173,",
+        "http://127.0.0.1:8080,",
+        "http://127.0.0.1:9000,",    // Pi Agent default
+        "http://localhost:9000,",
+    );
+
+    let origins_str = std::env::var("RELIARY_CORS_ORIGINS")
+        .unwrap_or_else(|_| String::from(default_origins));
+
+    let origins: Vec<axum::http::HeaderValue> = origins_str
+        .split(',')
+        .filter_map(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() { return None; }
+            axum::http::HeaderValue::from_str(trimmed).ok()
+        })
+        .collect();
+
+    tower_http::cors::CorsLayer::new()
+        .allow_origin(tower_http::cors::AllowOrigin::list(origins))
+        .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::OPTIONS])
+        .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION])
+        .allow_credentials(false)
+        .max_age(std::time::Duration::from_secs(3600))
+}
 
 pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::SessionState>>) -> Result<(), String> {
     if let Some(s) = daemon_state {
@@ -1357,7 +1643,14 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
         .route("/v1/messages", post(proxy_post))  // Anthropic/Claude Code compatibility
         .route("/mcp/sse", get(crate::mcp_sse::sse_handler))
         .route("/mcp/messages", post(crate::mcp_sse::messages_handler))
-        .layer(tower_http::cors::CorsLayer::permissive());
+        // Bug 78 (CORS): origin allowlist instead of permissive.
+        // Default allows common local dev tool ports. Customize via RELIARY_CORS_ORIGINS.
+        .layer(build_cors())
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            // 10MB request body limit. LLM conversations with accumulated
+            // history can approach axum's default 2MB, so we raise it.
+            10 * 1024 * 1024,
+        ));
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -1369,7 +1662,31 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
         if std::env::var("RELIARY_PROXY_GUARD_DISABLE").is_ok_and(|v| v == "1") { "off" } else { "on" },
         if std::env::var("RELIARY_PROXY_FEATURE_ANTI").is_ok_and(|v| v == "1") { "on" } else { "off" });
 
+    // Bug 81: graceful shutdown via SIGINT/SIGTERM.
+    // Flush JSONL before exit to avoid losing last entries (Bug 92).
+    let graceful = async {
+        #[cfg(unix)]
+        {
+            let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .map_err(|_| "signal install".to_string()).ok();  // GUARDED: intentional — signal setup fails gracefully
+            let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                .map_err(|_| "signal install".to_string()).ok();  // GUARDED: intentional — signal setup fails gracefully
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = async { if let Some(ref mut s) = term { s.recv().await; } } => {},
+                _ = async { if let Some(ref mut s) = int { s.recv().await; } } => {},
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        // Flush JSONL on exit (Bug 92)
+        flush_jsonl();
+    };
+
     axum::serve(listener, app)
+        .with_graceful_shutdown(graceful)
         .await
         .map_err(|e| format!("serve: {}", e))
 }

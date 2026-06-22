@@ -35,6 +35,9 @@ jobs:
           bad=$(grep -rn "\.ok();" crates/ --include="*.rs" 2>/dev/null | grep -v "GUARDED: intentional\|test\|#\[cfg\|\.and_then\|filter_map\|\.ok()?\|// ok" || true)
           if [ -n "$bad" ]; then echo "FAIL"; echo "$bad"; exit 1; fi
 
+      - name: ci_guards.py (bug-class detection)
+        run: python3 scripts/ci_guards.py || { echo 'ci_guards FAIL — see above for violations'; exit 1; }
+
       - name: CLI docs check
         run: |
           cmds=$(grep -A50 "^pub const CLI_COMMANDS" crates/reliary-agent/src/main.rs 2>/dev/null | grep '"' | grep -oP '"[a-z][a-z-]+"' | tr -d '"' | sort -u || true)

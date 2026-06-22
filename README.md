@@ -496,6 +496,14 @@ your upstream from agent configs, or you can set `RELIARY_UPSTREAM_URL` as a fal
 
 ## Troubleshooting
 
+### "Claude Code returns 501 Not Implemented"
+
+The proxy currently supports OpenAI-compatible chat completions only. Anthropic
+`/v1/messages` requests receive a 501 with a clear error. To use Claude Code
+through the proxy today, route it to an OpenAI-compatible proxy (LiteLLM,
+OpenRouter, or a self-hosted OpenAI-compatible endpoint) via
+`RELIARY_UPSTREAM_URL`, or run the agent without the proxy.
+
 ### "Proxy is not compressing anything"
 
 ```bash

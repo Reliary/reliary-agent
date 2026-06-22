@@ -25,6 +25,8 @@ pub struct SessionState {
     pub chronicle_path: PathBuf,
     read_cache: Mutex<FxHashMap<String, ReadCacheEntry>>,
     risk_cache: Mutex<FxHashMap<String, (String, Instant)>>,
+    // Bug 73: track last sweep time for time-based cache eviction.
+    last_sweep: Mutex<Instant>,
 }
 
 impl SessionState {
@@ -41,6 +43,7 @@ impl SessionState {
             workdir: PathBuf::from(workdir),
             read_cache: Mutex::new(FxHashMap::default()),
             risk_cache: Mutex::new(FxHashMap::default()),
+            last_sweep: Mutex::new(Instant::now()),
         }
     }
 
@@ -77,10 +80,18 @@ impl SessionState {
     pub fn risk_cache_set(&self, path: String, risk: String) {
         let mut cache = self.risk_cache.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        // Periodic sweep: only evict expired entries every 20 inserts, not every write.
-        // This avoids the O(n) retain scan on every single insert.
+        // Bug 73: time-based sweep for small caches. Original code only swept
+        // when cache.len() was a multiple of 20, which never happens for
+        // small (< 20) caches — old entries would leak.
+        {
+            let last_sweep = self.last_sweep.lock().unwrap_or_else(|e| e.into_inner());
+            if cache.len().is_multiple_of(20) || now.duration_since(*last_sweep) > Duration::from_secs(60) {
+                cache.retain(|_, (_, t)| now.duration_since(*t) < RISK_CACHE_TTL);
+            }
+        }
         if cache.len().is_multiple_of(20) {
-            cache.retain(|_, (_, t)| now.duration_since(*t) < RISK_CACHE_TTL);
+            let mut last_sweep = self.last_sweep.lock().unwrap_or_else(|e| e.into_inner());
+            *last_sweep = now;
         }
         // Evict oldest half if too large
         if cache.len() >= RISK_CACHE_MAX {

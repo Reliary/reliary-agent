@@ -40,7 +40,7 @@ pub fn incremental_reindex(workdir: &str) -> usize {
     // Parallel re-index changed files
     let count = changed_files.par_iter().filter_map(|file| {
         let path_str = file.to_string_lossy().to_string();
-        let content = std::fs::read_to_string(&path_str).ok()?;
+        let content = reliary_core::safe_read(&path_str).ok()?;
         if reindex_file(&db_path_str, &path_str, &content) {
             Some(())
         } else {
@@ -115,7 +115,7 @@ fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
     let phrases = reliary_search::tokenize(content);
     for phrase in &phrases {
         // Simple zone classification: count structural chars
-        let zone = if content.contains("fn ") || content.contains("def ") | content.contains("class ") { 0 } else { 1 };
+        let zone = if content.contains("fn ") || content.contains("def ") || content.contains("class ") { 0 } else { 1 };
         if let Err(e) = db.execute(
             "INSERT INTO phrases (file, line_from, line_to, zone, prefix_offset) VALUES (?1, 0, 0, ?2, 0)",
             params![file, zone],

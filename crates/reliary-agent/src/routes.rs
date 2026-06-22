@@ -1,7 +1,40 @@
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+/// Cache of upstream URL per auth key (Bug 64 fix).
+/// Avoids re-reading agent config files on every request.
+type UpstreamCache = std::collections::HashMap<String, Option<String>>;
+static UPSTREAM_CACHE: OnceLock<Mutex<(UpstreamCache, Instant)>> = OnceLock::new();
+const UPSTREAM_CACHE_TTL: Duration = Duration::from_secs(30);
+
+fn get_upstream_cache() -> &'static Mutex<(UpstreamCache, Instant)> {
+    UPSTREAM_CACHE.get_or_init(|| Mutex::new((std::collections::HashMap::new(), Instant::now())))
+}
+
+fn cached_discover(auth_key: &str) -> Option<String> {
+    let mut guard = get_upstream_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let (cache, last_refresh) = &mut *guard;
+    // If cache is stale, clear it (configs may have changed)
+    if last_refresh.elapsed() > UPSTREAM_CACHE_TTL {
+        cache.clear();
+        *last_refresh = Instant::now();
+    }
+    if let Some(cached) = cache.get(auth_key) {
+        return cached.clone();
+    }
+    let result = discover_upstream_uncached(auth_key);
+    cache.insert(auth_key.to_string(), result.clone());
+    result
+}
 
 /// Discover upstream URL for an auth key by scanning all known agent configs.
 pub fn discover_upstream(auth_key: &str) -> Option<String> {
+    cached_discover(auth_key)
+}
+
+fn discover_upstream_uncached(auth_key: &str) -> Option<String> {
     // 1. Local proxy-routes.json (explicit user override, highest priority)
     if let Some(url) = scan_proxy_routes(auth_key) {
         return Some(url);
@@ -143,9 +176,10 @@ fn scan_pi_configs(auth_key: &str) -> Option<String> {
 /// Handles: /v1/openai, /openai/v1, bare host, /v1, /v1/chat/completions, etc.
 fn normalize_url(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
-    if trimmed.ends_with("/chat/completions") || trimmed.ends_with("/v1/messages") || trimmed.contains("/v1/messages") {
+    if trimmed.ends_with("/chat/completions") || trimmed.ends_with("/v1/messages") {
         trimmed.to_string()
-    } else if trimmed.starts_with("https://api.anthropic.com") || trimmed.contains("anthropic") {
+    } else if is_anthropic_host(trimmed) {
+        // Only treat as Anthropic if the URL host literally contains "anthropic".
         if trimmed.ends_with("/v1") {
             format!("{}/messages", trimmed)
         } else {
@@ -158,6 +192,48 @@ fn normalize_url(base_url: &str) -> String {
         format!("{}/chat/completions", trimmed)
     } else {
         format!("{}/v1/chat/completions", trimmed)
+    }
+}
+
+// Returns true only if the URL host literally contains "anthropic" — not
+// arbitrary substrings in the path that happen to include the word.
+fn is_anthropic_host(url: &str) -> bool {
+    is_anthropic_host_inner(url)
+}
+
+fn is_anthropic_host_inner(url: &str) -> bool {
+    // Parse scheme://host[:port][/path]
+    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let host_port = after_scheme.split('/').next().unwrap_or("");
+    // Strip userinfo and port: keep only the bare hostname.
+    let host = host_port.rsplit('@').next().unwrap_or(host_port);
+    let bare_host = host.split(':').next().unwrap_or(host);
+    bare_host.contains("anthropic")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_anthropic_host_real_anthropic() {
+        assert!(is_anthropic_host_inner("https://api.anthropic.com"));
+        assert!(is_anthropic_host_inner("https://api.anthropic.com/v1"));
+        assert!(is_anthropic_host_inner("http://anthropic-proxy.internal:8080"));
+    }
+
+    #[test]
+    fn test_is_anthropic_host_path_only_false_positive() {
+        // Substring "anthropic" only in path, not in host
+        assert!(!is_anthropic_host_inner("https://api.openai.com/v1/anthropic-proxy/chat"));
+        assert!(!is_anthropic_host_inner("https://example.com/anthropic-format"));
+    }
+
+    #[test]
+    fn test_is_anthropic_host_openai() {
+        assert!(!is_anthropic_host_inner("https://api.openai.com"));
+        assert!(!is_anthropic_host_inner("https://api.deepseek.com"));
+        assert!(!is_anthropic_host_inner("https://api.deepinfra.com/v1"));
     }
 }
 
@@ -181,6 +257,7 @@ fn opencode_config_path() -> Option<PathBuf> {
     }
 }
 
+#[allow(clippy::items_after_test_module)]
 fn home_dir() -> PathBuf {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))

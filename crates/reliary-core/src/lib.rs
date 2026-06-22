@@ -2,11 +2,13 @@
 mod session;
 mod state_block;
 mod ingest;
+mod fs_safe;
 use std::collections::HashMap;
 
 pub use session::*;
 pub use state_block::*;
 pub use ingest::*;
+pub use fs_safe::*;
 
 #[derive(Debug, Clone)]
 pub struct Session {

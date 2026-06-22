@@ -39,6 +39,9 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
             .map(|e| e.path().to_path_buf())
             .filter(|fp| {
                 let ext = fp.extension().and_then(|e| e.to_str()).unwrap_or("");
+                // Intentionally restricted to common code extensions for
+                // performance (runs every 120s background). Uses inline match
+                // rather than SUPPORTED_EXTS to avoid scanning config/md/yaml.
                 matches!(ext, "py" | "rs" | "js")
             })
             .collect();
@@ -69,6 +72,15 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
             rusqlite::params![cutoff],
         );
 
+        // Bug 50: cap edit_cache at 10K rows. Delete oldest excess to bound
+        // table size for long-running daemons with many edits.
+        let _ = chronicle_db.execute(
+            "DELETE FROM edit_cache WHERE rowid IN (
+                SELECT rowid FROM edit_cache ORDER BY timestamp DESC LIMIT -1 OFFSET 10000
+            )",
+            [],
+        );
+
         // WSL2 drvfs detection: skip heal subprocess (cargo test) on /mnt/ paths
         let on_drvfs = workdir.starts_with("/mnt/");
 
@@ -77,6 +89,11 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
             if c.confidence != reliary_dead::Confidence::High { continue; }
             let recent = chronicle::recent_events(&chronicle_db, &c.file, 24);
             if recent.iter().any(|e| e.event == "scavenge" && e.detail.contains(&c.name)) { continue; }
+            if let Ok(meta) = std::fs::metadata(&c.file) {
+                if meta.len() > 10_000_000 {
+                    continue; // skip files > 10MB
+                }
+            }
             if let Ok(content) = std::fs::read_to_string(&c.file) {
                 let fixes = vec![(c.name.clone(), String::new())];
                 let (modified, count) = reliary_fix::apply_fixes(&content, &fixes);
@@ -88,7 +105,9 @@ pub fn scavenger_loop(state: Arc<SessionState>) {
                     };
                     match result {
                         Ok(()) => {
-                            let _ = std::fs::write(&c.file, &modified);
+                            if let Err(e) = crate::heal::atomic_write(&c.file, &modified) {
+                                eprintln!("[reliary] scavenger: atomic write failed for {}: {} — file may be corrupted", c.file, e);
+                            }
                             chronicle::append(&chronicle_db, "scavenge", &c.file, &c.name, "removed");
                             eprintln!("[reliary] scavenger: removed {} from {}", c.name, c.file);
                         }
