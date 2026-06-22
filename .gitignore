@@ -1,5 +1,9 @@
 target/
 .reliary/
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
 *.bak
 *.perf
 *.old

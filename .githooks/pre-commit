@@ -81,6 +81,14 @@ if [ -n "$stale" ]; then
     exit 1
 fi
 
+# 8b. Block SQLite runtime database files (they get rebuilt by the daemon)
+sqlite_staged=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null | grep -E '\.sqlite(-journal|-shm|-wal)?$' || true)
+if [ -n "$sqlite_staged" ]; then
+    echo "FAIL: SQLite runtime DBs must not be committed (daemon rebuilds them):"
+    echo "$sqlite_staged"
+    exit 1
+fi
+
 # 9. shellcheck (lint shell scripts)
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck scripts/*.sh 2>/dev/null || {
