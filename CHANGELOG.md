@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.6.7
+
+### Bug fixes
+
+- **SQL syntax fix in `read_summary.rs`**: Added missing `LIMIT 200` to phrases_fts query. `load_dictionary()` was returning the full dictionary instead of capping at 200 phrases. Project-symbol compression now works correctly.
+- **GUARD_CACHE has real TTL and cap**: Previously the constant was defined but not used; now `GUARD_CACHE_TTL` (60s) and `GUARD_CACHE_MAX` (500) bound memory and evict stale entries.
+- **CACHE_FEEDBACK outer map bounded**: Each new auth_key now evicts the oldest entry when the cap (32) is reached. Was unbounded before.
+- **PER_KEY_STATE outer map bounded**: Per-auth-key state map now caps at 32 entries; content_cache inside each PerKeyState is still capped at 200.
+- **Guard no longer fires on prose mentions of "edit"**: Removed the `content.contains("edit")` heuristic. Guard now only fires on actual `tool_calls` array entries (edit/write/sed/apply-edit/create). Eliminates false-positive warnings when LLM discusses editing in prose.
+- **Anti-decision env var compatibility**: Now reads both `RELIARY_PROXY_FEATURE_ANTI=1` (opt-in) and `RELIARY_PROXY_ANTI_DISABLE=1` (legacy opt-out from docs). Either variable enables/disables the feature consistently.
+- **Response cache preserves metric headers**: `RESPONSE_CACHE` now stores `(body, headers)` tuples; cached hits replay `x-reliaty-*` headers so cache hits don't lose compression metrics.
+- **GATE_VERSION bumped to 0.6.7**: gate.js was reporting v0.6.5 — now matches workspace.
+- **Anthropic /v1/messages gets a 501**: Detects Anthropic-format payloads (top-level `system` string + message content arrays) and returns `501 Not Implemented` with a clear error message instead of silently mangling the request. Removes a silent-failure footgun.
+- **Synced embedded gate.js copy**: The crate copy at `crates/reliary-agent/pi/gate.js` was the corrupted version; synced from canonical `pi/gate.js`.
+
 ## v0.6.6
 
 ### Compression Ceiling Breakthrough
