@@ -9,7 +9,7 @@ Conditions:
   passthrough  - Proxy enabled but RELIARY_PROXY_PASSTHROUGH=1 disables compression.
 
 Scoring: exact match on function name + JSON-equivalent arguments.
-Pass criteria: recommended accuracy >= 95% of baseline (Headroom's 97% target).
+Pass criteria: recommended accuracy >= 95% of baseline (97% retention target).
 
 Usage: python3 bench_bfcl.py [--runs N] [--samples N]
 """

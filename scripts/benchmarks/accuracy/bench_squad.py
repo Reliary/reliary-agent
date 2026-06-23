@@ -9,7 +9,7 @@ Conditions:
   passthrough  - Proxy enabled but RELIARY_PROXY_PASSTHROUGH=1 disables compression.
 
 Scoring: standard SQuAD metrics — F1 (token overlap) + exact match.
-Pass criteria: recommended F1 >= 95% of baseline (Headroom's 97% target).
+Pass criteria: recommended F1 >= 95% of baseline (97% retention target).
 
 Usage: python3 bench_squad.py [--runs N] [--samples N]
 """

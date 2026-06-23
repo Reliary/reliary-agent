@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.6.12
+
+### Bug A + Bug B — proxy + tool flow fixes
+
+#### Bug A: Dedup removes tool messages with collapsed content
+- The dedup step iterates all messages and removes duplicates by `(role, content)` hash
+- When the context filter collapses old tool results to `[tool result: N chars — collapsed]`, all collapsed messages share the same content
+- Dedup then removes all but one, breaking the assistant:tool_call ratio
+- Upstream rejects with `400: insufficient tool messages following tool_calls`
+- **Fix**: Skip tool/toolResult messages in dedup. They are identified by `tool_call_id`, not content
+- **Test**: `dedup_keeps_tool_messages_with_identical_content` — 5 tool messages with identical content but different `tool_call_id` all survive
+- **Guardrail**: `dedup-must-skip-tool` — detects any future dedup that doesn't skip tool messages
+
+#### Bug B: SSE "Stream ended without finish_reason" edge cases
+- The proxy's rolling tail (1024 bytes) could miss `finish_reason` JSON split across large chunks
+- The synthetic finish chunk didn't include `data: [DONE]` terminator that Pi's parser expects
+- DeepSeek uses `finish_reason: "tool_calls"` for some responses, not just "stop" or "length"
+- **Fix 1**: Increase rolling tail from 1024 to 8192 bytes
+- **Fix 2**: Detect `finish_reason: "tool_calls"` in addition to "stop" and "length"
+- **Fix 3**: Append `data: [DONE]` to synthetic chunk
+- **Guardrail**: `sse-finish-injection` — detects synthetic SSE chunks missing `[DONE]`
+
+#### Bench results (bench_rename.py, 4 conditions × 3 runs × 10 turns)
+
+| Condition | PT | CT | WC | WT | Acc | Δ% |
+|---|---|---|---|---|---|---|
+| baseline | 6,856 | 10,144 | 27,145 | 124s | **3/3** | — |
+| gate-only | 7,579 | 9,764 | 27,109 | 119s | **3/3** | -0.1% |
+| recommended | 19,867 | 19,985 | 59,838 | 281s | **3/3** | +120% |
+| existing-cc | 16,753 | 16,840 | 50,435 | 219s | **3/3** | +85% |
+
+**Key finding**: All 4 conditions now achieve 3/3 accuracy. The bug fixes preserve correctness. Proxy overhead exceeds compression savings on 10-turn sessions — proxy value is on 20+ turn sessions with accumulated context.
+
+#### Tests
+- **90 unit tests passing** (5 proxy tests including new dedup regression)
+- **16/16 guardrails passing** (2 new: dedup-must-skip-tool, sse-finish-injection)
+- `cargo clippy --all-targets -- -D warnings`: clean
+
 ## v0.6.11
 
 ### Deep audit — 20 fixes + 2 guardrails + dict refresh + dead code strip

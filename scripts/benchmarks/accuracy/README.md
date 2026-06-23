@@ -2,7 +2,7 @@
 
 These benchmarks measure whether compression preserves reading comprehension and
 tool-calling accuracy. The pass criterion is **F1 retention ≥ 95%** of baseline —
-matching Headroom's published 97% target.
+matching a 97% compression retention target.
 
 ## SQuAD v2 — Reading Comprehension
 

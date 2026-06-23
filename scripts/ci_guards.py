@@ -573,6 +573,89 @@ def check_lazy_lock_drop_safety(files: List[str]) -> List[Violation]:
     return violations
 
 
+def check_dedup_skips_tool(files: List[str]) -> List[Violation]:
+    """Rule 15: Bug A — any message-dedup logic MUST skip tool/toolResult
+    messages. They are identified by tool_call_id, not content. Deduping
+    identical-content tool messages orphans the assistant's tool_calls and
+    causes upstream 400 "insufficient tool messages following tool_calls".
+    """
+    violations = []
+    for path in files:
+        if 'proxy.rs' not in path:
+            continue
+        with open(path) as f:
+            content = f.read()
+            lines = content.splitlines()
+        # Look for any dedup function that iterates messages without a tool-skip
+        # Heuristic: a function with "dedup" in name + a for-loop over messages
+        # that doesn't have `role == "tool"` skip check
+        for i, line in enumerate(lines, 1):
+            if 'fn ' not in line or 'dedup' not in line.lower():
+                continue
+            # Get function body
+            body_start = i
+            body_end = i + 1
+            depth = 0
+            for j in range(i, min(i + 60, len(lines))):
+                body_end = j + 1
+                if '{' in lines[j]:
+                    depth += lines[j].count('{')
+                if '}' in lines[j]:
+                    depth -= lines[j].count('}')
+                if depth == 0 and j > i:
+                    break
+            body = '\n'.join(lines[body_start:body_end])
+            # Check for tool-skip within body
+            if 'role == "tool"' in body or 'role == "toolResult"' in body or 'tool_call_id' in body:
+                continue
+            # Check for messages iteration in body
+            if 'messages.iter' in body or 'messages.iter_mut' in body:
+                if 'seen' in body or 'HashSet' in body or 'to_remove' in body:
+                    violations.append(Violation(
+                        'dedup-must-skip-tool',
+                        path, i,
+                        f"dedup function '{line.strip()}' iterates messages but does NOT "
+                        "skip tool/toolResult messages. This orphans assistant tool_calls "
+                        "when context-filter collapsed tool results share content. "
+                        "Add: if role == \"tool\" || role == \"toolResult\" { continue; }",
+                        severity="error"
+                    ))
+    return violations
+
+
+def check_sse_finish_injection(files: List[str]) -> List[Violation]:
+    """Rule 16: Bug B — synthetic SSE finish_reason chunks MUST include the
+    `data: [DONE]` terminator. Pi's SSE parser expects the standard OpenAI
+    `[DONE]` marker after the final chunk. Without it, Pi reports
+    "Stream ended without finish_reason" on edge cases.
+    """
+    violations = []
+    for path in files:
+        if 'proxy.rs' not in path:
+            continue
+        with open(path) as f:
+            content = f.read()
+        # Find the synthetic finish chunk injection
+        if 'synthetic' in content and 'finish_reason' in content:
+            # Find the synthetic block
+            idx = content.find('synthetic')
+            # Look for [DONE] in same or nearby block
+            block_end = min(idx + 1000, len(content))
+            block = content[max(0, idx-500):block_end]
+            # Check if [DONE] is in the synthetic block
+            if 'data: [DONE]' not in block and 'synthetic' in block:
+                # Find line number
+                line_num = content[:idx].count('\n') + 1
+                violations.append(Violation(
+                    'sse-finish-injection',
+                    path, line_num,
+                    "synthetic SSE finish_reason chunk missing 'data: [DONE]' "
+                    "terminator. Pi's parser fails without it.",
+                    severity="error"
+                ))
+    return violations
+
+
 def main():
     staged = '--staged' in sys.argv
     verbose = '--verbose' in sys.argv
@@ -600,6 +683,8 @@ def main():
         ('lock-during-io', check_lock_during_io),
         ('mcp-path-traversal', check_mcp_path_traversal),
         ('lazy-lock-drop', check_lazy_lock_drop_safety),
+        ('dedup-must-skip-tool', check_dedup_skips_tool),
+        ('sse-finish-injection', check_sse_finish_injection),
     ]
     for rule_name, check_fn in checks:
         violations = check_fn(files)

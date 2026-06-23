@@ -1160,27 +1160,12 @@ async fn proxy_post(
     }
 
     // Dedup identical messages (catches agent duplication bugs)
-    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
-        let mut seen: rustc_hash::FxHashSet<u64> = rustc_hash::FxHashSet::default();
-        let mut to_remove: Vec<usize> = Vec::new();
-        for (i, msg) in messages.iter().enumerate() {
-            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-            let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-            if role.is_empty() || content.is_empty() { continue; }
-            let mut h = rustc_hash::FxHasher::default();
-            role.hash(&mut h);
-            content.hash(&mut h);
-            let key = h.finish();
-            if seen.contains(&key) {
-                to_remove.push(i);
-            } else {
-                seen.insert(key);
-            }
-        }
-        for i in to_remove.iter().rev() {
-            messages.remove(*i);
-        }
-    }
+    // Bug A: skip tool messages — they're identified by tool_call_id, not content.
+    // Multiple tool messages with the same content (e.g. context-filter collapsed
+    // results) but different tool_call_ids are distinct and MUST all be forwarded,
+    // otherwise the assistant's tool_calls have insufficient responses and the
+    // upstream rejects with 400 "insufficient tool messages following tool_calls".
+    dedup_identical_messages(&mut payload);
 
     // System prompt stripping: on turn 2+, replace system prompt with cached marker.
     // Providers KV-cache the system prompt after turn 1. Stripping saves ~1000+ tokens/turn.
@@ -1286,7 +1271,9 @@ async fn proxy_post(
                     // Accumulate a rolling tail buffer to detect finish_reason that spans
                     // chunk boundaries. Many SSE chunkers split the JSON literal across
                     // chunks so a single-chunk window check is unreliable.
-                    let mut rolling_tail: Vec<u8> = Vec::with_capacity(4096);
+                    // Bug B fix: increased from 4096 to 8192 — finish_reason JSON with
+                    // many tool_calls + arguments can exceed 4KB.
+                    let mut rolling_tail: Vec<u8> = Vec::with_capacity(8192);
                     // Bug 56: debounce prefetch — accumulate chunks, flush every 32KB or on stream end
                     let mut pf_buffer = String::new();
                     const PF_FLUSH_BYTES: usize = 32_768;
@@ -1308,19 +1295,22 @@ async fn proxy_post(
                                     last_chunk_with_usage = chunk_str.to_string();
                                 }
                                 total_bytes.extend_from_slice(&chunk);
-                                // Update rolling tail (last 1024 bytes is enough for finish_reason)
+                                // Update rolling tail (last 8192 bytes is enough for finish_reason)
                                 rolling_tail.extend_from_slice(&chunk);
-                                if rolling_tail.len() > 1024 {
-                                    let drop = rolling_tail.len() - 1024;
+                                if rolling_tail.len() > 8192 {
+                                    let drop = rolling_tail.len() - 8192;
                                     rolling_tail.drain(..drop);
                                 }
 
                                 // Detect finish_reason across chunk boundaries using the
                                 // accumulated tail. The previous per-chunk 20-byte window
                                 // missed finish_reason split across chunks in samples 1, 2.
+                                // Bug B fix: also detect "tool_calls" finish_reason that
+                                // DeepSeek uses when the model wants to invoke more tools.
                                 let tail_str = String::from_utf8_lossy(&rolling_tail);
                                 if !finish_sent && (tail_str.contains("\"finish_reason\":\"stop\"")
-                                    || tail_str.contains("\"finish_reason\":\"length\""))
+                                    || tail_str.contains("\"finish_reason\":\"length\"")
+                                    || tail_str.contains("\"finish_reason\":\"tool_calls\""))
                                 {
                                     finish_sent = true;
                                 }
@@ -1349,8 +1339,15 @@ async fn proxy_post(
                     // synthetic finish chunk so Pi's parser doesn't fail with
                     // "Stream ended without finish_reason". This is the canonical fix
                     // for the v0.6.x stream-ended bug.
+                    // Bug B fix: also send `data: [DONE]` terminator that Pi's SSE parser
+                    // expects. The previous version sent only the synthetic chunk but
+                    // not the [DONE] marker, causing Pi to still report stream-ended errors
+                    // on edge cases (split JSON, large tool_calls arrays).
                     if !finish_sent {
-                        let synthetic = Bytes::from_static(b"data: {\"id\":\"synthetic\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"reliary-synthetic\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n");
+                        let synthetic = Bytes::from_static(
+                            b"data: {\"id\":\"synthetic\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"reliary-synthetic\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+                              data: [DONE]\n\n"
+                        );
                         let _ = tx.send(Ok(synthetic)).await;
                     }
                     // Channel drop signals stream end to axum
@@ -1691,6 +1688,34 @@ pub async fn start(port: u16, daemon_state: Option<Arc<crate::session_state::Ses
         .map_err(|e| format!("serve: {}", e))
 }
 
+/// Bug A: dedup identical messages. Tool/toolResult messages are identified by
+/// tool_call_id, not content — skip them to avoid orphaning tool_calls when
+/// context-filter collapse produced identical content for multiple tool results.
+pub(crate) fn dedup_identical_messages(payload: &mut Value) {
+    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        let mut seen: rustc_hash::FxHashSet<u64> = rustc_hash::FxHashSet::default();
+        let mut to_remove: Vec<usize> = Vec::new();
+        for (i, msg) in messages.iter().enumerate() {
+            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            if role == "tool" || role == "toolResult" { continue; }  // Bug A fix
+            let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            if role.is_empty() || content.is_empty() { continue; }
+            let mut h = rustc_hash::FxHasher::default();
+            role.hash(&mut h);
+            content.hash(&mut h);
+            let key = h.finish();
+            if seen.contains(&key) {
+                to_remove.push(i);
+            } else {
+                seen.insert(key);
+            }
+        }
+        for i in to_remove.iter().rev() {
+            messages.remove(*i);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1774,5 +1799,36 @@ mod tests {
         sanitize_malformed_messages(&mut payload);
         let msgs = payload["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 2, "final empty assistant preserved");
+    }
+
+    // Bug A regression test: dedup MUST NOT remove tool messages even if their
+    // content is identical. Tool messages are identified by tool_call_id, and
+    // an assistant's tool_calls array expects a 1:1 response. Removing tool
+    // messages that happen to share collapsed content causes upstream 400s.
+    #[test]
+    fn dedup_keeps_tool_messages_with_identical_content() {
+        // 5 tool messages with the SAME content (e.g. context-filter collapsed)
+        // but different tool_call_ids. All must survive.
+        let mut payload = json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+                    {"id": "c2", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+                    {"id": "c3", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+                    {"id": "c4", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+                    {"id": "c5", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+                ]},
+                {"role": "tool", "tool_call_id": "c1", "content": "[tool result: 100 chars — collapsed]"},
+                {"role": "tool", "tool_call_id": "c2", "content": "[tool result: 100 chars — collapsed]"},
+                {"role": "tool", "tool_call_id": "c3", "content": "[tool result: 100 chars — collapsed]"},
+                {"role": "tool", "tool_call_id": "c4", "content": "[tool result: 100 chars — collapsed]"},
+                {"role": "tool", "tool_call_id": "c5", "content": "[tool result: 100 chars — collapsed]"},
+            ]
+        });
+        dedup_identical_messages(&mut payload);
+        let msgs = payload["messages"].as_array().unwrap();
+        let tool_count = msgs.iter().filter(|m| m["role"] == "tool").count();
+        assert_eq!(tool_count, 5, "all 5 tool messages must survive dedup, got {}", tool_count);
     }
 }

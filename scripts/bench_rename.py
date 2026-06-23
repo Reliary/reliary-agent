@@ -204,7 +204,7 @@ def run_condition(cond, run_idx):
         r = subprocess.run(
             [PI, "--model", "deepseek/deepseek-v4-flash",
              "--mode", "json", "--session", sfile, "--print", prompt],
-            capture_output=True, text=True, timeout=600, env=env, cwd=REPO)
+            capture_output=True, text=True, timeout=1200, env=env, cwd=REPO)
         wt = time.time() - t0
         pt, ct, tc = parse_usage(r.stdout)
         total_pt += pt
