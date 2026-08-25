@@ -1,0 +1,16 @@
+{
+  "entry": ["src/index.ts"],
+  "format": ["esm"],
+  "target": "node18",
+  "platform": "node",
+  "outDir": "dist",
+  "clean": true,
+  "minify": false,
+  "treeshake": false,
+  "split": false,
+  "dts": false,
+  "external": ["@opencode-ai/plugin"],
+  "footer": {
+    "js": "// reliary-opencode-plugin built by tsup"
+  }
+}

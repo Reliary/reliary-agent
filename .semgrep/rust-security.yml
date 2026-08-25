@@ -1,0 +1,53 @@
+rules:
+  - id: ban-unwrap-in-production
+    message: ".unwrap() may panic. Use unwrap_or_else or match."
+    severity: WARNING
+    languages: [rust]
+    patterns:
+      - pattern: "$X.unwrap()"
+      - pattern-not-inside: "#[cfg(test)]"
+    paths:
+      include:
+        - "crates/*/src/*.rs"
+
+  - id: ban-expect-in-production
+    message: ".expect() may panic. Use proper error handling."
+    severity: WARNING
+    languages: [rust]
+    patterns:
+      - pattern: "$X.expect(...)"
+      - pattern-not-inside: "#[cfg(test)]"
+    paths:
+      include:
+        - "crates/*/src/*.rs"
+
+  - id: ban-process-exit
+    message: "process::exit() should only be in main.rs dispatch"
+    severity: ERROR
+    languages: [rust]
+    patterns:
+      - pattern: "std::process::exit(...)"
+      - pattern-not: |
+          fn main()
+
+  - id: ban-unsafe-block
+    message: "unsafe block violates #![forbid(unsafe_code)] policy"
+    severity: ERROR
+    languages: [rust]
+    pattern: |
+      unsafe { ... }
+
+  - id: ban-hardcoded-secrets
+    message: "Possible hardcoded credential or API key"
+    severity: ERROR
+    languages: [rust]
+    regex: (?i)(api[_-]?key|token|secret|password|credential)\s*[:=]\s*"[^"]{8,}"
+
+  - id: ban-debug-format-on-sensitive
+    message: "Avoid Debug format on types that may contain sensitive data"
+    severity: WARNING
+    languages: [rust]
+    patterns:
+      - pattern-either:
+          - pattern: "dbg!($X)"
+          - pattern: "{:#?}"

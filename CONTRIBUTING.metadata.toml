@@ -1,0 +1,14 @@
+title = "Reliary"
+version = "0.8.0"
+authors = ["Reliary contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Reliary/reliary-agent"
+description = "Grammar-free symbol intelligence for AI coding agents"
+keywords = ["symbol", "indexing", "mcp", "ai", "agents", "code-search"]
+categories = ["command-line-utilities", "development-tools", "database"]
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

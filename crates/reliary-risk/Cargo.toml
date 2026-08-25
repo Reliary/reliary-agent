@@ -1,0 +1,10 @@
+[package]
+name = "reliary-risk"
+version.workspace = true
+edition = "2021"
+description.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+homepage = "https://github.com/Reliary/reliary-agent"
+[dependencies]

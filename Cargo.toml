@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/reliary-core",
+    "crates/reliary-search",
+    "crates/reliary-compress",
+    "crates/reliary-sift",
+    "crates/reliary-risk",
+    "crates/reliary-memory",
+    "crates/reliary-fix",
+    "crates/reliary-dead",
+    "crates/reliary-output",
+    "crates/reliary-edit",
+    "crates/reliary-pack",
+    "crates/reliary-agent",
+]
+
+[workspace.package]
+version = "0.8.0"
+edition = "2021"
+description = "Grammar-free symbol intelligence for all coding agents."
+license = "MIT"
+repository = "https://github.com/Reliary/reliary-agent"
+readme = "README.md"
+
+[workspace.dependencies]
+reliary-core = { version = "0.8", path = "crates/reliary-core" }
+reliary-search = { version = "0.8", path = "crates/reliary-search" }
+reliary-compress = { version = "0.8", path = "crates/reliary-compress" }
+reliary-sift = { version = "0.8", path = "crates/reliary-sift" }
+reliary-risk = { version = "0.8", path = "crates/reliary-risk" }
+reliary-memory = { version = "0.8", path = "crates/reliary-memory" }
+reliary-fix = { version = "0.8", path = "crates/reliary-fix" }
+reliary-dead = { version = "0.8", path = "crates/reliary-dead" }
+reliary-output = { version = "0.8", path = "crates/reliary-output" }
+reliary-edit = { version = "0.8", path = "crates/reliary-edit" }
+reliary-pack = { version = "0.8", path = "crates/reliary-pack" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+opt-level = 3

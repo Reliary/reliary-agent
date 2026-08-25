@@ -1,0 +1,163 @@
+{
+  "bench": "bench_homonyms",
+  "corpus": "/tmp/tokio-corpus/tokio/src",
+  "n_anchors": 25,
+  "thresholds": {
+    "0.3": {
+      "median_mAP": 0.9094,
+      "median_NDCG10": 1.0,
+      "median_P5": 1.0,
+      "mean_mAP": 0.8025,
+      "mean_NDCG10": 0.803,
+      "mean_P5": 0.7571,
+      "total_hits": 3350,
+      "total_correct": 1510,
+      "n_anchors": 14,
+      "per_anchor": [
+        {
+          "mAP": 0.8802,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 1052,
+          "correct": 612,
+          "anchor_id": "hom-51",
+          "stem": "fmt",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.8824,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 1052,
+          "correct": 612,
+          "anchor_id": "hom-52",
+          "stem": "fmt",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9803,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 90,
+          "correct": 42,
+          "anchor_id": "hom-53",
+          "stem": "poll_write",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9616,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 90,
+          "correct": 42,
+          "anchor_id": "hom-54",
+          "stem": "poll_write",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9616,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 87,
+          "correct": 34,
+          "anchor_id": "hom-55",
+          "stem": "poll_read",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9094,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 87,
+          "correct": 34,
+          "anchor_id": "hom-56",
+          "stem": "poll_read",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9214,
+          "ndcg10": 0.9306,
+          "p5": 1.0,
+          "count": 97,
+          "correct": 24,
+          "anchor_id": "hom-58",
+          "stem": "as_raw_fd",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.7913,
+          "ndcg10": 0.7511,
+          "p5": 0.6,
+          "count": 97,
+          "correct": 24,
+          "anchor_id": "hom-59",
+          "stem": "as_raw_fd",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9398,
+          "ndcg10": 0.9266,
+          "p5": 1.0,
+          "count": 29,
+          "correct": 18,
+          "anchor_id": "hom-60",
+          "stem": "as_fd",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9527,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 29,
+          "correct": 18,
+          "anchor_id": "hom-61",
+          "stem": "as_fd",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.4135,
+          "ndcg10": 0.2941,
+          "p5": 0.2,
+          "count": 246,
+          "correct": 20,
+          "anchor_id": "hom-62",
+          "stem": "park",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.5476,
+          "ndcg10": 0.6131,
+          "p5": 0.2,
+          "count": 190,
+          "correct": 2,
+          "anchor_id": "hom-63",
+          "stem": "park",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.7639,
+          "ndcg10": 0.7264,
+          "p5": 0.6,
+          "count": 149,
+          "correct": 14,
+          "anchor_id": "hom-66",
+          "stem": "close",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3295,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 55,
+          "correct": 14,
+          "anchor_id": "hom-68",
+          "stem": "get_mut",
+          "anchor_label": "function_def"
+        }
+      ]
+    }
+  },
+  "recommended_threshold": 0.3,
+  "pass": true,
+  "generated_at": "2026-06-28T20:25:28.582210+00:00"
+}

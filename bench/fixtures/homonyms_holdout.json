@@ -1,0 +1,251 @@
+{
+  "_instructions": {
+    "what_this_is": "HOLD-OUT set of 25 anchors for the arc-4 hybrid. Different stems than the original 50, used to validate generalization. Labels assigned by source inspection.",
+    "use_labels": [
+      "field_access",
+      "method_call",
+      "local_var",
+      "param",
+      "module_name",
+      "type_name",
+      "function_def",
+      "import_or_use"
+    ],
+    "labeled_at": "2026-06-27T19:00:00Z",
+    "labeler": "reliary (hold-out)"
+  },
+  "corpus": "/tmp/tokio-corpus/tokio/src",
+  "anchors": [
+    {
+      "id": "hom-51",
+      "stem": "fmt",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/blocking.rs",
+      "anchor_line": 56,
+      "use_label": "function_def",
+      "notes": "fn fmt(&self, fmt: &mut fmt::Formatter<'_>) \u2014 Debug impl"
+    },
+    {
+      "id": "hom-52",
+      "stem": "fmt",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/task/join_set.rs",
+      "anchor_line": 598,
+      "use_label": "function_def",
+      "notes": "fn fmt(&self, f: &mut fmt::Formatter<'_>) \u2014 Debug impl"
+    },
+    {
+      "id": "hom-53",
+      "stem": "poll_write",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/fs/file.rs",
+      "anchor_line": 728,
+      "use_label": "function_def",
+      "notes": "fn poll_write \u2014 AsyncWrite impl"
+    },
+    {
+      "id": "hom-54",
+      "stem": "poll_write",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/net/tcp/split.rs",
+      "anchor_line": 381,
+      "use_label": "function_def",
+      "notes": "fn poll_write \u2014 AsyncWrite impl"
+    },
+    {
+      "id": "hom-55",
+      "stem": "poll_read",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/fs/file.rs",
+      "anchor_line": 597,
+      "use_label": "function_def",
+      "notes": "fn poll_read \u2014 AsyncRead impl"
+    },
+    {
+      "id": "hom-56",
+      "stem": "poll_read",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/net/tcp/split.rs",
+      "anchor_line": 371,
+      "use_label": "function_def",
+      "notes": "fn poll_read \u2014 AsyncRead impl"
+    },
+    {
+      "id": "hom-57",
+      "stem": "poll_shutdown",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/io/async_write.rs",
+      "anchor_line": 127,
+      "use_label": "function_def",
+      "notes": "fn poll_shutdown \u2014 AsyncWrite trait method decl",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line 127 is inside a `/// # Panics` doc comment. Trait declaration poll_shutdown(...) is on line 129 but its body is `;` (no impl body)."
+    },
+    {
+      "id": "hom-58",
+      "stem": "as_raw_fd",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/net/tcp/listener.rs",
+      "anchor_line": 413,
+      "use_label": "function_def",
+      "notes": "fn as_raw_fd \u2014 AsRawFd impl"
+    },
+    {
+      "id": "hom-59",
+      "stem": "as_raw_fd",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/fs/file.rs",
+      "anchor_line": 902,
+      "use_label": "function_def",
+      "notes": "fn as_raw_fd \u2014 AsRawFd impl"
+    },
+    {
+      "id": "hom-60",
+      "stem": "as_fd",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/net/tcp/listener.rs",
+      "anchor_line": 419,
+      "use_label": "function_def",
+      "notes": "fn as_fd \u2014 AsFd impl"
+    },
+    {
+      "id": "hom-61",
+      "stem": "as_fd",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/fs/file.rs",
+      "anchor_line": 909,
+      "use_label": "function_def",
+      "notes": "fn as_fd \u2014 AsFd impl"
+    },
+    {
+      "id": "hom-62",
+      "stem": "park",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/current_thread/mod.rs",
+      "anchor_line": 410,
+      "use_label": "function_def",
+      "notes": "fn park(&self, mut core: Box<Core>, handle: &Handle) \u2014 worker park"
+    },
+    {
+      "id": "hom-63",
+      "stem": "park",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/chan.rs",
+      "anchor_line": 469,
+      "use_label": "method_call",
+      "notes": "park.park() \u2014 calling park on a park instance"
+    },
+    {
+      "id": "hom-64",
+      "stem": "local_addr",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/net/tcp/listener.rs",
+      "anchor_line": 332,
+      "use_label": "method_call",
+      "notes": "listener.local_addr() \u2014 doc example method call",
+      "original_anchor_line": 326,
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line is a function definition, not method_call. Original line was doc comment."
+    },
+    {
+      "id": "hom-65",
+      "stem": "wake",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/util/wake.rs",
+      "anchor_line": 11,
+      "use_label": "function_def",
+      "notes": "fn wake by_ref \u2014 waker utility",
+      "original_anchor_line": 10,
+      "audit_status": "unbenchable",
+      "audit_reason": "File not in corpus: /tmp/tokio-corpus/tokio/src/runtime/waker.rs"
+    },
+    {
+      "id": "hom-66",
+      "stem": "close",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/semaphore.rs",
+      "anchor_line": 963,
+      "use_label": "function_def",
+      "notes": "fn close \u2014 semaphore close impl",
+      "original_anchor_line": 962,
+      "audit_status": "line_fixed",
+      "audit_reason": "Fixed from line 962 to 963"
+    },
+    {
+      "id": "hom-67",
+      "stem": "close",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/net/tcp/listener.rs",
+      "anchor_line": 401,
+      "use_label": "method_call",
+      "notes": "listener.close() \u2014 close call",
+      "audit_status": "unbenchable",
+      "audit_reason": "No real code line found near anchor"
+    },
+    {
+      "id": "hom-68",
+      "stem": "get_mut",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/time/timeout.rs",
+      "anchor_line": 195,
+      "use_label": "function_def",
+      "notes": "fn get_mut \u2014 timeout getter",
+      "original_anchor_line": 194,
+      "audit_status": "line_fixed",
+      "audit_reason": "Fixed from line 194 to 195"
+    },
+    {
+      "id": "hom-69",
+      "stem": "release",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/semaphore.rs",
+      "anchor_line": 100,
+      "use_label": "function_def",
+      "notes": "fn release \u2014 semaphore release impl",
+      "audit_status": "unbenchable",
+      "audit_reason": "No real code line found near anchor"
+    },
+    {
+      "id": "hom-70",
+      "stem": "release",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/semaphore.rs",
+      "anchor_line": 105,
+      "use_label": "method_call",
+      "notes": "self.permit.release() \u2014 release call",
+      "audit_status": "unbenchable",
+      "audit_reason": "No real code line found near anchor"
+    },
+    {
+      "id": "hom-71",
+      "stem": "pin",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/macros/select.rs",
+      "anchor_line": 230,
+      "use_label": "function_def",
+      "notes": "fn pin \u2014 select macro helper",
+      "audit_status": "unbenchable",
+      "audit_reason": "No real code line found near anchor"
+    },
+    {
+      "id": "hom-72",
+      "stem": "pin",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/pin.rs",
+      "anchor_line": 120,
+      "use_label": "method_call",
+      "notes": "Pin::new().pin() \u2014 pinning call",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line 120 is inside a /// doc comment (///     _ = &mut future2 => {}). Not real code. Also file path mismatch (pin.rs vs macros/pin.rs)."
+    },
+    {
+      "id": "hom-73",
+      "stem": "iter",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/runtime/builder.rs",
+      "anchor_line": 290,
+      "use_label": "method_call",
+      "notes": "vec.iter() \u2014 iterator call",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line 290 is a field initialization `name: None,`, not an iter() call. No iter occurrence near this line."
+    },
+    {
+      "id": "hom-74",
+      "stem": "iter",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/stream/iter.rs",
+      "anchor_line": 50,
+      "use_label": "function_def",
+      "notes": "fn iter \u2014 stream constructor",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line 50 is `}` (end of impl block for Stream). No iter occurrence near this line; labeled \"function_def\" but the actual fn is `poll_next`."
+    },
+    {
+      "id": "hom-75",
+      "stem": "test",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/lib.rs",
+      "anchor_line": 681,
+      "use_label": "import_or_use",
+      "notes": "use test in test macro / module reference",
+      "original_anchor_line": 680,
+      "audit_status": "unbenchable",
+      "audit_reason": "File not in corpus: /tmp/tokio-corpus/tokio/src/sync/tests/loom_mutex.rs"
+    }
+  ]
+}

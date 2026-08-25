@@ -1,0 +1,9 @@
+error[E0432]: unresolved import `foo`
+ --> src/main.rs:1:5
+  |
+1 | use foo::bar;
+  |     ^^^ no `bar` in `foo`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0432`.

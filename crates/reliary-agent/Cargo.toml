@@ -1,0 +1,47 @@
+[package]
+name = "reliary-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Grammar-free symbol intelligence — CLI and MCP server."
+repository.workspace = true
+readme.workspace = true
+homepage = "https://github.com/Reliary/reliary-agent"
+
+[[bin]]
+name = "reliary"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+clap_mangen = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reliary-core = { workspace = true }
+reliary-search = { workspace = true }
+reliary-compress = { workspace = true }
+reliary-sift = { workspace = true }
+reliary-risk = { workspace = true }
+reliary-memory = { workspace = true }
+reliary-fix = { workspace = true }
+reliary-dead = { workspace = true }
+reliary-output = { workspace = true }
+reliary-edit = { workspace = true }
+reliary-pack = { workspace = true }
+rusqlite = { version = "0.31", features = ["bundled"] }
+mimalloc = "0.1"
+regex = "1"
+once_cell = "1"
+regex-lite = "0.1"
+notify = "6"
+rlimit = "0.10"
+getrandom = "0.2"
+dirs = "6.0"
+rustc-hash = "2"
+rayon = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

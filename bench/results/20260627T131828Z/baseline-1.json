@@ -1,0 +1,43 @@
+{
+  "condition": "baseline",
+  "input_tokens": 6096,
+  "output_tokens": 1733,
+  "weighted_cost": 13028,
+  "turns": 5,
+  "wall_time_s": 19.65,
+  "task_pass": true,
+  "turn_log": [
+    {
+      "turn": 0,
+      "pt": 413,
+      "ct": 288,
+      "asst_len": 1251
+    },
+    {
+      "turn": 1,
+      "pt": 722,
+      "ct": 439,
+      "asst_len": 1845
+    },
+    {
+      "turn": 2,
+      "pt": 1179,
+      "ct": 497,
+      "asst_len": 2063
+    },
+    {
+      "turn": 3,
+      "pt": 1692,
+      "ct": 384,
+      "asst_len": 1548
+    },
+    {
+      "turn": 4,
+      "pt": 2090,
+      "ct": 125,
+      "asst_len": 500
+    }
+  ],
+  "model": "deepseek-chat",
+  "timestamp": "2026-06-27T13:19:25.809264Z"
+}

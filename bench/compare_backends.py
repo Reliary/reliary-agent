@@ -1,0 +1,269 @@
+"""Arc 28 Lever 6 — Compare reliary8 vs altbackend-mcp via Pi.
+
+Per WORKFLOW_RULES: interleaved A/B per task to control 2.7× LLM variance.
+
+Conditions:
+- A: Pi with reliary MCP tools (reliary_find_references_type_flow,
+       reliary_query_ast, reliary_search, reliary_brace_graph).
+- B: Pi with altbackend-mcp tools (altbackend_search_graph, altbackend_trace_path,
+       altbackend_search_code, altbackend_get_architecture, altbackend_query_graph,
+       altbackend_get_code_snippet).
+
+For each task:
+1. Run condition A (interleaved with B).
+2. Run condition B.
+3. Compare answers vs ground truth.
+
+Usage:
+  python3 bench/compare_backends.py [--tasks PATH] [--n N] [--model MODEL] [--timeout SECS]
+"""
+import argparse
+import json
+import os
+import random
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from llm_conn import (PI_BIN, PI_SETTINGS, RELIARY_BIN, TOKIO_CORPUS)
+
+RESULTS_DIR = "/home/user/src/reliary8/bench/results"
+RELIARY_EXT = "/home/user/src/reliary8/bench/reliary_mcp_pi_extension.js"
+ALTBACKEND_EXT = "/home/user/src/reliary8/bench/altbackend_pi_extension.js"
+
+
+def set_pi_ext(paths):
+    """Mirror bench_paired.py: mutate ~/.pi/agent/settings.json extensions/packages."""
+    with open(PI_SETTINGS) as f:
+        d = json.load(f)
+    d["extensions"] = list(paths)
+    d["packages"] = list(paths)
+    with open(PI_SETTINGS, "w") as f:
+        json.dump(d, f, indent=2)
+
+
+def parse_usage(stdout):
+    """Mirror bench_paired.py parse_usage."""
+    pt = ct = tc = 0
+    for line in stdout.splitlines():
+        if not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+            if d.get("type") == "message_end":
+                u = d.get("message", {}).get("usage", {})
+                pt += u.get("input", 0)
+                ct += u.get("output", 0)
+                if "toolName" in d.get("message", {}):
+                    tc += 1
+            elif d.get("type") == "tool_execution_start":
+                tc += 1
+        except Exception:
+            pass
+    return pt, ct, tc
+
+
+def extract_final_text(stdout):
+    """Pull last assistant text content."""
+    texts = []
+    for line in stdout.splitlines():
+        if not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+            if d.get("type") == "message_end":
+                content = d.get("message", {}).get("content", [])
+                if isinstance(content, list):
+                    for c in content:
+                        if isinstance(c, dict) and c.get("type") == "text":
+                            texts.append(c.get("text", ""))
+        except Exception:
+            pass
+    return "\n".join(texts)
+
+
+def parse_llm_json(content):
+    """Extract JSON object from LLM response, tolerating markdown fences."""
+    content = (content or "").strip()
+    if not content:
+        return None
+    # Strip markdown code fences if present.
+    content = re.sub(r"^```(?:json)?\s*", "", content)
+    content = re.sub(r"\s*```\s*$", "", content)
+    content = content.strip()
+    try:
+        return json.loads(content)
+    except Exception:
+        pass
+    # Find first {...} block that parses.
+    for m in re.finditer(r"\{[\s\S]*?\}", content):
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            continue
+    return None
+
+
+def normalize_path(p):
+    """Strip workdir prefix and normalize path separators."""
+    if not p:
+        return ""
+    p = str(p).strip()
+    if p.startswith(TOKIO_CORPUS):
+        p = p[len(TOKIO_CORPUS):].lstrip("/")
+    return p
+
+
+def extract_references_from_response(parsed, category):
+    """Extract file:line references from parsed JSON based on task category."""
+    if not isinstance(parsed, dict):
+        return []
+    # Try various key names depending on category.
+    candidates = (parsed.get("references") or parsed.get("callers") or
+                   parsed.get("dead") or parsed.get("files") or [])
+    refs = []
+    for r in candidates:
+        if isinstance(r, dict):
+            f = normalize_path(r.get("file", ""))
+            l = r.get("line", 0)
+            if f:
+                refs.append(f"{f}:{l}" if l else f)
+        elif isinstance(r, str):
+            refs.append(normalize_path(r))
+    return refs
+
+
+def jaccard(predicted, ground_truth):
+    if not predicted and not ground_truth:
+        return 0.0
+    p = set(predicted)
+    g = set(ground_truth)
+    if not (p | g):
+        return 0.0
+    return len(p & g) / len(p | g)
+
+
+def run_pi_task(task_dict, workdir, condition, model, timeout):
+    """Run Pi with one of the two backends. Returns dict with metrics."""
+    sfile = f"/tmp/compare-{int(time.time()*1000)}-{condition}.json"
+    if os.path.exists(sfile):
+        os.remove(sfile)
+
+    if condition == "A":
+        set_pi_ext([RELIARY_EXT])
+    else:
+        set_pi_ext([ALTBACKEND_EXT])
+
+    env = os.environ.copy()
+    env["PI_DISABLE_HEARTBEAT"] = "1"
+    env["DEEPSEEK_API_KEY"] = os.environ.get("DEEPSEEK_API_KEY", "")
+    env.pop("RELIARY_PROXY_ACTIVE", None)
+    env.pop("OPENAI_BASE_URL", None)
+    env.pop("DEEPSEEK_BASE_URL", None)
+    env["RELIARY_BIN"] = RELIARY_BIN
+    env["RELIARY_WORKDIR"] = workdir
+
+    t0 = time.time()
+    try:
+        result = subprocess.run(
+            [PI_BIN, "--model", model, "--mode", "json",
+             "--session", sfile, "--print", task_dict["question"]],
+            cwd=workdir, capture_output=True, text=True,
+            timeout=timeout, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return {"condition": condition, "elapsed": time.time() - t0,
+                "returncode": -1, "stderr": "TIMEOUT", "parsed": None,
+                "tokens_in": 0, "tokens_out": 0, "tool_calls": 0,
+                "weighted_cost": 0, "predictions": [], "raw_text": ""}
+
+    elapsed = time.time() - t0
+    pt, ct, tc = parse_usage(result.stdout)
+    final_text = extract_final_text(result.stdout)
+    parsed = parse_llm_json(final_text)
+    preds = extract_references_from_response(parsed, task_dict.get("category", ""))
+    return {"condition": condition, "elapsed": elapsed,
+            "returncode": result.returncode,
+            "stderr": result.stderr[-300:] if result.stderr else "",
+            "parsed": parsed,
+            "tokens_in": pt, "tokens_out": ct, "tool_calls": tc,
+            "weighted_cost": pt + 4 * ct,
+            "predictions": preds,
+            "raw_text": final_text[:3000]}
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tasks", default=os.path.join(RESULTS_DIR, "compare_tasks.json"))
+    parser.add_argument("--n", type=int, default=None, help="Limit tasks")
+    parser.add_argument("--model", default="deepseek/deepseek-chat")
+    parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--out", default=None)
+    args = parser.parse_args()
+
+    if not os.path.exists(args.tasks):
+        print(f"Tasks file not found: {args.tasks}")
+        return 1
+    with open(args.tasks) as f:
+        tasks = json.load(f)
+    if args.n:
+        tasks = tasks[:args.n]
+
+    if args.out is None:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_path = os.path.join(RESULTS_DIR, f"compare_backends_{ts}.jsonl")
+    else:
+        out_path = args.out
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    print(f"=== Arc 28 Lever 6 — Compare Backends ===")
+    print(f"Tasks: {len(tasks)} from {args.tasks}")
+    print(f"Workdir: {TOKIO_CORPUS}")
+    print(f"Model: {args.model}")
+    print(f"Timeout per task: {args.timeout}s")
+    print(f"Output: {out_path}\n")
+
+    rng = random.Random(args.seed)
+    rng.shuffle(tasks)
+
+    out_f = open(out_path, "w")
+    a_wins = b_wins = 0
+    for i, task in enumerate(tasks):
+        # Interleave per WORKFLOW_RULES.
+        if i % 2 == 0:
+            order = ["A", "B"]
+        else:
+            order = ["B", "A"]
+        gt = task.get("ground_truth", [])
+        print(f"  task {i+1}/{len(tasks)} id={task['id']} cat={task['category']} "
+              f"(gt_size={len(gt)})")
+        for cond in order:
+            print(f"    cond={cond} ... ", end="", flush=True)
+            run = run_pi_task(task, TOKIO_CORPUS, cond, args.model,
+                                args.timeout)
+            preds = run["predictions"]
+            jac = jaccard(preds, gt)
+            ok = "OK" if run["returncode"] == 0 else f"ERR({run['returncode']})"
+            print(f"t={run['elapsed']:.1f}s jaccard={jac:.3f} preds={len(preds)} "
+                  f"wc={run['weighted_cost']} pt={run['tokens_in']} "
+                  f"ct={run['tokens_out']} tc={run['tool_calls']} [{ok}]")
+            run.update({"task_id": task["id"], "task_category": task["category"],
+                        "ground_truth_size": len(gt), "jaccard": jac})
+            out_f.write(json.dumps(run) + "\n")
+            out_f.flush()
+            if run.get("stderr") and "TIMEOUT" in run["stderr"]:
+                print(f"      TIMEOUT")
+            if "rate limit" in run.get("stderr", "").lower():
+                print(f"      RATE LIMITED")
+                out_f.close()
+                return 1
+    out_f.close()
+    print(f"\n=== Done. Output: {out_path} ===")
+
+
+if __name__ == "__main__":
+    main()

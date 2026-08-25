@@ -1,0 +1,442 @@
+{
+  "_instructions": {
+    "what_this_is": "Labeled anchors for the homonym disambiguation bench. Each entry marks a specific (stem, file, line) occurrence and its semantic role. Labels assigned by inspecting source context.",
+    "use_labels": [
+      "field_access",
+      "method_call",
+      "local_var",
+      "param",
+      "module_name",
+      "type_name",
+      "function_def",
+      "import_or_use"
+    ],
+    "labeled_at": "2026-06-27T17:00:00Z",
+    "labeler": "reliary (automated source inspection)"
+  },
+  "corpus": "/tmp/tokio-corpus/tokio/src",
+  "anchors": [
+    {
+      "id": "hom-001",
+      "stem": "clone",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+      "anchor_line": 201,
+      "use_label": "function_def",
+      "notes": "trait impl Clone::clone for Sender \u2014 custom ref-counting clone"
+    },
+    {
+      "id": "hom-002",
+      "stem": "map",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/write_guard_mapped.rs",
+      "anchor_line": 85,
+      "use_label": "function_def",
+      "notes": "RwLockWriteGuard::map static fn \u2014 projects a write guard to a sub-field"
+    },
+    {
+      "id": "hom-003",
+      "stem": "default",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+      "anchor_line": 260,
+      "use_label": "function_def",
+      "notes": "trait impl Default for LinkedList \u2014 delegates to Self::new()"
+    },
+    {
+      "id": "hom-004",
+      "stem": "task",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/time/timeout.rs",
+      "anchor_line": 211,
+      "use_label": "type_name",
+      "notes": "task::Context<'_> in poll signature \u2014 the waker context type"
+    },
+    {
+      "id": "hom-005",
+      "stem": "write",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/rwlock.rs",
+      "anchor_line": 780,
+      "use_label": "method_call",
+      "notes": "async fn write(&self) on RwLock \u2014 acquires write lock"
+    },
+    {
+      "id": "hom-006",
+      "stem": "from",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/time/instant.rs",
+      "anchor_line": 153,
+      "use_label": "function_def",
+      "notes": "impl From<std::time::Instant> for Instant \u2014 conversion trait"
+    },
+    {
+      "id": "hom-007",
+      "stem": "send",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+      "anchor_line": 1064,
+      "use_label": "method_call",
+      "notes": "Sender::send \u2014 sends a value through the watch channel"
+    },
+    {
+      "id": "hom-008",
+      "stem": "poll",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/util/trace.rs",
+      "anchor_line": 156,
+      "use_label": "method_call",
+      "notes": "fn poll on InstrumentedAsyncOp \u2014 polls inner future with tracing"
+    },
+    {
+      "id": "hom-009",
+      "stem": "consume",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/io/util/take.rs",
+      "anchor_line": 121,
+      "use_label": "method_call",
+      "notes": "Take::consume \u2014 advances the internal buffer, capped by limit"
+    },
+    {
+      "id": "hom-010",
+      "stem": "drop",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/util/wake_list.rs",
+      "anchor_line": 45,
+      "use_label": "function_def",
+      "notes": "trait impl Drop for DropGuard \u2014 drops waker slice in place"
+    },
+    {
+      "id": "hom-011",
+      "stem": "shutdown",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/task/join_set.rs",
+      "anchor_line": 381,
+      "use_label": "method_call",
+      "notes": "JoinSet::shutdown \u2014 aborts all tasks and drains"
+    },
+    {
+      "id": "hom-012",
+      "stem": "new",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/task/local.rs",
+      "anchor_line": 504,
+      "use_label": "function_def",
+      "notes": "LocalSet::new \u2014 constructor for local task set"
+    },
+    {
+      "id": "hom-013",
+      "stem": "ready",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+      "anchor_line": 305,
+      "use_label": "method_call",
+      "notes": "NamedPipeServer::ready \u2014 waits for readiness event"
+    },
+    {
+      "id": "hom-014",
+      "stem": "split",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/semaphore.rs",
+      "anchor_line": 1059,
+      "use_label": "method_call",
+      "notes": "SemaphorePermit::split \u2014 splits a permit into two parts"
+    },
+    {
+      "id": "hom-015",
+      "stem": "kill",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+      "anchor_line": 95,
+      "use_label": "method_call",
+      "notes": "Kill for Child on Windows \u2014 delegates to std child kill"
+    },
+    {
+      "id": "hom-016",
+      "stem": "handle",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+      "anchor_line": 56,
+      "use_label": "type_name",
+      "notes": "Handle trait \u2014 intrusive linked list node pointer (NOT a runtime handle)",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line is '/// Convert the handle to a raw pointer without co' (not real code)"
+    },
+    {
+      "id": "hom-017",
+      "stem": "read",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/rwlock.rs",
+      "anchor_line": 435,
+      "use_label": "method_call",
+      "notes": "RwLock::read \u2014 acquires read lock",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line is '/// ```' (not real code)"
+    },
+    {
+      "id": "hom-018",
+      "stem": "from_std",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/time/instant.rs",
+      "anchor_line": 53,
+      "use_label": "function_def",
+      "notes": "Instant::from_std \u2014 creates tokio Instant from std Instant"
+    },
+    {
+      "id": "hom-019",
+      "stem": "as_ref",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/as_ref.rs",
+      "anchor_line": 10,
+      "use_label": "method_call",
+      "notes": "RwLockReadGuard::as_ref \u2014 borrows the inner value",
+      "audit_status": "unbenchable",
+      "audit_reason": "File does not exist: /tmp/tokio-corpus/tokio/src/sync/rwlock/as_ref.rs"
+    },
+    {
+      "id": "hom-020",
+      "stem": "recv",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/unbounded.rs",
+      "anchor_line": 166,
+      "use_label": "method_call",
+      "notes": "UnboundedReceiver::recv \u2014 receives next value from channel",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line is '/// ```' (not real code)"
+    },
+    {
+      "id": "hom-021",
+      "stem": "spawn",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/task/spawn.rs",
+      "anchor_line": 173,
+      "use_label": "function_def",
+      "notes": "spawn::spawn \u2014 top-level function to spawn a new task"
+    },
+    {
+      "id": "hom-022",
+      "stem": "schedule",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/task/local.rs",
+      "anchor_line": 1089,
+      "use_label": "method_call",
+      "notes": "LocalScheduledTasks::schedule \u2014 enqueues a task to the local queue",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line is '/// Schedule the provided task on the scheduler.' (not real code)"
+    },
+    {
+      "id": "hom-023",
+      "stem": "deref",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+      "anchor_line": 26,
+      "use_label": "method_call",
+      "notes": "Deref for WatchRef \u2014 dereferences to the watched value",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line is '//!' (not real code)"
+    },
+    {
+      "id": "hom-024",
+      "stem": "is_empty",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/task/join_set.rs",
+      "anchor_line": 93,
+      "use_label": "method_call",
+      "notes": "JoinSet::is_empty \u2014 checks if the set has no tasks",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line is '/// Returns whether the `JoinSet` is empty.' (not real code)"
+    },
+    {
+      "id": "hom-025",
+      "stem": "len",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/task/join_set.rs",
+      "anchor_line": 89,
+      "use_label": "method_call",
+      "notes": "JoinSet::len \u2014 returns count of active tasks"
+    },
+    {
+      "id": "hom-026",
+      "stem": "consume",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/io/util/chain.rs",
+      "anchor_line": 126,
+      "use_label": "method_call",
+      "notes": "Chain::consume \u2014 delegates consume to first or second based on done_first"
+    },
+    {
+      "id": "hom-027",
+      "stem": "consume",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/io/util/empty.rs",
+      "anchor_line": 89,
+      "use_label": "method_call",
+      "notes": "Empty::consume \u2014 no-op (nothing to consume)"
+    },
+    {
+      "id": "hom-028",
+      "stem": "split",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+      "anchor_line": 995,
+      "use_label": "method_call",
+      "notes": "UnixStream::split \u2014 splits into ReadHalf and WriteHalf"
+    },
+    {
+      "id": "hom-029",
+      "stem": "kill",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/process/unix/reap.rs",
+      "anchor_line": 112,
+      "use_label": "method_call",
+      "notes": "Kill for Reaper \u2014 delegates kill to inner child"
+    },
+    {
+      "id": "hom-030",
+      "stem": "default",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/task/local.rs",
+      "anchor_line": 971,
+      "use_label": "function_def",
+      "notes": "trait impl Default for LocalSet \u2014 delegates to LocalSet::new()"
+    },
+    {
+      "id": "hom-031",
+      "stem": "write",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+      "anchor_line": 179,
+      "use_label": "method_call",
+      "notes": "io::Write for ArcFile::write \u2014 writes bytes to the underlying file"
+    },
+    {
+      "id": "hom-032",
+      "stem": "map",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/read_guard.rs",
+      "anchor_line": 80,
+      "use_label": "function_def",
+      "notes": "RwLockReadGuard::map \u2014 projects a read guard to a sub-field"
+    },
+    {
+      "id": "hom-033",
+      "stem": "poll",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+      "anchor_line": 103,
+      "use_label": "method_call",
+      "notes": "Future::poll for Child \u2014 polls the internal receiver for exit status"
+    },
+    {
+      "id": "hom-034",
+      "stem": "send",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+      "anchor_line": 196,
+      "use_label": "method_call",
+      "notes": "Sender::send (in the context of Sender struct definition) \u2014 channel send method"
+    },
+    {
+      "id": "hom-035",
+      "stem": "task",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/task/local.rs",
+      "anchor_line": 503,
+      "use_label": "type_name",
+      "notes": "task module \u2014 tokio::task namespace (used as task::Context in context)",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line is '/// Returns a new local task set.' (not real code)"
+    },
+    {
+      "id": "hom-036",
+      "stem": "new",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/task/join_set.rs",
+      "anchor_line": 82,
+      "use_label": "function_def",
+      "notes": "JoinSet::new \u2014 constructor for a new JoinSet"
+    },
+    {
+      "id": "hom-037",
+      "stem": "clone",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+      "anchor_line": 1004,
+      "use_label": "method_call",
+      "notes": "Shared::clone \u2014 Arc clone for shared state (called inside Sender::clone)"
+    },
+    {
+      "id": "hom-038",
+      "stem": "poll",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/time/timeout.rs",
+      "anchor_line": 211,
+      "use_label": "method_call",
+      "notes": "Timeout<T>::poll \u2014 polls inner future then timer"
+    },
+    {
+      "id": "hom-039",
+      "stem": "from",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/time/instant.rs",
+      "anchor_line": 159,
+      "use_label": "function_def",
+      "notes": "impl From<Instant> for std::time::Instant \u2014 reverse conversion"
+    },
+    {
+      "id": "hom-040",
+      "stem": "from",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/time/error.rs",
+      "anchor_line": 36,
+      "use_label": "function_def",
+      "notes": "impl From<io::Error> for timer::Error \u2014 error conversion"
+    },
+    {
+      "id": "hom-041",
+      "stem": "shutdown",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/time/error.rs",
+      "anchor_line": 58,
+      "use_label": "function_def",
+      "notes": "Error::shutdown \u2014 associated fn that creates a Shutdown error variant"
+    },
+    {
+      "id": "hom-042",
+      "stem": "ready",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+      "anchor_line": 304,
+      "use_label": "type_name",
+      "notes": "Ready type \u2014 readiness bitmask from the IO driver (NOT the method)",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line is '/// ```' (not real code)"
+    },
+    {
+      "id": "hom-043",
+      "stem": "shutdown",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/runtime/tests/task.rs",
+      "anchor_line": 210,
+      "use_label": "method_call",
+      "notes": "Runtime::shutdown in test \u2014 shuts down the runtime (test context)"
+    },
+    {
+      "id": "hom-044",
+      "stem": "handle",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+      "anchor_line": 482,
+      "use_label": "type_name",
+      "notes": "Handle struct \u2014 raw pointer wrapper for intrusive linked list nodes"
+    },
+    {
+      "id": "hom-045",
+      "stem": "write",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/runtime/task/trace/tree.rs",
+      "anchor_line": 51,
+      "use_label": "method_call",
+      "notes": "Tree::display using fmt::Write \u2014 formats trace tree as text",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line is '/// Format this [`Tree`] as a textual tree.' (not real code)"
+    },
+    {
+      "id": "hom-046",
+      "stem": "task",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/time/sleep.rs",
+      "anchor_line": 390,
+      "use_label": "type_name",
+      "notes": "task::Context in Sleep::poll \u2014 waker context parameter"
+    },
+    {
+      "id": "hom-047",
+      "stem": "task",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/time/sleep.rs",
+      "anchor_line": 463,
+      "use_label": "module_name",
+      "notes": "task module reference (crate::task) \u2014 tokio task namespace"
+    },
+    {
+      "id": "hom-048",
+      "stem": "new",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/task/coop/mod.rs",
+      "anchor_line": 263,
+      "use_label": "function_def",
+      "notes": "RestoreOnPending::new \u2014 constructs budget restore guard"
+    },
+    {
+      "id": "hom-049",
+      "stem": "poll",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/io/util/take.rs",
+      "anchor_line": 116,
+      "use_label": "method_call",
+      "notes": "Take::poll_fill_buf (via poll pattern) \u2014 polls inner with limit cap"
+    },
+    {
+      "id": "hom-050",
+      "stem": "default",
+      "anchor_file": "/tmp/tokio-corpus/tokio/src/time/interval.rs",
+      "anchor_line": 369,
+      "use_label": "function_def",
+      "notes": "trait impl Default for Interval \u2014 creates default interval",
+      "audit_status": "unbenchable",
+      "audit_reason": "Anchor line is '/// [`Burst`]: MissedTickBehavior::Burst' (not real code)"
+    }
+  ]
+}

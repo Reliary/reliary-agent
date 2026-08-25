@@ -1,0 +1,82 @@
+name: CI
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - uses: actions-rust-lang/setup-rust-toolchain@46a9d261ee2ace4b93b3bd6e867168ac38627b38
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Install tools
+        run: |
+          cargo install cargo-audit cargo-deny 2>/dev/null || true
+
+      - name: Build
+        run: cargo build --release
+
+      - name: cargo test
+        run: cargo test --workspace --release
+
+      - name: clippy
+        run: cargo clippy --all-targets --release -- -D warnings 2>&1 || { echo 'clippy FAIL'; exit 1; }
+
+      - name: no openssl-sys (cross-compile sanity)
+        run: |
+          if cargo tree -e normal 2>/dev/null | grep -q "openssl-sys"; then
+            echo "openssl-sys blocks ARM"; exit 1; fi
+
+      - name: no keyword matching in scoring hot path
+        run: |
+          bad=$(grep -rnE '"(fn|def|class|function|impl|func|fn_name)"' crates/reliary-search/src/ --include="*.rs" 2>/dev/null | \
+            grep -v "test\|// ok\|GUARDED\|#\[cfg" | grep -E "(classify|predict|enrich|tag)|stem_line_text_score|role_purity" || true)
+          if [ -n "$bad" ]; then echo "FAIL: keyword matching in hot path"; echo "$bad"; exit 1; fi
+
+      - name: no jpg/png binary artifacts in repo
+        run: |
+          if git ls-files | grep -qE '\.(jpe?g|png|gif|bmp|ico)$'; then
+            echo "Binary images committed"; git ls-files | grep -E '\.(jpe?g|png|gif|bmp|ico)$'
+            exit 1
+          fi
+
+      - name: no sqlite runtime DBs committed
+        run: |
+          if git ls-files | grep -qE '\.sqlite(-journal|-shm|-wal)?$'; then
+            echo "SQLite runtime DBs committed"; git ls-files | grep -E '\.sqlite'; exit 1
+          fi
+
+      - name: CLI commands documented in README
+        run: |
+          cmds=$(grep -A50 "^pub const CLI_COMMANDS" crates/reliary-agent/src/main.rs 2>/dev/null | \
+            grep '"' | grep -oP '"[a-z][a-z-]+"' | tr -d '"' | sort -u || true)
+          missing=""
+          for cmd in $cmds; do
+            if ! grep -q "$cmd" README.md 2>/dev/null; then missing="$missing  $cmd"; fi
+          done
+          if [ -n "$missing" ]; then echo "FAIL: missing from README:$missing"; exit 1; fi
+
+      - name: cargo audit
+        run: cargo audit --deny warnings 2>&1 | tail -5 || true
+
+      - name: cargo deny
+        run: cargo deny check advisories sources bans 2>&1 | tail -5 || true
+
+      - name: test count
+        run: |
+          count=$(cargo test 2>&1 | grep "^test result:" | grep -oP '\d+(?= passed)' | \
+            python3 -c "import sys; print(sum(int(l) for l in sys.stdin if l.strip()))")
+          echo "Test count: $count"
+
+      - name: binary size
+        run: ls -lh target/release/reliary

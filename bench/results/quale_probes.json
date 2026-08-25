@@ -1,0 +1,1002 @@
+[
+  {
+    "id": "quale_explore_repo_what",
+    "function": "explore_repo",
+    "type": "what",
+    "question": "What does the explore_repo function in quale do? explores codebase and returns dict with file structure and themes",
+    "expected_facts": [
+      "dict",
+      "theme",
+      "analyze",
+      "path",
+      "explore"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "dict",
+        "theme",
+        "analyze",
+        "path",
+        "explore"
+      ],
+      "min_keywords": 2,
+      "function": "explore_repo"
+    }
+  },
+  {
+    "id": "quale_explore_repo_detail",
+    "function": "explore_repo",
+    "type": "detail",
+    "question": "What does the explore_repo function in quale do? accepts themes and analysis params, returns explore_data dict",
+    "expected_facts": [
+      "dict",
+      "theme",
+      "analyze",
+      "path",
+      "explore"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "dict",
+        "theme",
+        "analyze",
+        "path",
+        "explore"
+      ],
+      "min_keywords": 2,
+      "function": "explore_repo"
+    }
+  },
+  {
+    "id": "quale_explore_repo_edge",
+    "function": "explore_repo",
+    "type": "edge",
+    "question": "What does the explore_repo function in quale do? returns dict with defaults if analysis is None",
+    "expected_facts": [
+      "dict",
+      "theme",
+      "analyze",
+      "path",
+      "explore"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "dict",
+        "theme",
+        "analyze",
+        "path",
+        "explore"
+      ],
+      "min_keywords": 2,
+      "function": "explore_repo"
+    }
+  },
+  {
+    "id": "quale_explore_repo_discriminate",
+    "function": "explore_repo",
+    "type": "discriminate",
+    "question": "What does the explore_repo function in quale do? explore_repo returns analysis; bootstrap_repo chains this",
+    "expected_facts": [
+      "dict",
+      "theme",
+      "analyze",
+      "path",
+      "explore"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "dict",
+        "theme",
+        "analyze",
+        "path",
+        "explore"
+      ],
+      "min_keywords": 2,
+      "function": "explore_repo"
+    }
+  },
+  {
+    "id": "quale_compute_modules_what",
+    "function": "compute_modules",
+    "type": "what",
+    "question": "What does the compute_modules function in quale do? computes module structure grouping files",
+    "expected_facts": [
+      "module",
+      "structure",
+      "group",
+      "file",
+      "depend"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "module",
+        "structure",
+        "group",
+        "file",
+        "depend"
+      ],
+      "min_keywords": 2,
+      "function": "compute_modules"
+    }
+  },
+  {
+    "id": "quale_compute_modules_detail",
+    "function": "compute_modules",
+    "type": "detail",
+    "question": "What does the compute_modules function in quale do? uses language detection and dependency analysis",
+    "expected_facts": [
+      "module",
+      "structure",
+      "group",
+      "file",
+      "depend"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "module",
+        "structure",
+        "group",
+        "file",
+        "depend"
+      ],
+      "min_keywords": 2,
+      "function": "compute_modules"
+    }
+  },
+  {
+    "id": "quale_compute_modules_edge",
+    "function": "compute_modules",
+    "type": "edge",
+    "question": "What does the compute_modules function in quale do? handles None analysis",
+    "expected_facts": [
+      "module",
+      "structure",
+      "group",
+      "file",
+      "depend"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "module",
+        "structure",
+        "group",
+        "file",
+        "depend"
+      ],
+      "min_keywords": 2,
+      "function": "compute_modules"
+    }
+  },
+  {
+    "id": "quale_compute_modules_discriminate",
+    "function": "compute_modules",
+    "type": "discriminate",
+    "question": "What does the compute_modules function in quale do? compute_modules produces modules; explore_repo produces files",
+    "expected_facts": [
+      "module",
+      "structure",
+      "group",
+      "file",
+      "depend"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "module",
+        "structure",
+        "group",
+        "file",
+        "depend"
+      ],
+      "min_keywords": 2,
+      "function": "compute_modules"
+    }
+  },
+  {
+    "id": "quale_bootstrap_repo_what",
+    "function": "bootstrap_repo",
+    "type": "what",
+    "question": "What does the bootstrap_repo function in quale do? bootstraps repository exploration with summary dict",
+    "expected_facts": [
+      "bootstrap",
+      "explore",
+      "module",
+      "task",
+      "summari"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "bootstrap",
+        "explore",
+        "module",
+        "task",
+        "summari"
+      ],
+      "min_keywords": 2,
+      "function": "bootstrap_repo"
+    }
+  },
+  {
+    "id": "quale_bootstrap_repo_detail",
+    "function": "bootstrap_repo",
+    "type": "detail",
+    "question": "What does the bootstrap_repo function in quale do? calls explore_repo and compute_modules combines",
+    "expected_facts": [
+      "bootstrap",
+      "explore",
+      "module",
+      "task",
+      "summari"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "bootstrap",
+        "explore",
+        "module",
+        "task",
+        "summari"
+      ],
+      "min_keywords": 2,
+      "function": "bootstrap_repo"
+    }
+  },
+  {
+    "id": "quale_bootstrap_repo_edge",
+    "function": "bootstrap_repo",
+    "type": "edge",
+    "question": "What does the bootstrap_repo function in quale do? accepts optional task string",
+    "expected_facts": [
+      "bootstrap",
+      "explore",
+      "module",
+      "task",
+      "summari"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "bootstrap",
+        "explore",
+        "module",
+        "task",
+        "summari"
+      ],
+      "min_keywords": 2,
+      "function": "bootstrap_repo"
+    }
+  },
+  {
+    "id": "quale_bootstrap_repo_discriminate",
+    "function": "bootstrap_repo",
+    "type": "discriminate",
+    "question": "What does the bootstrap_repo function in quale do? bootstrap_repo is top-level; explore_repo is one step",
+    "expected_facts": [
+      "bootstrap",
+      "explore",
+      "module",
+      "task",
+      "summari"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "bootstrap",
+        "explore",
+        "module",
+        "task",
+        "summari"
+      ],
+      "min_keywords": 2,
+      "function": "bootstrap_repo"
+    }
+  },
+  {
+    "id": "quale__task_file_role_what",
+    "function": "_task_file_role",
+    "type": "what",
+    "question": "What does the _task_file_role function in quale do? classifies file role in project",
+    "expected_facts": [
+      "role",
+      "file",
+      "test",
+      "main",
+      "string"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "role",
+        "file",
+        "test",
+        "main",
+        "string"
+      ],
+      "min_keywords": 2,
+      "function": "_task_file_role"
+    }
+  },
+  {
+    "id": "quale__task_file_role_detail",
+    "function": "_task_file_role",
+    "type": "detail",
+    "question": "What does the _task_file_role function in quale do? looks at file path patterns",
+    "expected_facts": [
+      "role",
+      "file",
+      "test",
+      "main",
+      "string"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "role",
+        "file",
+        "test",
+        "main",
+        "string"
+      ],
+      "min_keywords": 2,
+      "function": "_task_file_role"
+    }
+  },
+  {
+    "id": "quale__task_file_role_edge",
+    "function": "_task_file_role",
+    "type": "edge",
+    "question": "What does the _task_file_role function in quale do? returns role string identifier",
+    "expected_facts": [
+      "role",
+      "file",
+      "test",
+      "main",
+      "string"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "role",
+        "file",
+        "test",
+        "main",
+        "string"
+      ],
+      "min_keywords": 2,
+      "function": "_task_file_role"
+    }
+  },
+  {
+    "id": "quale__task_file_role_discriminate",
+    "function": "_task_file_role",
+    "type": "discriminate",
+    "question": "What does the _task_file_role function in quale do? returns role string; _task_role_rank converts to int",
+    "expected_facts": [
+      "role",
+      "file",
+      "test",
+      "main",
+      "string"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "role",
+        "file",
+        "test",
+        "main",
+        "string"
+      ],
+      "min_keywords": 2,
+      "function": "_task_file_role"
+    }
+  },
+  {
+    "id": "quale__rank_related_files_what",
+    "function": "_rank_related_files",
+    "type": "what",
+    "question": "What does the _rank_related_files function in quale do? ranks files by relevance to keywords",
+    "expected_facts": [
+      "rank",
+      "keyword",
+      "score",
+      "relevance",
+      "list"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "rank",
+        "keyword",
+        "score",
+        "relevance",
+        "list"
+      ],
+      "min_keywords": 2,
+      "function": "_rank_related_files"
+    }
+  },
+  {
+    "id": "quale__rank_related_files_detail",
+    "function": "_rank_related_files",
+    "type": "detail",
+    "question": "What does the _rank_related_files function in quale do? uses keyword matching and analysis to score",
+    "expected_facts": [
+      "rank",
+      "keyword",
+      "score",
+      "relevance",
+      "list"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "rank",
+        "keyword",
+        "score",
+        "relevance",
+        "list"
+      ],
+      "min_keywords": 2,
+      "function": "_rank_related_files"
+    }
+  },
+  {
+    "id": "quale__rank_related_files_edge",
+    "function": "_rank_related_files",
+    "type": "edge",
+    "question": "What does the _rank_related_files function in quale do? returns list of dicts with paths and scores",
+    "expected_facts": [
+      "rank",
+      "keyword",
+      "score",
+      "relevance",
+      "list"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "rank",
+        "keyword",
+        "score",
+        "relevance",
+        "list"
+      ],
+      "min_keywords": 2,
+      "function": "_rank_related_files"
+    }
+  },
+  {
+    "id": "quale__rank_related_files_discriminate",
+    "function": "_rank_related_files",
+    "type": "discriminate",
+    "question": "What does the _rank_related_files function in quale do? ranks by relevance; bootstrap_repo uses this",
+    "expected_facts": [
+      "rank",
+      "keyword",
+      "score",
+      "relevance",
+      "list"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "rank",
+        "keyword",
+        "score",
+        "relevance",
+        "list"
+      ],
+      "min_keywords": 2,
+      "function": "_rank_related_files"
+    }
+  },
+  {
+    "id": "quale__compute_themes_what",
+    "function": "_compute_themes",
+    "type": "what",
+    "question": "What does the _compute_themes function in quale do? computes themes from file identifiers",
+    "expected_facts": [
+      "theme",
+      "keyword",
+      "identifier",
+      "group",
+      "similar"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "theme",
+        "keyword",
+        "identifier",
+        "group",
+        "similar"
+      ],
+      "min_keywords": 2,
+      "function": "_compute_themes"
+    }
+  },
+  {
+    "id": "quale__compute_themes_detail",
+    "function": "_compute_themes",
+    "type": "detail",
+    "question": "What does the _compute_themes function in quale do? aggregates identifier names groups by similarity",
+    "expected_facts": [
+      "theme",
+      "keyword",
+      "identifier",
+      "group",
+      "similar"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "theme",
+        "keyword",
+        "identifier",
+        "group",
+        "similar"
+      ],
+      "min_keywords": 2,
+      "function": "_compute_themes"
+    }
+  },
+  {
+    "id": "quale__compute_themes_edge",
+    "function": "_compute_themes",
+    "type": "edge",
+    "question": "What does the _compute_themes function in quale do? returns list of theme dicts",
+    "expected_facts": [
+      "theme",
+      "keyword",
+      "identifier",
+      "group",
+      "similar"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "theme",
+        "keyword",
+        "identifier",
+        "group",
+        "similar"
+      ],
+      "min_keywords": 2,
+      "function": "_compute_themes"
+    }
+  },
+  {
+    "id": "quale__compute_themes_discriminate",
+    "function": "_compute_themes",
+    "type": "discriminate",
+    "question": "What does the _compute_themes function in quale do? computes themes from identifiers",
+    "expected_facts": [
+      "theme",
+      "keyword",
+      "identifier",
+      "group",
+      "similar"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "theme",
+        "keyword",
+        "identifier",
+        "group",
+        "similar"
+      ],
+      "min_keywords": 2,
+      "function": "_compute_themes"
+    }
+  },
+  {
+    "id": "quale_add_file_what",
+    "function": "add_file",
+    "type": "what",
+    "question": "What does the add_file function in quale do? adds file phrase set to analysis matrix",
+    "expected_facts": [
+      "phrase",
+      "matrix",
+      "add",
+      "file",
+      "set"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "phrase",
+        "matrix",
+        "add",
+        "file",
+        "set"
+      ],
+      "min_keywords": 2,
+      "function": "add_file"
+    }
+  },
+  {
+    "id": "quale_add_file_detail",
+    "function": "add_file",
+    "type": "detail",
+    "question": "What does the add_file function in quale do? mutates self with phrases",
+    "expected_facts": [
+      "phrase",
+      "matrix",
+      "add",
+      "file",
+      "set"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "phrase",
+        "matrix",
+        "add",
+        "file",
+        "set"
+      ],
+      "min_keywords": 2,
+      "function": "add_file"
+    }
+  },
+  {
+    "id": "quale_add_file_edge",
+    "function": "add_file",
+    "type": "edge",
+    "question": "What does the add_file function in quale do? method takes set of phrase strings",
+    "expected_facts": [
+      "phrase",
+      "matrix",
+      "add",
+      "file",
+      "set"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "phrase",
+        "matrix",
+        "add",
+        "file",
+        "set"
+      ],
+      "min_keywords": 2,
+      "function": "add_file"
+    }
+  },
+  {
+    "id": "quale_add_file_discriminate",
+    "function": "add_file",
+    "type": "discriminate",
+    "question": "What does the add_file function in quale do? add_file mutates; pmi queries",
+    "expected_facts": [
+      "phrase",
+      "matrix",
+      "add",
+      "file",
+      "set"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "phrase",
+        "matrix",
+        "add",
+        "file",
+        "set"
+      ],
+      "min_keywords": 2,
+      "function": "add_file"
+    }
+  },
+  {
+    "id": "quale_pmi_what",
+    "function": "pmi",
+    "type": "what",
+    "question": "What does the pmi function in quale do? computes pointwise mutual information",
+    "expected_facts": [
+      "pmi",
+      "mutual",
+      "log",
+      "phrase",
+      "float"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "pmi",
+        "mutual",
+        "log",
+        "phrase",
+        "float"
+      ],
+      "min_keywords": 2,
+      "function": "pmi"
+    }
+  },
+  {
+    "id": "quale_pmi_detail",
+    "function": "pmi",
+    "type": "detail",
+    "question": "What does the pmi function in quale do? log2 of P(a,b)/P(a)P(b)",
+    "expected_facts": [
+      "pmi",
+      "mutual",
+      "log",
+      "phrase",
+      "float"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "pmi",
+        "mutual",
+        "log",
+        "phrase",
+        "float"
+      ],
+      "min_keywords": 2,
+      "function": "pmi"
+    }
+  },
+  {
+    "id": "quale_pmi_edge",
+    "function": "pmi",
+    "type": "edge",
+    "question": "What does the pmi function in quale do? returns float PMI score",
+    "expected_facts": [
+      "pmi",
+      "mutual",
+      "log",
+      "phrase",
+      "float"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "pmi",
+        "mutual",
+        "log",
+        "phrase",
+        "float"
+      ],
+      "min_keywords": 2,
+      "function": "pmi"
+    }
+  },
+  {
+    "id": "quale_pmi_discriminate",
+    "function": "pmi",
+    "type": "discriminate",
+    "question": "What does the pmi function in quale do? pmi is between two phrases; top_pmi_for queries one",
+    "expected_facts": [
+      "pmi",
+      "mutual",
+      "log",
+      "phrase",
+      "float"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "pmi",
+        "mutual",
+        "log",
+        "phrase",
+        "float"
+      ],
+      "min_keywords": 2,
+      "function": "pmi"
+    }
+  },
+  {
+    "id": "quale_top_pmi_for_what",
+    "function": "top_pmi_for",
+    "type": "what",
+    "question": "What does the top_pmi_for function in quale do? finds top PMI-scored phrases for a given phrase",
+    "expected_facts": [
+      "top",
+      "pmi",
+      "phrase",
+      "rank",
+      "score"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "top",
+        "pmi",
+        "phrase",
+        "rank",
+        "score"
+      ],
+      "min_keywords": 2,
+      "function": "top_pmi_for"
+    }
+  },
+  {
+    "id": "quale_top_pmi_for_detail",
+    "function": "top_pmi_for",
+    "type": "detail",
+    "question": "What does the top_pmi_for function in quale do? ranks other phrases by PMI",
+    "expected_facts": [
+      "top",
+      "pmi",
+      "phrase",
+      "rank",
+      "score"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "top",
+        "pmi",
+        "phrase",
+        "rank",
+        "score"
+      ],
+      "min_keywords": 2,
+      "function": "top_pmi_for"
+    }
+  },
+  {
+    "id": "quale_top_pmi_for_edge",
+    "function": "top_pmi_for",
+    "type": "edge",
+    "question": "What does the top_pmi_for function in quale do? returns list of tuples sorted by score",
+    "expected_facts": [
+      "top",
+      "pmi",
+      "phrase",
+      "rank",
+      "score"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "top",
+        "pmi",
+        "phrase",
+        "rank",
+        "score"
+      ],
+      "min_keywords": 2,
+      "function": "top_pmi_for"
+    }
+  },
+  {
+    "id": "quale_top_pmi_for_discriminate",
+    "function": "top_pmi_for",
+    "type": "discriminate",
+    "question": "What does the top_pmi_for function in quale do? top_pmi_for queries; pmi computes",
+    "expected_facts": [
+      "top",
+      "pmi",
+      "phrase",
+      "rank",
+      "score"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "top",
+        "pmi",
+        "phrase",
+        "rank",
+        "score"
+      ],
+      "min_keywords": 2,
+      "function": "top_pmi_for"
+    }
+  },
+  {
+    "id": "quale_build_vocabulary_what",
+    "function": "build_vocabulary",
+    "type": "what",
+    "question": "What does the build_vocabulary function in quale do? builds vocabulary from list of phrases",
+    "expected_facts": [
+      "vocabulari",
+      "phrase",
+      "strategi",
+      "build",
+      "delimit"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "vocabulari",
+        "phrase",
+        "strategi",
+        "build",
+        "delimit"
+      ],
+      "min_keywords": 2,
+      "function": "build_vocabulary"
+    }
+  },
+  {
+    "id": "quale_build_vocabulary_detail",
+    "function": "build_vocabulary",
+    "type": "detail",
+    "question": "What does the build_vocabulary function in quale do? applies strategy to compute Vocabulary object",
+    "expected_facts": [
+      "vocabulari",
+      "phrase",
+      "strategi",
+      "build",
+      "delimit"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "vocabulari",
+        "phrase",
+        "strategi",
+        "build",
+        "delimit"
+      ],
+      "min_keywords": 2,
+      "function": "build_vocabulary"
+    }
+  },
+  {
+    "id": "quale_build_vocabulary_edge",
+    "function": "build_vocabulary",
+    "type": "edge",
+    "question": "What does the build_vocabulary function in quale do? returns Vocabulary instance",
+    "expected_facts": [
+      "vocabulari",
+      "phrase",
+      "strategi",
+      "build",
+      "delimit"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "vocabulari",
+        "phrase",
+        "strategi",
+        "build",
+        "delimit"
+      ],
+      "min_keywords": 2,
+      "function": "build_vocabulary"
+    }
+  },
+  {
+    "id": "quale_build_vocabulary_discriminate",
+    "function": "build_vocabulary",
+    "type": "discriminate",
+    "question": "What does the build_vocabulary function in quale do? build_vocabulary takes phrases; fold_file uses on path",
+    "expected_facts": [
+      "vocabulari",
+      "phrase",
+      "strategi",
+      "build",
+      "delimit"
+    ],
+    "min_facts": 2,
+    "rubric": {
+      "accept_keywords": [
+        "vocabulari",
+        "phrase",
+        "strategi",
+        "build",
+        "delimit"
+      ],
+      "min_keywords": 2,
+      "function": "build_vocabulary"
+    }
+  }
+]

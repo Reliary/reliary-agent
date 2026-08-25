@@ -1,0 +1,31 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 1234567..abcdef0 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,5 +1,7 @@
+ fn main() {
+     println!("hello");
++    let x = 42;
++    println!("{}", x);
+ }
+ fn other() {
+     return;
+@@ -10,10 +12,12 @@
+ 
+ impl Foo {
+     pub fn new() -> Self {
+         Self { value: 0 }
+     }
++    pub fn with_value(v: i32) -> Self {
++        Self { value: v }
++    }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    #[test]
++    fn test_creation() {
++        assert_eq!(Foo::new().value, 0);
++    }
+ }

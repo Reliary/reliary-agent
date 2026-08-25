@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - uses: actions-rust-lang/setup-rust-toolchain@46a9d261ee2ace4b93b3bd6e867168ac38627b38
+        with:
+          toolchain: stable
+
+      - name: Build release binary
+        run: |
+          cargo build --release --target x86_64-unknown-linux-gnu
+          cargo build --release --target aarch64-unknown-linux-gnu || true
+
+      - name: Package
+        run: |
+          VERSION=$(echo ${{ github.ref_name }} | sed 's/v//')
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-gnu/release/reliary dist/reliary-agent-v${VERSION}-linux-x86_64
+          strip dist/reliary-agent-v${VERSION}-linux-x86_64 || true
+          cd dist && tar -czf reliary-agent-v${VERSION}-linux-x86_64.tar.gz reliary-agent-v${VERSION}-linux-x86_64
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@de70a01444b27311eeb55c0c6fad2af5887f777b
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/reliary-agent-*
+          generate_release_notes: true
+          draft: false

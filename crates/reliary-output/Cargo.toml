@@ -1,0 +1,13 @@
+[package]
+name = "reliary-output"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+homepage = "https://github.com/Reliary/reliary-agent"
+
+[dependencies]
+regex = "1.12.4"
+reliary-sift = { path = "../reliary-sift" }

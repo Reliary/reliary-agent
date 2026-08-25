@@ -1,0 +1,53 @@
+{
+  "timestamp": "20260627T131828Z",
+  "trials_requested": 3,
+  "baseline_n": 3,
+  "proxied_n": 3,
+  "baseline_wc": {
+    "min": 11979,
+    "median": 12908,
+    "max": 13028
+  },
+  "proxied_wc": {
+    "min": 12866,
+    "median": 13299,
+    "max": 13583
+  },
+  "baseline_input": {
+    "min": 5691,
+    "median": 5892,
+    "max": 6096
+  },
+  "proxied_input": {
+    "min": 5978,
+    "median": 6075,
+    "max": 6127
+  },
+  "baseline_output": {
+    "min": 1572,
+    "median": 1733,
+    "max": 1754
+  },
+  "proxied_output": {
+    "min": 1722,
+    "median": 1806,
+    "max": 1864
+  },
+  "baseline_wall": {
+    "min": 17.65,
+    "median": 17.84,
+    "max": 19.65
+  },
+  "proxied_wall": {
+    "min": 18.8,
+    "median": 18.97,
+    "max": 20.19
+  },
+  "baseline_pass": 3,
+  "proxied_pass": 3,
+  "wc_savings_pct": -3.0,
+  "wc_savings_range_pct": [
+    -13.4,
+    1.2
+  ]
+}

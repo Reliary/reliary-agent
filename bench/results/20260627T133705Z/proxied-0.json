@@ -1,0 +1,61 @@
+{
+  "condition": "proxied",
+  "input_tokens": 24937,
+  "output_tokens": 9350,
+  "weighted_cost": 62337,
+  "turns": 8,
+  "wall_time_s": 102.22,
+  "task_pass": true,
+  "turn_log": [
+    {
+      "turn": 0,
+      "pt": 474,
+      "ct": 3578,
+      "asst_len": 5066
+    },
+    {
+      "turn": 1,
+      "pt": 1700,
+      "ct": 461,
+      "asst_len": 1633
+    },
+    {
+      "turn": 2,
+      "pt": 2101,
+      "ct": 896,
+      "asst_len": 2520
+    },
+    {
+      "turn": 3,
+      "pt": 2728,
+      "ct": 521,
+      "asst_len": 2011
+    },
+    {
+      "turn": 4,
+      "pt": 3238,
+      "ct": 861,
+      "asst_len": 2826
+    },
+    {
+      "turn": 5,
+      "pt": 4014,
+      "ct": 1860,
+      "asst_len": 3089
+    },
+    {
+      "turn": 6,
+      "pt": 4849,
+      "ct": 1069,
+      "asst_len": 3630
+    },
+    {
+      "turn": 7,
+      "pt": 5833,
+      "ct": 104,
+      "asst_len": 337
+    }
+  ],
+  "model": "deepseek-v4-flash",
+  "timestamp": "2026-06-27T13:40:37.649419Z"
+}

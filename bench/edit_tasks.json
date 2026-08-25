@@ -1,0 +1,102 @@
+[
+  {
+    "id": "edit_hex_min_8",
+    "task": "In the reliary-sift crate, change the minimum hex hash length in the `skeleton()` function from 7 to 8. The function is in crates/reliary-sift/src/classify.rs. Only change the number 7 to 8 in the hex hash length check.",
+    "target_file": "crates/reliary-sift/src/classify.rs",
+    "target_function": "skeleton",
+    "difficulty": "easy",
+    "expected_keywords": ["8", "hash", "hex", "skeleton"],
+    "test_name": "test_hex_min_8",
+    "test_code": "#[test]\nfn test_hex_min_8() {\n    use reliary_sift::classify::skeleton;\n    // 8-char hex should still be normalized\n    assert_eq!(skeleton(\"commit abcdef12\"), \"commit {hash}\");\n    // 7-char hex should NOT be normalized anymore\n    assert_ne!(skeleton(\"commit abcdef1\"), \"commit {hash}\");\n    // 40-char hex still works\n    assert_eq!(skeleton(\"commit abcdef1234567890abcdef1234567890abcdef12\"), \"commit {hash}\");\n}"
+  },
+  {
+    "id": "edit_mac_placeholder",
+    "task": "Add a MAC address placeholder `{mac}` to the `skeleton()` function in crates/reliary-sift/src/classify.rs. MAC addresses have the format XX:XX:XX:XX:XX:XX where XX are hex digits. Place the detection BEFORE the hex hash check (rule 3). When a MAC address is detected, emit `{mac}` and skip past it.",
+    "target_file": "crates/reliary-sift/src/classify.rs",
+    "target_function": "skeleton",
+    "difficulty": "easy",
+    "expected_keywords": ["mac", "placeholder", "skeleton"],
+    "test_name": "test_mac_placeholder",
+    "test_code": "#[test]\nfn test_mac_placeholder() {\n    use reliary_sift::classify::skeleton;\n    assert_eq!(skeleton(\"MAC AA:BB:CC:DD:EE:FF\"), \"mac {mac}\");\n    assert_eq!(skeleton(\"interface 00:11:22:33:44:55 up\"), \"interface {mac} up\");\n}"
+  },
+  {
+    "id": "edit_annotation_type",
+    "task": "Add a new `Annotation` variant to the `LineType` enum in crates/reliary-sift/src/lib.rs. Then update `classify_line()` to detect annotation lines: lines starting with `# @` (like `# @deprecated`, `# @author`) should return `LineType::Annotation`. Place this check BEFORE the generic Comment check.",
+    "target_file": "crates/reliary-sift/src/lib.rs",
+    "target_function": "classify_line",
+    "difficulty": "medium",
+    "expected_keywords": ["annotation", "variant", "classify", "enum"],
+    "test_name": "test_annotation_type",
+    "test_code": "#[test]\nfn test_annotation_type() {\n    use reliary_sift::{classify_line, LineType};\n    assert_eq!(classify_line(\"# @deprecated\"), LineType::Annotation);\n    assert_eq!(classify_line(\"# @author User\"), LineType::Annotation);\n    // Regular comments still work\n    assert_eq!(classify_line(\"# regular comment\"), LineType::Comment);\n}"
+  },
+  {
+    "id": "edit_summary_before_error",
+    "task": "In crates/reliary-sift/src/lib.rs, change the `classify_line()` function so that the Summary check runs BEFORE the Error check. Currently Error is checked first (lines ~212-214), then Summary (lines ~217-223). Swap the order so Summary is checked first. This means a line like '3 passed, 2 failed, error in module' should return Summary, not Error.",
+    "target_file": "crates/reliary-sift/src/lib.rs",
+    "target_function": "classify_line",
+    "difficulty": "medium",
+    "expected_keywords": ["summary", "error", "order", "before", "priority"],
+    "test_name": "test_summary_before_error",
+    "test_code": "#[test]\nfn test_summary_before_error() {\n    use reliary_sift::{classify_line, LineType};\n    // Line with both 'passed'+'failed' AND 'error' should be Summary\n    assert_eq!(classify_line(\"3 passed, 2 failed, error in module\"), LineType::Summary);\n    // Pure error line still works\n    assert_eq!(classify_line(\"error: cannot find symbol\"), LineType::Error);\n}"
+  },
+  {
+    "id": "edit_extract_uuid_helper",
+    "task": "Extract the UUID detection logic from `skeleton()` in crates/reliary-sift/src/classify.rs into a new public function `normalize_uuid(input: &str) -> Option<String>`. The function should return `Some(\"{uuid}\")` if the input is a valid UUID (8-4-4-4-12 hex format with dashes at positions 8,13,18,23), or `None` otherwise. Then update `skeleton()` to call `normalize_uuid()` instead of inlining the UUID check. Make sure `normalize_uuid` is pub.",
+    "target_file": "crates/reliary-sift/src/classify.rs",
+    "target_function": "skeleton",
+    "difficulty": "medium",
+    "expected_keywords": ["uuid", "normalize", "helper", "extract", "pub"],
+    "test_name": "test_extract_uuid_helper",
+    "test_code": "#[test]\nfn test_extract_uuid_helper() {\n    use reliary_sift::classify::{skeleton, normalize_uuid};\n    // Helper works standalone\n    assert_eq!(normalize_uuid(\"550e8400-e29b-41d4-a716-446655440000\"), Some(\"{uuid}\".to_string()));\n    assert_eq!(normalize_uuid(\"not-a-uuid\"), None);\n    // skeleton still works the same\n    assert_eq!(skeleton(\"commit 550e8400-e29b-41d4-a716-446655440000 done\"), \"commit {uuid} done\");\n}"
+  },
+  {
+    "id": "edit_4th_gate",
+    "task": "Add a 4th gate to MaxwellGate in crates/reliary-sift/src/lib.rs. Currently it has entropy_threshold, compression_ratio_max, diversity_min. Add a new field `lexical_density_min: f64` (with default 0.15). Then in the `score()` method, add a 4th check after the existing 3: if `lexical_diversity < lexical_density_min`, return None. Wait — there's already a diversity check. Instead, add a LENGTH-based 4th gate: add field `max_line_repetition: usize` (default 10). Count the max repetition of any single line in the text. If any line repeats more than max_line_repetition times, return None.",
+    "target_file": "crates/reliary-sift/src/lib.rs",
+    "target_function": "score",
+    "difficulty": "medium",
+    "expected_keywords": ["gate", "maxwell", "repetition", "score", "field"],
+    "test_name": "test_4th_gate",
+    "test_code": "#[test]\nfn test_4th_gate() {\n    use reliary_sift::MaxwellGate;\n    let gate = MaxwellGate::default();\n    // Normal text passes\n    assert!(gate.score(\"This is a sufficiently diverse text passage with enough entropy and variety to pass all gates including the new repetition gate.\").is_some());\n    // Highly repetitive text fails (same line 15 times, > max_line_repetition=10)\n    let repetitive = \"same line repeated\\n\".repeat(15);\n    assert!(gate.score(&repetitive).is_none());\n}"
+  },
+  {
+    "id": "edit_ipv6_detection",
+    "task": "Add IPv6 address detection to `skeleton()` in crates/reliary-sift/src/classify.rs. IPv6 addresses contain hex digits and colons, like `fe80::1` or `2001:db8::1` or `::1`. When detected, emit `{ipv6}`. Place this check AFTER the UUID check but BEFORE the hex hash check. An IPv6 address has 2+ colons and at least one hex digit. Be careful not to match timestamps (which have a single colon).",
+    "target_file": "crates/reliary-sift/src/classify.rs",
+    "target_function": "skeleton",
+    "difficulty": "hard",
+    "expected_keywords": ["ipv6", "placeholder", "skeleton", "colon"],
+    "test_name": "test_ipv6_detection",
+    "test_code": "#[test]\nfn test_ipv6_detection() {\n    use reliary_sift::classify::skeleton;\n    assert_eq!(skeleton(\"link fe80::1\"), \"link {ipv6}\");\n    assert_eq!(skeleton(\"addr 2001:db8::1\"), \"addr {ipv6}\");\n    assert_eq!(skeleton(\"localhost ::1\"), \"localhost {ipv6}\");\n    // Timestamp with single colon should NOT be detected as IPv6\n    // (it should be handled by other rules)\n}"
+  },
+  {
+    "id": "edit_compress_annotation",
+    "task": "Update the `compress_content()` function in crates/reliary-sift/src/lib.rs to handle the `Annotation` line type. Currently it handles Blank, Import, Comment, Error, Summary, Definition, Code. Add handling for Annotation: Annotation lines should be KEPT (not collapsed), similar to how Error and Definition lines are kept. If you also added the Annotation variant to LineType (from edit task 3), make sure compress_content preserves Annotation lines in the output.",
+    "target_file": "crates/reliary-sift/src/lib.rs",
+    "target_function": "compress_content",
+    "difficulty": "hard",
+    "expected_keywords": ["annotation", "compress", "keep", "preserve"],
+    "test_name": "test_compress_annotation",
+    "test_code": "#[test]\nfn test_compress_annotation() {\n    use reliary_sift::{compress_content, ContentLine, LineType};\n    let lines = vec![\n        ContentLine { text: \"# @deprecated\".to_string(), line_type: LineType::Comment, index: 0 },\n        ContentLine { text: \"fn foo() {}\".to_string(), line_type: LineType::Definition, index: 1 },\n    ];\n    let result = compress_content(lines, false);\n    // Both lines should be preserved (not collapsed)\n    assert!(result.iter().any(|l| l.contains(\"@deprecated\") || l.contains(\"deprecated\")));\n}"
+  },
+  {
+    "id": "edit_rename_skeleton",
+    "task": "Rename the `skeleton()` function to `normalize()` in crates/reliary-sift/src/classify.rs. Also update ALL callers: `skeleton_hash()` calls `skeleton()`, and any other functions that reference it. The function signature should stay the same, just the name changes from `skeleton` to `normalize`. Make sure the code still compiles.",
+    "target_file": "crates/reliary-sift/src/classify.rs",
+    "target_function": "skeleton",
+    "difficulty": "hard",
+    "expected_keywords": ["rename", "normalize", "skeleton", "callers"],
+    "test_name": "test_rename_skeleton",
+    "test_code": "#[test]\nfn test_rename_skeleton() {\n    use reliary_sift::classify::normalize;\n    // normalize should work identically to old skeleton\n    assert_eq!(normalize(\"commit abcdef1234567890\"), \"commit {hash}\");\n    assert_eq!(normalize(\"550e8400-e29b-41d4-a716-446655440000\"), \"{uuid}\");\n    assert_eq!(normalize(\"\"), \"\");\n}"
+  },
+  {
+    "id": "edit_two_letter_words",
+    "task": "In crates/reliary-sift/src/classify.rs, the `aggressive_skeleton()` function currently keeps single-letter words verbatim (line ~308: `if we - i == 1`). Change this to keep 2-letter words verbatim as well. So `we - i <= 2` should keep the word verbatim instead of collapsing to `{w}`. This means words like 'ab', 'cd', 'to' should stay as-is, while 'abc' and longer get collapsed to `{w}`.",
+    "target_file": "crates/reliary-sift/src/classify.rs",
+    "target_function": "aggressive_skeleton",
+    "difficulty": "medium",
+    "expected_keywords": ["two", "letter", "word", "verbatim", "aggressive"],
+    "test_name": "test_two_letter_words",
+    "test_code": "#[test]\nfn test_two_letter_words() {\n    use reliary_sift::classify::aggressive_skeleton;\n    // 2-letter words should stay verbatim\n    assert_eq!(aggressive_skeleton(\"ab cd ef\"), \"ab cd ef\");\n    // 3-letter words should be collapsed\n    assert_eq!(aggressive_skeleton(\"abc def\"), \"{w} {w}\");\n    // Single-letter words still verbatim\n    assert_eq!(aggressive_skeleton(\"a b c\"), \"a b c\");\n}"
+  }
+]

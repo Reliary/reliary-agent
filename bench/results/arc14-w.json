@@ -1,0 +1,233 @@
+{
+  "bench": "bench_homonyms",
+  "corpus": "/tmp/tokio-corpus/tokio/src",
+  "n_anchors": 25,
+  "thresholds": {
+    "0.3": {
+      "median_mAP": 0.2466,
+      "median_NDCG10": 0.2032,
+      "median_P5": 0.0,
+      "mean_mAP": 0.3544,
+      "mean_NDCG10": 0.3089,
+      "mean_P5": 0.2857,
+      "total_hits": 5491,
+      "total_correct": 1874,
+      "n_anchors": 21,
+      "per_anchor": [
+        {
+          "mAP": 0.6809,
+          "ndcg10": 0.2032,
+          "p5": 0.0,
+          "count": 1052,
+          "correct": 633,
+          "anchor_id": "hom-51",
+          "stem": "fmt",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.6877,
+          "ndcg10": 0.2032,
+          "p5": 0.0,
+          "count": 887,
+          "correct": 605,
+          "anchor_id": "hom-52",
+          "stem": "fmt",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.2644,
+          "ndcg10": 0.4085,
+          "p5": 0.4,
+          "count": 90,
+          "correct": 27,
+          "anchor_id": "hom-53",
+          "stem": "poll_write",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.2985,
+          "ndcg10": 0.359,
+          "p5": 0.4,
+          "count": 90,
+          "correct": 27,
+          "anchor_id": "hom-54",
+          "stem": "poll_write",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3029,
+          "ndcg10": 0.5175,
+          "p5": 0.6,
+          "count": 87,
+          "correct": 23,
+          "anchor_id": "hom-55",
+          "stem": "poll_read",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.2466,
+          "ndcg10": 0.2863,
+          "p5": 0.2,
+          "count": 87,
+          "correct": 23,
+          "anchor_id": "hom-56",
+          "stem": "poll_read",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9168,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 94,
+          "correct": 67,
+          "anchor_id": "hom-58",
+          "stem": "as_raw_fd",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.8149,
+          "ndcg10": 0.6809,
+          "p5": 0.8,
+          "count": 97,
+          "correct": 70,
+          "anchor_id": "hom-59",
+          "stem": "as_raw_fd",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9925,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 29,
+          "correct": 22,
+          "anchor_id": "hom-60",
+          "stem": "as_fd",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.8944,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 29,
+          "correct": 22,
+          "anchor_id": "hom-61",
+          "stem": "as_fd",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1126,
+          "ndcg10": 0.0636,
+          "p5": 0.0,
+          "count": 245,
+          "correct": 35,
+          "anchor_id": "hom-62",
+          "stem": "park",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0597,
+          "ndcg10": 0.0734,
+          "p5": 0.0,
+          "count": 246,
+          "correct": 14,
+          "anchor_id": "hom-63",
+          "stem": "park",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0333,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 41,
+          "correct": 1,
+          "anchor_id": "hom-64",
+          "stem": "local_addr",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0557,
+          "ndcg10": 0.0784,
+          "p5": 0.0,
+          "count": 207,
+          "correct": 11,
+          "anchor_id": "hom-65",
+          "stem": "wake",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0561,
+          "ndcg10": 0.0979,
+          "p5": 0.0,
+          "count": 149,
+          "correct": 7,
+          "anchor_id": "hom-66",
+          "stem": "close",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1011,
+          "ndcg10": 0.1389,
+          "p5": 0.2,
+          "count": 149,
+          "correct": 10,
+          "anchor_id": "hom-67",
+          "stem": "close",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.3474,
+          "ndcg10": 0.2462,
+          "p5": 0.4,
+          "count": 55,
+          "correct": 21,
+          "anchor_id": "hom-68",
+          "stem": "get_mut",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1535,
+          "ndcg10": 0.0636,
+          "p5": 0.0,
+          "count": 187,
+          "correct": 27,
+          "anchor_id": "hom-69",
+          "stem": "release",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0549,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 187,
+          "correct": 9,
+          "anchor_id": "hom-70",
+          "stem": "release",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2373,
+          "ndcg10": 0.0663,
+          "p5": 0.0,
+          "count": 878,
+          "correct": 201,
+          "anchor_id": "hom-71",
+          "stem": "pin",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.132,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 605,
+          "correct": 19,
+          "anchor_id": "hom-75",
+          "stem": "test",
+          "anchor_label": "import_or_use"
+        }
+      ]
+    }
+  },
+  "recommended_threshold": 0.3,
+  "pass": false,
+  "generated_at": "2026-06-28T10:21:25.284375+00:00"
+}

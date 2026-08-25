@@ -1,0 +1,22 @@
+[package]
+name = "reliary-search"
+version.workspace = true
+edition = "2021"
+description.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+homepage = "https://github.com/Reliary/reliary-agent"
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+rayon = "1"
+walkdir = "2"
+rustc-hash = "2.1.2"
+serde_json = "1.0.150"
+memchr = "2"
+smallvec = "1"
+parking_lot = "0.12"
+ahash = "0.8"
+
+reliary-memory = { path = "../reliary-memory" }

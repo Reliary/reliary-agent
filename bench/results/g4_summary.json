@@ -1,0 +1,10 @@
+{
+  "baseline_pct": 60.0,
+  "A_xml_pct": 48.3,
+  "B_cot_pct": 51.7,
+  "C_twopass_pct": 41.7,
+  "D_extract_pct": 51.7,
+  "max_per_run": 60,
+  "winner": "baseline",
+  "verdict": "no technique breaks the 55% ceiling"
+}

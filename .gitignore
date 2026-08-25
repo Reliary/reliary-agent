@@ -1,0 +1,39 @@
+# Build artifacts
+/target/
+**/target/
+
+# Cargo lockfiles (keep root one only)
+/**/Cargo.lock
+!/Cargo.lock
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local index DBs
+.reliary/
+bench/.reliary/
+bench/target/
+**/__pycache__/
+
+# Test work dirs
+/test_work/
+/r38_test/
+/r38_test_work/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+
+# IDE files
+.idea/
+.vscode/
+
+# Node modules
+**/node_modules/
+
+# Bench result JSONL files
+bench/results/*.jsonl

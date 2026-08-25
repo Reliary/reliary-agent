@@ -1,0 +1,340 @@
+{
+  "n_hits": 17472,
+  "n_correct": 58,
+  "fitted_temperature": 9.884083783063723,
+  "log_likelihood": -562.5686480200222,
+  "ks_statistic": 0.7163221823107052,
+  "ks_p_value": 1.2237902651290927e-30,
+  "eda_buckets": [
+    {
+      "score_bucket": 0.0,
+      "total": 1974,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 0.1,
+      "total": 21,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 0.2,
+      "total": 7322,
+      "correct": 4,
+      "hit_rate": 0.0005462988254575252
+    },
+    {
+      "score_bucket": 0.3,
+      "total": 274,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 0.4,
+      "total": 1479,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 0.5,
+      "total": 2314,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 0.6,
+      "total": 214,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 0.7,
+      "total": 29,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 0.8,
+      "total": 44,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 0.9,
+      "total": 1432,
+      "correct": 8,
+      "hit_rate": 0.00558659217877095
+    },
+    {
+      "score_bucket": 1.0,
+      "total": 153,
+      "correct": 14,
+      "hit_rate": 0.0915032679738562
+    },
+    {
+      "score_bucket": 1.1,
+      "total": 16,
+      "correct": 4,
+      "hit_rate": 0.25
+    },
+    {
+      "score_bucket": 1.2,
+      "total": 116,
+      "correct": 6,
+      "hit_rate": 0.05172413793103448
+    },
+    {
+      "score_bucket": 1.3,
+      "total": 3,
+      "correct": 1,
+      "hit_rate": 0.3333333333333333
+    },
+    {
+      "score_bucket": 1.4,
+      "total": 2,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 1.5,
+      "total": 27,
+      "correct": 7,
+      "hit_rate": 0.25925925925925924
+    },
+    {
+      "score_bucket": 1.7,
+      "total": 1,
+      "correct": 1,
+      "hit_rate": 1.0
+    },
+    {
+      "score_bucket": 1.8,
+      "total": 2,
+      "correct": 2,
+      "hit_rate": 1.0
+    },
+    {
+      "score_bucket": 9.9,
+      "total": 436,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 10.1,
+      "total": 270,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 10.2,
+      "total": 227,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 10.3,
+      "total": 318,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 10.4,
+      "total": 85,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 10.5,
+      "total": 75,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 10.6,
+      "total": 302,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 10.7,
+      "total": 8,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 10.8,
+      "total": 29,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 10.9,
+      "total": 25,
+      "correct": 2,
+      "hit_rate": 0.08
+    },
+    {
+      "score_bucket": 11.0,
+      "total": 13,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 11.1,
+      "total": 36,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 11.2,
+      "total": 115,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 11.3,
+      "total": 33,
+      "correct": 5,
+      "hit_rate": 0.15151515151515152
+    },
+    {
+      "score_bucket": 11.4,
+      "total": 1,
+      "correct": 1,
+      "hit_rate": 1.0
+    },
+    {
+      "score_bucket": 11.5,
+      "total": 1,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 11.6,
+      "total": 68,
+      "correct": 0,
+      "hit_rate": 0.0
+    },
+    {
+      "score_bucket": 11.7,
+      "total": 5,
+      "correct": 1,
+      "hit_rate": 0.2
+    },
+    {
+      "score_bucket": 12.2,
+      "total": 1,
+      "correct": 1,
+      "hit_rate": 1.0
+    },
+    {
+      "score_bucket": 12.4,
+      "total": 1,
+      "correct": 1,
+      "hit_rate": 1.0
+    }
+  ],
+  "per_anchor_counts": [
+    {
+      "anchor_id": "hom-001",
+      "n_hits": 620,
+      "n_correct": 4
+    },
+    {
+      "anchor_id": "hom-002",
+      "n_hits": 226,
+      "n_correct": 1
+    },
+    {
+      "anchor_id": "hom-003",
+      "n_hits": 347,
+      "n_correct": 1
+    },
+    {
+      "anchor_id": "hom-004",
+      "n_hits": 3141,
+      "n_correct": 1
+    },
+    {
+      "anchor_id": "hom-005",
+      "n_hits": 830,
+      "n_correct": 1
+    },
+    {
+      "anchor_id": "hom-006",
+      "n_hits": 1328,
+      "n_correct": 4
+    },
+    {
+      "anchor_id": "hom-007",
+      "n_hits": 1457,
+      "n_correct": 7
+    },
+    {
+      "anchor_id": "hom-008",
+      "n_hits": 1984,
+      "n_correct": 3
+    },
+    {
+      "anchor_id": "hom-009",
+      "n_hits": 55,
+      "n_correct": 1
+    },
+    {
+      "anchor_id": "hom-010",
+      "n_hits": 654,
+      "n_correct": 4
+    },
+    {
+      "anchor_id": "hom-011",
+      "n_hits": 333,
+      "n_correct": 1
+    },
+    {
+      "anchor_id": "hom-012",
+      "n_hits": 2258,
+      "n_correct": 6
+    },
+    {
+      "anchor_id": "hom-013",
+      "n_hits": 0,
+      "n_correct": 0
+    },
+    {
+      "anchor_id": "hom-014",
+      "n_hits": 120,
+      "n_correct": 2
+    },
+    {
+      "anchor_id": "hom-015",
+      "n_hits": 84,
+      "n_correct": 3
+    },
+    {
+      "anchor_id": "hom-016",
+      "n_hits": 1549,
+      "n_correct": 12
+    },
+    {
+      "anchor_id": "hom-017",
+      "n_hits": 2065,
+      "n_correct": 1
+    },
+    {
+      "anchor_id": "hom-018",
+      "n_hits": 85,
+      "n_correct": 5
+    },
+    {
+      "anchor_id": "hom-019",
+      "n_hits": 0,
+      "n_correct": 0
+    },
+    {
+      "anchor_id": "hom-020",
+      "n_hits": 336,
+      "n_correct": 1
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+name: Bench
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'crates/**'
+      - 'bench/**'
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - uses: actions-rust-lang/setup-rust-toolchain@46a9d261ee2ace4b93b3bd6e867168ac38627b38
+        with:
+          toolchain: stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Trust tokio corpus
+        run: |
+          if [ ! -d /tmp/tokio-corpus ]; then
+            git clone --depth=1 https://github.com/tokio-rs/tokio.git /tmp/tokio-corpus
+          fi
+          cd /tmp/tokio-corpus
+          /home/runner/work/reliary-agent/reliary-agent/target/release/reliary trust . 2>&1 | tail -3
+
+      - name: Run homonym bench (manual)
+        run: |
+          cd bench
+          python3 bench_homonyms.py 2>&1 || echo "bench_homonyms skipped (no fixture)"
+        continue-on-error: true

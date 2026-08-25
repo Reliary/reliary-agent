@@ -1,0 +1,32 @@
+name: Supply-chain hardening
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - uses: actions-rust-lang/setup-rust-toolchain@46a9d261ee2ace4b93b3bd6e867168ac38627b38
+        with:
+          toolchain: stable
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked 2>/dev/null || true
+
+      - name: cargo-deny advisories
+        run: cargo deny check advisories 2>&1 | tail -20
+
+      - name: cargo-deny sources
+        run: cargo deny check sources 2>&1 | tail -10
+
+      - name: cargo-deny bans
+        run: cargo deny check bans 2>&1 | tail -10

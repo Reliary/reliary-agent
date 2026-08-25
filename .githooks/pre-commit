@@ -1,0 +1,128 @@
+#!/bin/sh
+# Guardrails pre-commit hook: clippy, .ok(), gitleaks, audit, deny, YAML, hardcoded paths, stale files
+set -e
+
+echo "[guard] Running pre-commit checks..."
+
+# 1. Hardcoded absolute HOME paths (must use $HOME or env vars)
+# Exclude ux.rs (contains legitimate Linuxbrew/Homebrew detection paths)
+# and bench/ (dev-only scripts that reference local tool paths).
+if git diff --cached --name-only | xargs grep -lnP '/home/[^/]+/' 2>/dev/null | grep -v '.githooks/' | grep -v 'ux\.rs$' | grep -v '^bench/'; then
+    echo "FAIL: Hardcoded /home/user/ path detected. Use \$HOME or env vars."
+    exit 1
+fi
+
+# 2. Clippy all-targets — WARN only (repo has pre-existing warnings; failing
+#    the commit blocks all work. Use `cargo clippy --fix` to clear them.)
+if command -v cargo >/dev/null 2>&1; then
+    cargo clippy --all-targets 2>/dev/null || {
+        echo "WARN: clippy found warnings. Run: cargo clippy --fix --all-targets --allow-dirty"
+    }
+    echo "  clippy: done (warn-only)"
+fi
+
+# 3. Silent .ok() check — flag only bare .ok(); at statement level (not in expressions)
+bad=$(python3 -c "
+import subprocess, sys
+try:
+    files = subprocess.check_output(['git', 'diff', '--cached', '--name-only', '--diff-filter=ACM']).decode().split()
+except: sys.exit(0)
+for f in files:
+    if not f.endswith('.rs'): continue
+    with open(f) as fh:
+        for i, line in enumerate(fh, 1):
+            sl = line.rstrip()
+            if sl.lstrip().startswith('#') or 'mod tests' in sl: continue
+            # Only flag .ok(); as a statement (not .ok() inside expressions)
+            if sl.strip().endswith('.ok();') and 'GUARDED: intentional' not in sl:
+                print(f'{f}:{i}: {sl}')
+" 2>/dev/null)
+if [ -n "$bad" ]; then echo "FAIL: bare .ok(); statements without // GUARDED: intentional in staged files:"; echo "$bad"; exit 1; fi
+echo "  .ok() checks: clean"
+
+# 4. Gitleaks (staged files only)
+if command -v gitleaks >/dev/null 2>&1; then
+    gitleaks protect --staged --config .gitleaks.toml 2>/dev/null || {
+        echo "FAIL: Gitleaks detected secrets in staged changes."
+        exit 1
+    }
+fi
+
+# 5. cargo audit (check for known vulnerabilities)
+if command -v cargo-audit >/dev/null 2>&1 || command -v cargo audit >/dev/null 2>&1; then
+    cargo audit --deny-warnings 2>/dev/null || {
+        echo "WARN: cargo audit found vulnerabilities."
+        echo "      Install cargo-audit: cargo install cargo-audit"
+    }
+fi
+
+# 6. cargo deny bans (check for duplicate deps, yanked crates)
+if command -v cargo-deny >/dev/null 2>&1 || command -v cargo deny >/dev/null 2>&1; then
+    cargo deny check bans 2>/dev/null || {
+        echo "WARN: cargo deny found ban violations."
+    }
+fi
+
+# 7. Validate workflow YAML syntax
+if command -v python3 >/dev/null 2>&1; then
+    for f in .github/workflows/*.yml; do
+        if [ -f "$f" ]; then
+            python3 -c "import yaml; yaml.safe_load(open('$f'))" 2>/dev/null || {
+                echo "FAIL: $f has invalid YAML syntax"
+                exit 1
+            }
+        fi
+    done
+fi
+
+# 8. Check for stale .perf files in src
+stale=$(find . -name "*.perf" -not -path "./target/*" 2>/dev/null)
+if [ -n "$stale" ]; then
+    echo "FAIL: stale .perf files committed: $stale"
+    exit 1
+fi
+
+# 8b. Block SQLite runtime database files (they get rebuilt by the daemon)
+sqlite_staged=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null | grep -E '\.sqlite(-journal|-shm|-wal)?$' || true)
+if [ -n "$sqlite_staged" ]; then
+    echo "FAIL: SQLite runtime DBs must not be committed (daemon rebuilds them):"
+    echo "$sqlite_staged"
+    exit 1
+fi
+
+# 9. shellcheck (lint shell scripts)
+if command -v shellcheck >/dev/null 2>&1; then
+    shellcheck scripts/*.sh 2>/dev/null || {
+        echo "WARN: shellcheck found script issues"
+    }
+    echo "  shellcheck: done"
+fi
+
+# 10. actionlint (validate workflow files)
+if command -v actionlint >/dev/null 2>&1; then
+    actionlint .github/workflows/*.yml 2>/dev/null || {
+        echo "WARN: actionlint found workflow issues"
+    }
+    echo "  actionlint: done"
+fi
+
+# 11. Check commit signing is configured
+if ! git config --get user.signingkey >/dev/null 2>&1; then
+    echo "WARN: no GPG/SSH signing key configured. Set one up:"
+    echo "      gpg --full-generate-key"
+    echo "      git config --global user.signingkey <KEY>"
+    echo "      git config --global commit.gpgsign true"
+    echo "      (or) git config --global gpg.format ssh"
+fi
+echo "  signing check: done"
+
+# 12. ci_guards.py — bug-class pattern detection (non-atomic writes, OOM reads, curl, etc.)
+# Optional: only runs if the script exists (it's not in this repo's tree).
+if command -v python3 >/dev/null 2>&1 && [ -f scripts/ci_guards.py ]; then
+    python3 scripts/ci_guards.py --staged 2>&1 || {
+        echo "FAIL: guardrail violations found. Mark with // GUARDED: intentional if a false positive."
+        exit 1
+    }
+fi
+
+echo "[guard] All checks passed."

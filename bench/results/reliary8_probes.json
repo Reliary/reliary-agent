@@ -1,0 +1,844 @@
+[
+  {
+    "id": "skeleton_what",
+    "question": "What does the skeleton() function do?",
+    "rubric": {
+      "accept_keywords": [
+        "normalize",
+        "placeholder",
+        "uuid"
+      ],
+      "min_keywords": 2,
+      "function": "skeleton"
+    }
+  },
+  {
+    "id": "skeleton_detail",
+    "question": "What is the minimum length for a hex hash to be normalized by skeleton()?",
+    "rubric": {
+      "accept_keywords": [
+        "7",
+        "char"
+      ],
+      "min_keywords": 1,
+      "function": "skeleton"
+    }
+  },
+  {
+    "id": "skeleton_edge",
+    "question": "What does skeleton() return for an empty or whitespace-only input string?",
+    "rubric": {
+      "accept_keywords": [
+        "empty",
+        "string"
+      ],
+      "min_keywords": 2,
+      "function": "skeleton"
+    }
+  },
+  {
+    "id": "skeleton_crossref",
+    "question": "Which other functions use skeleton() as a building block?",
+    "rubric": {
+      "accept_keywords": [
+        "skeleton_hash",
+        "find_clusters"
+      ],
+      "min_keywords": 1,
+      "function": "skeleton"
+    }
+  },
+  {
+    "id": "skeleton_discriminate",
+    "question": "What is the key difference between skeleton() and aggressive_skeleton()?",
+    "rubric": {
+      "accept_keywords": [
+        "word",
+        "verbatim",
+        "{w}"
+      ],
+      "min_keywords": 2,
+      "function": "skeleton"
+    }
+  },
+  {
+    "id": "aggressive_what",
+    "question": "What does aggressive_skeleton() do?",
+    "rubric": {
+      "accept_keywords": [
+        "word",
+        "{w}",
+        "collapse"
+      ],
+      "min_keywords": 2,
+      "function": "aggressive_skeleton"
+    }
+  },
+  {
+    "id": "aggressive_detail",
+    "question": "How does aggressive_skeleton() handle single-letter words like 'a' or 'I'?",
+    "rubric": {
+      "accept_keywords": [
+        "verbatim",
+        "keep",
+        "single"
+      ],
+      "min_keywords": 2,
+      "function": "aggressive_skeleton"
+    }
+  },
+  {
+    "id": "aggressive_edge",
+    "question": "How does aggressive_skeleton() handle a compound token like 'v1.0.200' or 'E0308'?",
+    "rubric": {
+      "accept_keywords": [
+        "split",
+        "v",
+        "ver",
+        "E"
+      ],
+      "min_keywords": 2,
+      "function": "aggressive_skeleton"
+    }
+  },
+  {
+    "id": "aggressive_crossref",
+    "question": "Which function uses aggressive_skeleton() as its clustering hash?",
+    "rubric": {
+      "accept_keywords": [
+        "find_clusters_global"
+      ],
+      "min_keywords": 1,
+      "function": "aggressive_skeleton"
+    }
+  },
+  {
+    "id": "aggressive_discriminate",
+    "question": "Why does aggressive_skeleton() use a capacity hint of 256 while skeleton() uses 512?",
+    "rubric": {
+      "accept_keywords": [
+        "shorter",
+        "aggressive",
+        "collapse"
+      ],
+      "min_keywords": 1,
+      "function": "aggressive_skeleton"
+    }
+  },
+  {
+    "id": "skelhash_what",
+    "question": "What does skeleton_hash() compute?",
+    "rubric": {
+      "accept_keywords": [
+        "hash",
+        "skeleton",
+        "64"
+      ],
+      "min_keywords": 2,
+      "function": "skeleton_hash"
+    }
+  },
+  {
+    "id": "skelhash_detail",
+    "question": "What are the initial value and multiplier used by skeleton_hash()?",
+    "rubric": {
+      "accept_keywords": [
+        "5381",
+        "33"
+      ],
+      "min_keywords": 2,
+      "function": "skeleton_hash"
+    }
+  },
+  {
+    "id": "skelhash_edge",
+    "question": "What does skeleton_hash() return for blank or empty input?",
+    "rubric": {
+      "accept_keywords": [
+        "0"
+      ],
+      "min_keywords": 1,
+      "function": "skeleton_hash"
+    }
+  },
+  {
+    "id": "skelhash_crossref",
+    "question": "Which function uses skeleton_hash() to group lines?",
+    "rubric": {
+      "accept_keywords": [
+        "find_clusters"
+      ],
+      "min_keywords": 1,
+      "function": "skeleton_hash"
+    }
+  },
+  {
+    "id": "skelhash_discriminate",
+    "question": "Why do 'rustc 1.72.0' and 'rustc 1.80.1' produce the same skeleton_hash?",
+    "rubric": {
+      "accept_keywords": [
+        "skeleton",
+        "same",
+        "version",
+        "{ver}"
+      ],
+      "min_keywords": 2,
+      "function": "skeleton_hash"
+    }
+  },
+  {
+    "id": "findcl_what",
+    "question": "What does find_clusters() do?",
+    "rubric": {
+      "accept_keywords": [
+        "consecutive",
+        "skeleton",
+        "cluster",
+        "group"
+      ],
+      "min_keywords": 2,
+      "function": "find_clusters"
+    }
+  },
+  {
+    "id": "findcl_detail",
+    "question": "What is the default minimum run length for find_clusters() to form a cluster?",
+    "rubric": {
+      "accept_keywords": [
+        "3"
+      ],
+      "min_keywords": 1,
+      "function": "find_clusters"
+    }
+  },
+  {
+    "id": "findcl_edge",
+    "question": "What happens if two identical-skeleton lines are separated by a different line? Does find_clusters() group them?",
+    "rubric": {
+      "accept_keywords": [
+        "no",
+        "not",
+        "break"
+      ],
+      "min_keywords": 1,
+      "function": "find_clusters"
+    }
+  },
+  {
+    "id": "findcl_crossref",
+    "question": "Which skeleton variant does find_clusters() use for its clustering hash \u2014 skeleton() or aggressive_skeleton()?",
+    "rubric": {
+      "accept_keywords": [
+        "aggressive"
+      ],
+      "min_keywords": 1,
+      "function": "find_clusters"
+    }
+  },
+  {
+    "id": "findcl_discriminate",
+    "question": "What is the key limitation of find_clusters() that find_clusters_global() fixes?",
+    "rubric": {
+      "accept_keywords": [
+        "consecutive",
+        "non-consecutive",
+        "scattered",
+        "anywhere"
+      ],
+      "min_keywords": 1,
+      "function": "find_clusters"
+    }
+  },
+  {
+    "id": "findgl_what",
+    "question": "What does find_clusters_global() do?",
+    "rubric": {
+      "accept_keywords": [
+        "non-consecutive",
+        "anywhere",
+        "cluster",
+        "skeleton"
+      ],
+      "min_keywords": 2,
+      "function": "find_clusters_global"
+    }
+  },
+  {
+    "id": "findgl_detail",
+    "question": "What is the purpose of the min_line_len parameter in find_clusters_global()?",
+    "rubric": {
+      "accept_keywords": [
+        "short",
+        "filter",
+        "ignore",
+        "trivial"
+      ],
+      "min_keywords": 2,
+      "function": "find_clusters_global"
+    }
+  },
+  {
+    "id": "findgl_edge",
+    "question": "Why is the min_line_len filter critical in find_clusters_global()? What happens without it?",
+    "rubric": {
+      "accept_keywords": [
+        "trivial",
+        "waste",
+        "overhead",
+        "} else {"
+      ],
+      "min_keywords": 1,
+      "function": "find_clusters_global"
+    }
+  },
+  {
+    "id": "findgl_crossref",
+    "question": "How does find_clusters_global() compare to find_clusters() in terms of how much repetition it catches?",
+    "rubric": {
+      "accept_keywords": [
+        "more",
+        "28",
+        "scattered"
+      ],
+      "min_keywords": 1,
+      "function": "find_clusters_global"
+    }
+  },
+  {
+    "id": "findgl_discriminate",
+    "question": "Why does find_clusters_global() sort clusters by size descending?",
+    "rubric": {
+      "accept_keywords": [
+        "biggest",
+        "first",
+        "render",
+        "win"
+      ],
+      "min_keywords": 1,
+      "function": "find_clusters_global"
+    }
+  },
+  {
+    "id": "classify_what",
+    "question": "What does classify_line() return?",
+    "rubric": {
+      "accept_keywords": [
+        "LineType",
+        "enum",
+        "type"
+      ],
+      "min_keywords": 2,
+      "function": "classify_line"
+    }
+  },
+  {
+    "id": "classify_detail",
+    "question": "What line types does classify_line() distinguish? Name at least 5.",
+    "rubric": {
+      "accept_keywords": [
+        "blank",
+        "separator",
+        "comment",
+        "import",
+        "definition",
+        "error",
+        "summary",
+        "code"
+      ],
+      "min_keywords": 5,
+      "function": "classify_line"
+    }
+  },
+  {
+    "id": "classify_edge",
+    "question": "If a line is both a comment AND contains the word 'error', which LineType does classify_line() return?",
+    "rubric": {
+      "accept_keywords": [
+        "error",
+        "Error"
+      ],
+      "min_keywords": 1,
+      "function": "classify_line"
+    }
+  },
+  {
+    "id": "classify_crossref",
+    "question": "Which function does classify_line() call to detect definition lines?",
+    "rubric": {
+      "accept_keywords": [
+        "is_definition_line"
+      ],
+      "min_keywords": 1,
+      "function": "classify_line"
+    }
+  },
+  {
+    "id": "classify_discriminate",
+    "question": "Does 'x = import_thing' classify as Import? Why or why not?",
+    "rubric": {
+      "accept_keywords": [
+        "no",
+        "not",
+        "starts_with",
+        "prefix"
+      ],
+      "min_keywords": 1,
+      "function": "classify_line"
+    }
+  },
+  {
+    "id": "maxwell_what",
+    "question": "What does MaxwellGate::score() return?",
+    "rubric": {
+      "accept_keywords": [
+        "Option",
+        "score",
+        "None",
+        "Some"
+      ],
+      "min_keywords": 2,
+      "function": "MaxwellGate::score"
+    }
+  },
+  {
+    "id": "maxwell_detail",
+    "question": "What are the three metrics MaxwellGate uses, and what are their default thresholds?",
+    "rubric": {
+      "accept_keywords": [
+        "entropy",
+        "3.5",
+        "compression",
+        "3.0",
+        "diversity",
+        "0.25"
+      ],
+      "min_keywords": 4,
+      "function": "MaxwellGate::score"
+    }
+  },
+  {
+    "id": "maxwell_edge",
+    "question": "What happens if the input text to MaxwellGate::score() is shorter than 50 characters?",
+    "rubric": {
+      "accept_keywords": [
+        "pass",
+        "1.0",
+        "auto"
+      ],
+      "min_keywords": 2,
+      "function": "MaxwellGate::score"
+    }
+  },
+  {
+    "id": "maxwell_crossref",
+    "question": "What compression library does MaxwellGate use to compute the compression ratio?",
+    "rubric": {
+      "accept_keywords": [
+        "zlib",
+        "flate2"
+      ],
+      "min_keywords": 1,
+      "function": "MaxwellGate::score"
+    }
+  },
+  {
+    "id": "maxwell_discriminate",
+    "question": "How are the three gates combined \u2014 AND or OR? What does this mean for a high-entropy but highly-repetitive text?",
+    "rubric": {
+      "accept_keywords": [
+        "AND",
+        "fail",
+        "all"
+      ],
+      "min_keywords": 2,
+      "function": "MaxwellGate::score"
+    }
+  },
+  {
+    "id": "compress_what",
+    "question": "What does compress_content() do?",
+    "rubric": {
+      "accept_keywords": [
+        "collapse",
+        "import",
+        "comment",
+        "strip",
+        "definition"
+      ],
+      "min_keywords": 2,
+      "function": "compress_content"
+    }
+  },
+  {
+    "id": "compress_detail",
+    "question": "How does compress_content() handle a run of consecutive Import lines?",
+    "rubric": {
+      "accept_keywords": [
+        "label",
+        "[N imports]",
+        "collapse",
+        "count"
+      ],
+      "min_keywords": 2,
+      "function": "compress_content"
+    }
+  },
+  {
+    "id": "compress_edge",
+    "question": "In aggressive mode, does compress_content() strip ALL comments or keep some?",
+    "rubric": {
+      "accept_keywords": [
+        "first",
+        "keep",
+        "not all",
+        "preserve"
+      ],
+      "min_keywords": 2,
+      "function": "compress_content"
+    }
+  },
+  {
+    "id": "compress_crossref",
+    "question": "What input type does compress_content() take \u2014 raw text or classified lines?",
+    "rubric": {
+      "accept_keywords": [
+        "classified",
+        "ContentLine",
+        "Vec"
+      ],
+      "min_keywords": 1,
+      "function": "compress_content"
+    }
+  },
+  {
+    "id": "compress_discriminate",
+    "question": "When is the '[N imports]' label actually emitted \u2014 immediately or deferred?",
+    "rubric": {
+      "accept_keywords": [
+        "deferred",
+        "lazy",
+        "flushed",
+        "non-import"
+      ],
+      "min_keywords": 1,
+      "function": "compress_content"
+    }
+  },
+  {
+    "id": "detect_what",
+    "question": "What does detect_strategy() return?",
+    "rubric": {
+      "accept_keywords": [
+        "CompressionStrategy",
+        "enum",
+        "strategy"
+      ],
+      "min_keywords": 2,
+      "function": "detect_strategy"
+    }
+  },
+  {
+    "id": "detect_detail",
+    "question": "What strategies can detect_strategy() return? Name at least 4.",
+    "rubric": {
+      "accept_keywords": [
+        "json",
+        "diff",
+        "tabular",
+        "prefixed",
+        "normal"
+      ],
+      "min_keywords": 4,
+      "function": "detect_strategy"
+    }
+  },
+  {
+    "id": "detect_edge",
+    "question": "If a buffer is both JSON and tabular, which strategy does detect_strategy() return and why?",
+    "rubric": {
+      "accept_keywords": [
+        "json",
+        "first",
+        "priority"
+      ],
+      "min_keywords": 2,
+      "function": "detect_strategy"
+    }
+  },
+  {
+    "id": "detect_crossref",
+    "question": "What does detect_tabular() look for to decide content is tabular?",
+    "rubric": {
+      "accept_keywords": [
+        "gutter",
+        "column",
+        "space",
+        "aligned"
+      ],
+      "min_keywords": 2,
+      "function": "detect_strategy"
+    }
+  },
+  {
+    "id": "detect_discriminate",
+    "question": "Why does detect_json() only check the FIRST non-blank line? What does this miss?",
+    "rubric": {
+      "accept_keywords": [
+        "embedded",
+        "mid-buffer",
+        "after",
+        "prose"
+      ],
+      "min_keywords": 1,
+      "function": "detect_strategy"
+    }
+  },
+  {
+    "id": "drop_what",
+    "question": "What does should_drop() decide?",
+    "rubric": {
+      "accept_keywords": [
+        "remove",
+        "drop",
+        "line",
+        "output"
+      ],
+      "min_keywords": 2,
+      "function": "should_drop"
+    }
+  },
+  {
+    "id": "drop_detail",
+    "question": "What line types or conditions cause should_drop() to return true?",
+    "rubric": {
+      "accept_keywords": [
+        "blank",
+        "separator",
+        "progress",
+        "short",
+        "2"
+      ],
+      "min_keywords": 3,
+      "function": "should_drop"
+    }
+  },
+  {
+    "id": "drop_edge",
+    "question": "Can should_drop() ever return true for an error line?",
+    "rubric": {
+      "accept_keywords": [
+        "no",
+        "false",
+        "never"
+      ],
+      "min_keywords": 1,
+      "function": "should_drop"
+    }
+  },
+  {
+    "id": "drop_crossref",
+    "question": "Which functions use should_drop() as a filter before clustering?",
+    "rubric": {
+      "accept_keywords": [
+        "skeleton_groups",
+        "skeleton_groups_prefixed"
+      ],
+      "min_keywords": 1,
+      "function": "should_drop"
+    }
+  },
+  {
+    "id": "drop_discriminate",
+    "question": "What is the exact length threshold for a line to be dropped by should_drop() for being too short?",
+    "rubric": {
+      "accept_keywords": [
+        "2",
+        "<=2"
+      ],
+      "min_keywords": 1,
+      "function": "should_drop"
+    }
+  },
+  {
+    "id": "bug_hex_threshold",
+    "question": "Review this Rust function. Is there a bug? If so, describe it precisely.\n\nCode:\n```\npub fn skeleton(line: &str) -> String {\n    let s = line.trim();\n    if s.is_empty() { return String::new(); }\n    let bytes = s.as_bytes();\n    let len = bytes.len();\n    let mut i = 0;\n    // ... (other rules omitted for brevity) ...\n    // Hex hash detection\n    if bd(i) && bytes[i].is_ascii_hexdigit() {\n        let mut he = i;\n        while he < len && (bytes[he] as char).is_ascii_hexdigit() { he += 1; }\n        if he - i >= 6 && he - i <= 40 && (he >= len || !is_alnum(he)) {\n            emit_str!(\"{hash}\"); i = he; continue;\n        }\n    }\n    // ...\n}\n```",
+    "rubric": {
+      "accept_keywords": [
+        "6",
+        "7",
+        "hash",
+        "threshold",
+        "shorter"
+      ],
+      "min_keywords": 3
+    }
+  },
+  {
+    "id": "bug_skeleton_hash_no_zero",
+    "question": "Review this Rust function. Is there a bug? If so, describe it precisely.\n\nCode:\n```\nfn skeleton_hash(text: &str) -> u64 {\n    let s = skeleton(text);\n    let mut h: u64 = 5381;\n    for b in s.bytes() { h = h.wrapping_mul(33).wrapping_add(b as u64); }\n    h\n}\n```",
+    "rubric": {
+      "accept_keywords": [
+        "empty",
+        "blank",
+        "0",
+        "missing",
+        "sentinel"
+      ],
+      "min_keywords": 3
+    }
+  },
+  {
+    "id": "bug_classify_priority",
+    "question": "Review this Rust function. Is there a bug? If so, describe it precisely.\n\nCode:\n```\npub fn classify_line(line: &str) -> LineType {\n    let trimmed = line.trim();\n    if trimmed.is_empty() { return LineType::Blank; }\n    let seps: &[char] = &['-', '=', '*', '.', '_', '~'];\n    if trimmed.len() >= 3 && trimmed.chars().all(|c| seps.contains(&c)) {\n        return LineType::Separator;\n    }\n    let lower = trimmed.to_lowercase();\n    // Comment check\n    let first = trimmed.chars().next().unwrap_or(' ');\n    if first == '#' || first == ';' || first == '%' || first == '\\''\n        || trimmed.starts_with(\"//\") || trimmed.starts_with(\"--\")\n        || trimmed.starts_with(\"/*\") || trimmed.starts_with(\"* \")\n    {\n        return LineType::Comment;\n    }\n    // Error check\n    if lower.contains(\"error\") || trimmed.starts_with(\"FAILED\") {\n        return LineType::Error;\n    }\n    // ...\n}\n```",
+    "rubric": {
+      "accept_keywords": [
+        "error",
+        "comment",
+        "before",
+        "priority",
+        "order"
+      ],
+      "min_keywords": 3
+    }
+  },
+  {
+    "id": "bug_maxwell_or",
+    "question": "Review this Rust method. Is there a bug? If so, describe it precisely.\n\nCode:\n```\npub fn score(&self, text: &str) -> Option<(f64, usize)> {\n    if text.len() < 50 { return Some((1.0, text.len())); }\n    let ent = self.entropy(text);\n    let ratio = self.compression_ratio(text);\n    let div = self.lexical_diversity(text);\n    if ent < self.entropy_threshold || ratio > self.compression_ratio_max || div < self.diversity_min {\n        return None;\n    }\n    Some((ent.min(8.0) / 8.0, text.len()))\n}\n```",
+    "rubric": {
+      "accept_keywords": [
+        "||",
+        "&&",
+        "AND",
+        "OR",
+        "any",
+        "all"
+      ],
+      "min_keywords": 3
+    }
+  },
+  {
+    "id": "bug_aggressive_single_letter",
+    "question": "Review this snippet from aggressive_skeleton. Is there a bug? If so, describe it precisely.\n\nCode:\n```\n// In aggressive_skeleton, the word-collapse rule:\nif we - i > 0 && word.is_alpha() {\n    emit_str!(\"{w}\");\n    i = we;\n    continue;\n}\n// Note: 'we' is the end of the alpha run, 'i' is the start.\n// The original rule was: we > i + 1 (length > 1) to keep single-letter words verbatim.\n```",
+    "rubric": {
+      "accept_keywords": [
+        "single",
+        "letter",
+        "verbatim",
+        "{w}",
+        "length",
+        "1"
+      ],
+      "min_keywords": 3
+    }
+  },
+  {
+    "id": "arch_dependency_direction",
+    "question": "How do classify.rs and lib.rs relate to each other? What is the dependency direction \u2014 which file depends on which?",
+    "rubric": {
+      "accept_keywords": [
+        "lib",
+        "classify",
+        "depends",
+        "uses",
+        "calls"
+      ],
+      "min_keywords": 2
+    }
+  },
+  {
+    "id": "arch_text_to_compressed",
+    "question": "Trace the path from raw text input to compressed output in reliary-sift. Which functions are called in order? List the pipeline.",
+    "rubric": {
+      "accept_keywords": [
+        "classify",
+        "classify_line",
+        "compress_content",
+        "skeleton",
+        "MaxwellGate"
+      ],
+      "min_keywords": 3
+    }
+  },
+  {
+    "id": "arch_add_line_type",
+    "question": "If you wanted to add a new LineType variant (e.g., 'Warning'), which functions would need to change and why?",
+    "rubric": {
+      "accept_keywords": [
+        "LineType",
+        "classify_line",
+        "compress_content",
+        "enum",
+        "match"
+      ],
+      "min_keywords": 3
+    }
+  },
+  {
+    "id": "impact_rename_skeleton",
+    "question": "If I rename the function skeleton() to normalize(), which other functions would break? List them.",
+    "rubric": {
+      "accept_keywords": [
+        "skeleton_hash",
+        "aggressive_skeleton",
+        "find_clusters",
+        "skeleton_groups"
+      ],
+      "min_keywords": 2
+    }
+  },
+  {
+    "id": "impact_stricter_maxwell",
+    "question": "If I make MaxwellGate's entropy threshold stricter (change from 3.5 to 5.0), which callers would change behavior and how?",
+    "rubric": {
+      "accept_keywords": [
+        "compress_content",
+        "zone_truncate_info",
+        "filter",
+        "drop",
+        "more"
+      ],
+      "min_keywords": 2
+    }
+  },
+  {
+    "id": "impact_remove_aggressive",
+    "question": "If I remove aggressive_skeleton() entirely, what breaks? Which functions depend on it?",
+    "rubric": {
+      "accept_keywords": [
+        "find_clusters",
+        "skeleton_hash",
+        "aggressive_skeleton_groups",
+        "should_use_aggressive"
+      ],
+      "min_keywords": 2
+    }
+  },
+  {
+    "id": "review_safe_add_placeholder",
+    "question": "Review this proposed change to skeleton(). Is it safe? What could it break?\n\n```diff\n+ // 7. Binary literal\n+ if bd(i) && bytes[i] == b'0' && i + 1 < len && bytes[i+1] == b'b' {\n+     let mut be = i + 2;\n+     while be < len && (bytes[be] == b'0' || bytes[be] == b'1') { be += 1; }\n+     if be > i + 2 && (be >= len || !is_alnum(be)) {\n+         emit_str!(\"{bin}\"); i = be; continue;\n+     }\n+ }\n```",
+    "rubric": {
+      "accept_keywords": [
+        "safe",
+        "binary",
+        "new",
+        "placeholder",
+        "no break"
+      ],
+      "min_keywords": 2
+    }
+  },
+  {
+    "id": "review_unsafe_remove_error_priority",
+    "question": "Review this proposed change to classify_line(). Is it safe? What could it break?\n\n```diff\n- // Error: contains error/FAILED substring (case-insensitive)\n- if lower.contains(\"error\") || trimmed.starts_with(\"FAILED\") {\n-     return LineType::Error;\n- }\n```",
+    "rubric": {
+      "accept_keywords": [
+        "not safe",
+        "error",
+        "missed",
+        "classify",
+        "break"
+      ],
+      "min_keywords": 3
+    }
+  }
+]

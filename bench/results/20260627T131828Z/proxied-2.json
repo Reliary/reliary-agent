@@ -1,0 +1,43 @@
+{
+  "condition": "proxied",
+  "input_tokens": 6127,
+  "output_tokens": 1864,
+  "weighted_cost": 13583,
+  "turns": 5,
+  "wall_time_s": 18.97,
+  "task_pass": true,
+  "turn_log": [
+    {
+      "turn": 0,
+      "pt": 413,
+      "ct": 253,
+      "asst_len": 1121
+    },
+    {
+      "turn": 1,
+      "pt": 687,
+      "ct": 412,
+      "asst_len": 1742
+    },
+    {
+      "turn": 2,
+      "pt": 1117,
+      "ct": 556,
+      "asst_len": 2322
+    },
+    {
+      "turn": 3,
+      "pt": 1689,
+      "ct": 518,
+      "asst_len": 2170
+    },
+    {
+      "turn": 4,
+      "pt": 2221,
+      "ct": 125,
+      "asst_len": 489
+    }
+  ],
+  "model": "deepseek-chat",
+  "timestamp": "2026-06-27T13:20:21.237294Z"
+}

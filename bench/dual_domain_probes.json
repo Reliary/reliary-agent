@@ -1,0 +1,44 @@
+[
+  {
+    "id": "dual_token_refresh",
+    "question": "The user is debugging OAuth token refresh failures. Look at the codebase documentation and the task entry. Which function handles token refresh? Describe the suspected timing issue.",
+    "expected_facts": ["refresh_token", "expired", "clock", "skew", "expiry"],
+    "min_facts": 3
+  },
+  {
+    "id": "dual_validate",
+    "question": "Does validate_session check the right expiry field? Cross-reference the task entry with the codebase documentation.",
+    "expected_facts": ["validate", "session", "expiry", "expired_at", "check"],
+    "min_facts": 3
+  },
+  {
+    "id": "dual_clock_source",
+    "question": "What's the suspected root cause of the token refresh failure? What should be checked first?",
+    "expected_facts": ["clock", "skew", "ntp", "3 seconds", "sync"],
+    "min_facts": 3
+  },
+  {
+    "id": "dual_fix_location",
+    "question": "Which file and function needs to be changed to fix the expiry check? What should the fix do?",
+    "expected_facts": ["session", "validate", "expiry", "tolerance", "buffer"],
+    "min_facts": 3
+  },
+  {
+    "id": "dual_tools_used",
+    "question": "What tools or functions were used to investigate the issue? Does the codebase have the right diagnostic functions to help?",
+    "expected_facts": ["grep", "search", "goto_def", "find_references", "diagnostic"],
+    "min_facts": 2
+  },
+  {
+    "id": "dual_cross_module",
+    "question": "The task says files_changed include auth.rs and session.go. Which functions in the pack exist in those files? What's the dependency direction between them?",
+    "expected_facts": ["auth", "session", "refresh", "validate", "depends"],
+    "min_facts": 3
+  },
+  {
+    "id": "dual_diagnostic_gap",
+    "question": "Based on the codebase documentation, what diagnostic function is MISSING that would have made this investigation faster?",
+    "expected_facts": ["log", "trace", "debug", "instrument", "missing"],
+    "min_facts": 2
+  }
+]

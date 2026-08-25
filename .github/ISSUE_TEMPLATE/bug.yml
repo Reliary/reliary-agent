@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a behavior that is incorrect, broken, or unexpected
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Describe the bug clearly. Include commands run, output observed, and output expected.
+      placeholder: |
+        `reliary trust .` returns "permission denied" on a directory I own.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Reliary version
+      placeholder: 0.8.0
+      validations:
+        required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux x86_64
+        - Linux aarch64
+        - macOS x86_64
+        - macOS arm64
+        - Windows x86_64
+        - Other (describe in context)
+      validations:
+        required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. cd /tmp/my-project
+        2. reliary trust .
+        3. ls -la .reliary
+    validations:
+        required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `reliary doctor`
+      render: shell
+      validations:
+        required: false

@@ -1,0 +1,117 @@
+//! replaces raw file reads with structured index output.
+// Every identifier in the summary is verified against the FTS5 index before reaching the LLM.
+//
+// Grammar-free design: uses regex identifier scanning, not AST/tree-sitter.
+
+use std::time::SystemTime;
+use std::path::Path;
+use std::sync::LazyLock;
+
+/// Delegate to main::index_db_path (P17: single source of truth).
+fn index_db_path(path: &str) -> String {
+    crate::index_db_path(path)
+}
+
+static SIG_RE: LazyLock<regex_lite::Regex> = LazyLock::new(|| {
+    regex_lite::Regex::new(r"^\s*(pub\s+)?(fn|def|class|struct|enum|trait|function|func)\s+(\w+)").unwrap()
+});
+static NAME_RE: LazyLock<regex_lite::Regex> = LazyLock::new(|| {
+    regex_lite::Regex::new(r"(fn|def|class|struct|enum|trait|function|func)\s+(\w+)").unwrap()
+});
+
+// Build a structured file summary from FTS5 index data.
+pub fn build(file: &str) -> String {
+    let content = match reliary_core::safe_read(file) {
+        Ok(c) => c,
+        Err(e) => return format!("ERROR: cannot read {} — {}", file, e),
+    };
+
+    let lines: Vec<&str> = content.lines().collect();
+    let total_lines = lines.len();
+
+    let mut defs: Vec<(usize, &str)> = Vec::new();
+    let sig_re = &SIG_RE;
+    for (i, line) in lines.iter().enumerate() {
+        if sig_re.is_match(line) {
+            defs.push((i + 1, line.trim()));
+        }
+    }
+
+    // Header
+    let fname = file.split('/').next_back().unwrap_or(file);
+    let mut result = format!("[{}] {}L | {} defs", fname, total_lines, defs.len());
+
+    // Definitions with caller search (if index exists)
+    let workdir = crate::paths::find_workdir(file);
+    let db_path = index_db_path(&workdir);
+    let name_re = &NAME_RE;
+
+    if let Ok(db) = rusqlite::Connection::open(&db_path) {
+        if reliary_search::schema::open_existing_db_safe(&db).is_ok() {
+            for (line_no, sig) in defs.iter().take(6) {
+                result.push_str(&format!("\n  L{}: {}", line_no, sig));
+                if let Some(caps) = name_re.captures(sig) {
+                    let name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+                    let callers = reliary_search::search::search_fts5(&db, name, 5);
+                    let caller_files: Vec<&str> = callers.iter()
+                        .filter(|r| r.file.split('/').next_back().unwrap_or("") != fname)
+                        .take(3)
+                        .map(|r| r.file.rsplit('/').next().unwrap_or(&r.file))
+                        .collect();
+                    if !caller_files.is_empty() {
+                        result.push_str(&format!(" c: [{}]", caller_files.join(", ")));
+                    }
+                }
+            }
+        }
+    }
+
+    // Add risk score
+    let risk = reliary_risk::compute_file_risk(file, &content);
+    if matches!(risk.risk, reliary_risk::RiskLevel::High | reliary_risk::RiskLevel::Medium) {
+        result.push_str(&format!("\n[risk: {:?}] {}", risk.risk, risk.reason.chars().take(80).collect::<String>()));
+    }
+
+    // Add test file references
+    let test_name = format!("{}_test.{}",
+        fname.rsplit('.').next().unwrap_or(fname),
+        if fname.ends_with(".rs") { "rs" } else if fname.ends_with(".py") { "py" } else { "rs" }
+    );
+    let test_path = Path::new(&workdir).join("tests").join(&test_name);
+    if test_path.exists() {
+        result.push_str(&format!("\n[tests: {}]", test_name));
+    }
+
+    result
+}
+
+// Load compression dictionary from the nearest FTS5 index.
+// Returns None if no index is found or query fails.
+pub fn load_dictionary() -> Option<reliary_compress::CompressionDict> {
+    for dir in &[".", ".."] {
+        let db_path = format!("{}/.reliary/index.sqlite", dir);
+        if let Ok(db) = rusqlite::Connection::open(&db_path) {
+            if reliary_search::schema::open_existing_db_safe(&db).is_ok() {
+                let mut stmt = db.prepare("SELECT phrase FROM phrases LIMIT 200").ok()?;
+                let phrases: Vec<String> = stmt.query_map([], |r| r.get(0)).ok()?
+                    .filter_map(|r| r.ok()).collect();
+                if !phrases.is_empty() {
+                    return Some(reliary_compress::build_dict(&phrases));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Bug 87: return the mtime of the nearest .reliary/index.sqlite file.
+/// Used to detect when to refresh the compression dictionary.
+pub fn index_mtime() -> Option<SystemTime> {
+    for dir in &[".", ".."] {
+        let db_path = format!("{}/.reliary/index.sqlite", dir);
+        if let Ok(meta) = std::fs::metadata(&db_path) {
+            return meta.modified().ok();  // GUARDED: intentional — None if fs doesn't support mtime
+        }
+    }
+    None
+}

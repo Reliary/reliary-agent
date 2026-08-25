@@ -1,0 +1,33 @@
+{
+  "name": "reliary-opencode-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reliary opencode plugin: reindexes files after edits, regenerates the holographic pack.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "pack": "npm pack",
+    "test": "vitest run",
+    "clean": "rm -rf dist *.tgz"
+  },
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "devDependencies": {
+    "tsup": "^8.0.1",
+    "vitest": "^1.0.0",
+    "typescript": "^5.3.3",
+    "@types/node": "^20.0.0"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

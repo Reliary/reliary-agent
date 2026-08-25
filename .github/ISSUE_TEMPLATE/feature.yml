@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest an improvement to Reliary
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What are you trying to accomplish? Why is the current behavior insufficient?
+      validations:
+        required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you implement this? Optionally include a sketch of the API.
+      validations:
+        required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      validations:
+        required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - "Critical - blocking my work"
+        - "High - significant impact"
+        - "Medium - would be nice"
+        - "Low - long-term wishlist"
+    validations:
+      required: false

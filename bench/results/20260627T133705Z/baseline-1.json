@@ -1,0 +1,61 @@
+{
+  "condition": "baseline",
+  "input_tokens": 15553,
+  "output_tokens": 6520,
+  "weighted_cost": 41633,
+  "turns": 8,
+  "wall_time_s": 76.57,
+  "task_pass": false,
+  "turn_log": [
+    {
+      "turn": 0,
+      "pt": 474,
+      "ct": 445,
+      "asst_len": 986
+    },
+    {
+      "turn": 1,
+      "pt": 730,
+      "ct": 1126,
+      "asst_len": 1951
+    },
+    {
+      "turn": 2,
+      "pt": 1211,
+      "ct": 1729,
+      "asst_len": 2326
+    },
+    {
+      "turn": 3,
+      "pt": 1797,
+      "ct": 352,
+      "asst_len": 1378
+    },
+    {
+      "turn": 4,
+      "pt": 2144,
+      "ct": 528,
+      "asst_len": 1613
+    },
+    {
+      "turn": 5,
+      "pt": 2608,
+      "ct": 1030,
+      "asst_len": 1741
+    },
+    {
+      "turn": 6,
+      "pt": 3041,
+      "ct": 1173,
+      "asst_len": 1891
+    },
+    {
+      "turn": 7,
+      "pt": 3548,
+      "ct": 137,
+      "asst_len": 480
+    }
+  ],
+  "model": "deepseek-v4-flash",
+  "timestamp": "2026-06-27T13:41:54.221217Z"
+}

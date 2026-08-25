@@ -1,0 +1,6 @@
+[package]
+name = "reliary-edit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Grammar-free function-boundary resolve and apply."

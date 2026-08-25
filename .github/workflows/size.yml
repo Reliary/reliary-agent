@@ -1,0 +1,35 @@
+name: Binary size
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - uses: actions-rust-lang/setup-rust-toolchain@46a9d261ee2ace4b93b3bd6e867168ac38627b38
+        with:
+          toolchain: stable
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Report size
+        run: |
+          ls -lh target/release/reliary
+          SIZE=$(stat -c %s target/release/reliary)
+          echo "Binary size (bytes): $SIZE"
+          echo "Binary size (MB): $((SIZE / 1024 / 1024))"
+          MAX=15728640 # 15 MB
+          if [ "$SIZE" -gt "$MAX" ]; then
+            echo "Binary exceeded 15MB budget"
+            exit 1
+          fi

@@ -1,0 +1,61 @@
+{
+  "condition": "baseline",
+  "input_tokens": 22117,
+  "output_tokens": 5284,
+  "weighted_cost": 43253,
+  "turns": 8,
+  "wall_time_s": 64.91,
+  "task_pass": false,
+  "turn_log": [
+    {
+      "turn": 0,
+      "pt": 474,
+      "ct": 379,
+      "asst_len": 1749
+    },
+    {
+      "turn": 1,
+      "pt": 874,
+      "ct": 598,
+      "asst_len": 2661
+    },
+    {
+      "turn": 2,
+      "pt": 1490,
+      "ct": 759,
+      "asst_len": 3316
+    },
+    {
+      "turn": 3,
+      "pt": 2265,
+      "ct": 624,
+      "asst_len": 2651
+    },
+    {
+      "turn": 4,
+      "pt": 2907,
+      "ct": 785,
+      "asst_len": 3275
+    },
+    {
+      "turn": 5,
+      "pt": 3712,
+      "ct": 911,
+      "asst_len": 3787
+    },
+    {
+      "turn": 6,
+      "pt": 4639,
+      "ct": 1103,
+      "asst_len": 4559
+    },
+    {
+      "turn": 7,
+      "pt": 5756,
+      "ct": 125,
+      "asst_len": 532
+    }
+  ],
+  "model": "deepseek-chat",
+  "timestamp": "2026-06-27T13:31:42.688175Z"
+}

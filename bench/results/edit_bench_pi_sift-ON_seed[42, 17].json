@@ -1,0 +1,74 @@
+[
+  {
+    "id": "t4_multi_file_rename",
+    "cond": "A",
+    "seed": 42,
+    "score": 3,
+    "compiled": true,
+    "target_changed": true,
+    "markers_found": true,
+    "diff_lines": 184,
+    "wall": 74.53980541229248,
+    "returncode": 0
+  },
+  {
+    "id": "t5_remove_debug_eprintln",
+    "cond": "A",
+    "seed": 42,
+    "score": 1,
+    "compiled": true,
+    "target_changed": true,
+    "markers_found": false,
+    "diff_lines": 94,
+    "wall": 69.18588876724243,
+    "returncode": 0
+  },
+  {
+    "id": "t6_fix_unused_imports",
+    "cond": "A",
+    "seed": 42,
+    "score": 1,
+    "compiled": true,
+    "target_changed": true,
+    "markers_found": false,
+    "diff_lines": 131,
+    "wall": 87.07754468917847,
+    "returncode": 0
+  },
+  {
+    "id": "t4_multi_file_rename",
+    "cond": "A",
+    "seed": 17,
+    "score": 3,
+    "compiled": true,
+    "target_changed": true,
+    "markers_found": true,
+    "diff_lines": 184,
+    "wall": 68.03016996383667,
+    "returncode": 0
+  },
+  {
+    "id": "t5_remove_debug_eprintln",
+    "cond": "A",
+    "seed": 17,
+    "score": 1,
+    "compiled": true,
+    "target_changed": true,
+    "markers_found": false,
+    "diff_lines": 99,
+    "wall": 55.99261784553528,
+    "returncode": 0
+  },
+  {
+    "id": "t6_fix_unused_imports",
+    "cond": "A",
+    "seed": 17,
+    "score": 1,
+    "compiled": true,
+    "target_changed": true,
+    "markers_found": false,
+    "diff_lines": 138,
+    "wall": 140.63902854919434,
+    "returncode": 0
+  }
+]

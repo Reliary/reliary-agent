@@ -1,0 +1,273 @@
+{
+  "bench": "bench_homonyms",
+  "corpus": "/tmp/tokio-corpus/tokio/src",
+  "n_anchors": 25,
+  "thresholds": {
+    "0.3": {
+      "median_mAP": 0.3409,
+      "median_NDCG10": 0.2032,
+      "median_P5": 0.0,
+      "mean_mAP": 0.3759,
+      "mean_NDCG10": 0.3353,
+      "mean_P5": 0.336,
+      "total_hits": 3136,
+      "total_correct": 1541,
+      "n_anchors": 25,
+      "per_anchor": [
+        {
+          "mAP": 0.6791,
+          "ndcg10": 0.2032,
+          "p5": 0.0,
+          "count": 1052,
+          "correct": 633,
+          "anchor_id": "hom-51",
+          "stem": "fmt",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.6879,
+          "ndcg10": 0.2032,
+          "p5": 0.0,
+          "count": 887,
+          "correct": 605,
+          "anchor_id": "hom-52",
+          "stem": "fmt",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.7428,
+          "ndcg10": 0.8669,
+          "p5": 1.0,
+          "count": 41,
+          "correct": 24,
+          "anchor_id": "hom-53",
+          "stem": "poll_write",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.7253,
+          "ndcg10": 0.8669,
+          "p5": 1.0,
+          "count": 49,
+          "correct": 26,
+          "anchor_id": "hom-54",
+          "stem": "poll_write",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.6036,
+          "ndcg10": 0.5326,
+          "p5": 0.6,
+          "count": 42,
+          "correct": 20,
+          "anchor_id": "hom-55",
+          "stem": "poll_read",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.5883,
+          "ndcg10": 0.469,
+          "p5": 0.6,
+          "count": 43,
+          "correct": 20,
+          "anchor_id": "hom-56",
+          "stem": "poll_read",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-57",
+          "stem": "poll_shutdown",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 1.0,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 48,
+          "correct": 48,
+          "anchor_id": "hom-58",
+          "stem": "as_raw_fd",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9392,
+          "ndcg10": 0.89,
+          "p5": 0.8,
+          "count": 42,
+          "correct": 41,
+          "anchor_id": "hom-59",
+          "stem": "as_raw_fd",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 1.0,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 20,
+          "correct": 20,
+          "anchor_id": "hom-60",
+          "stem": "as_fd",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 1.0,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 20,
+          "correct": 20,
+          "anchor_id": "hom-61",
+          "stem": "as_fd",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 5,
+          "correct": 0,
+          "anchor_id": "hom-62",
+          "stem": "park",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 5,
+          "correct": 0,
+          "anchor_id": "hom-63",
+          "stem": "park",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 7,
+          "correct": 0,
+          "anchor_id": "hom-64",
+          "stem": "local_addr",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2639,
+          "ndcg10": 0.3824,
+          "p5": 0.6,
+          "count": 211,
+          "correct": 13,
+          "anchor_id": "hom-65",
+          "stem": "wake",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3648,
+          "ndcg10": 0.363,
+          "p5": 0.2,
+          "count": 149,
+          "correct": 7,
+          "anchor_id": "hom-66",
+          "stem": "close",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0496,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 134,
+          "correct": 10,
+          "anchor_id": "hom-67",
+          "stem": "close",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.3409,
+          "ndcg10": 0.1518,
+          "p5": 0.0,
+          "count": 55,
+          "correct": 21,
+          "anchor_id": "hom-68",
+          "stem": "get_mut",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3774,
+          "ndcg10": 0.4537,
+          "p5": 0.6,
+          "count": 157,
+          "correct": 26,
+          "anchor_id": "hom-69",
+          "stem": "release",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.034,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 157,
+          "correct": 7,
+          "anchor_id": "hom-70",
+          "stem": "release",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 9,
+          "correct": 0,
+          "anchor_id": "hom-71",
+          "stem": "pin",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-72",
+          "stem": "pin",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-73",
+          "stem": "iter",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-74",
+          "stem": "iter",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 3,
+          "correct": 0,
+          "anchor_id": "hom-75",
+          "stem": "test",
+          "anchor_label": "import_or_use"
+        }
+      ]
+    }
+  },
+  "recommended_threshold": 0.3,
+  "pass": false,
+  "generated_at": "2026-06-28T00:51:21.072987+00:00"
+}

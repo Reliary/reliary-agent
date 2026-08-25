@@ -1,0 +1,13 @@
+title = "reliary-agent gitleaks config"
+
+[[rules]]
+id = "generic-api-key"
+regex = '''(?i)(?:key|token|secret|password|credential|api[_-]?key)\s*[:=]\s*['"]([0-9a-zA-Z]{16,45})['"]'''
+
+[[rules]]
+id = "private-key"
+regex = '''-----BEGIN (?:RSA|EC|DSA|OPENSSH) PRIVATE KEY-----'''
+
+[[rules]]
+id = "authorization-header"
+regex = '''Authorization:\s*Bearer\s+[0-9a-zA-Z\-_]{20,}'''

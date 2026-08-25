@@ -1,0 +1,2507 @@
+{
+  "corpus": "/tmp/tokio-corpus/tokio/src",
+  "generated_at": "2026-06-27T15:29:59.423966Z",
+  "count": 100,
+  "candidates": [
+    {
+      "stem": "main",
+      "def_count_in_source": 624,
+      "def_blocks": 3,
+      "def_files": 1,
+      "total_def_occs": 3,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/lib.rs",
+          "line": 675,
+          "col": 3
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/lib.rs",
+          "line": 684,
+          "col": 4
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/lib.rs",
+          "line": 694,
+          "col": 4
+        }
+      ],
+      "context_diversity": 0.563
+    },
+    {
+      "stem": "fmt",
+      "def_count_in_source": 236,
+      "def_blocks": 165,
+      "def_files": 90,
+      "total_def_occs": 563,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+          "line": 237,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+          "line": 237,
+          "col": 3
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+          "line": 237,
+          "col": 5
+        }
+      ],
+      "context_diversity": 0.545
+    },
+    {
+      "stem": "new",
+      "def_count_in_source": 193,
+      "def_blocks": 57,
+      "def_files": 47,
+      "total_def_occs": 57,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/local.rs",
+          "line": 503,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/join_set.rs",
+          "line": 81,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/coop/mod.rs",
+          "line": 262,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.758
+    },
+    {
+      "stem": "drop",
+      "def_count_in_source": 104,
+      "def_blocks": 103,
+      "def_files": 69,
+      "total_def_occs": 103,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/wake_list.rs",
+          "line": 45,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/wake_list.rs",
+          "line": 76,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/try_lock.rs",
+          "line": 76,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.759
+    },
+    {
+      "stem": "poll",
+      "def_count_in_source": 80,
+      "def_blocks": 202,
+      "def_files": 94,
+      "total_def_occs": 264,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/trace.rs",
+          "line": 155,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/trace.rs",
+          "line": 155,
+          "col": 7
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/timeout.rs",
+          "line": 210,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.77
+    },
+    {
+      "stem": "from",
+      "def_count_in_source": 43,
+      "def_blocks": 36,
+      "def_files": 27,
+      "total_def_occs": 36,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/instant.rs",
+          "line": 153,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/instant.rs",
+          "line": 159,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/error.rs",
+          "line": 36,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.791
+    },
+    {
+      "stem": "poll_write",
+      "def_count_in_source": 39,
+      "def_blocks": 37,
+      "def_files": 25,
+      "total_def_occs": 37,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+          "line": 218,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/mod.rs",
+          "line": 301,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/mod.rs",
+          "line": 1549,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.392
+    },
+    {
+      "stem": "poll_flush",
+      "def_count_in_source": 38,
+      "def_blocks": 37,
+      "def_files": 25,
+      "total_def_occs": 37,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+          "line": 226,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/mod.rs",
+          "line": 309,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/mod.rs",
+          "line": 1557,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.148
+    },
+    {
+      "stem": "poll_shutdown",
+      "def_count_in_source": 37,
+      "def_blocks": 36,
+      "def_files": 25,
+      "total_def_occs": 36,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+          "line": 230,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/mod.rs",
+          "line": 313,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/mod.rs",
+          "line": 1561,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.449
+    },
+    {
+      "stem": "shutdown",
+      "def_count_in_source": 36,
+      "def_blocks": 10,
+      "def_files": 9,
+      "total_def_occs": 12,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/error.rs",
+          "line": 57,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/join_set.rs",
+          "line": 380,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/tests/task.rs",
+          "line": 210,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.759
+    },
+    {
+      "stem": "poll_read",
+      "def_count_in_source": 35,
+      "def_blocks": 33,
+      "def_files": 25,
+      "total_def_occs": 33,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+          "line": 208,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/mod.rs",
+          "line": 331,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/mod.rs",
+          "line": 1579,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.437
+    },
+    {
+      "stem": "std",
+      "def_count_in_source": 28,
+      "def_blocks": 74,
+      "def_files": 38,
+      "total_def_occs": 90,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/mod.rs",
+          "line": 109,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/instant.rs",
+          "line": 52,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/instant.rs",
+          "line": 52,
+          "col": 3
+        }
+      ],
+      "context_diversity": 0.711
+    },
+    {
+      "stem": "deref",
+      "def_count_in_source": 26,
+      "def_blocks": 26,
+      "def_files": 21,
+      "total_def_occs": 26,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/wake.rs",
+          "line": 26,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/try_lock.rs",
+          "line": 64,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/cacheline.rs",
+          "line": 79,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.644
+    },
+    {
+      "stem": "as_raw_fd",
+      "def_count_in_source": 25,
+      "def_blocks": 25,
+      "def_files": 19,
+      "total_def_occs": 25,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/pidfd_reaper.rs",
+          "line": 58,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/mod.rs",
+          "line": 221,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/mod.rs",
+          "line": 289,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.693
+    },
+    {
+      "stem": "test",
+      "def_count_in_source": 25,
+      "def_blocks": 4,
+      "def_files": 2,
+      "total_def_occs": 4,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/lib.rs",
+          "line": 680,
+          "col": 3
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/lib.rs",
+          "line": 687,
+          "col": 4
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/lib.rs",
+          "line": 697,
+          "col": 4
+        }
+      ],
+      "context_diversity": 0.812
+    },
+    {
+      "stem": "default",
+      "def_count_in_source": 23,
+      "def_blocks": 23,
+      "def_files": 21,
+      "total_def_occs": 23,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+          "line": 260,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/interval.rs",
+          "line": 369,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/local.rs",
+          "line": 970,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.831
+    },
+    {
+      "stem": "read",
+      "def_count_in_source": 21,
+      "def_blocks": 33,
+      "def_files": 26,
+      "total_def_occs": 39,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock.rs",
+          "line": 435,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+          "line": 172,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/mod.rs",
+          "line": 201,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.715
+    },
+    {
+      "stem": "is_empty",
+      "def_count_in_source": 21,
+      "def_blocks": 8,
+      "def_files": 7,
+      "total_def_occs": 8,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/join_set.rs",
+          "line": 93,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/oneshot.rs",
+          "line": 1081,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/unbounded.rs",
+          "line": 389,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.7
+    },
+    {
+      "stem": "write",
+      "def_count_in_source": 20,
+      "def_blocks": 12,
+      "def_files": 12,
+      "total_def_occs": 16,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock.rs",
+          "line": 779,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/task/trace/tree.rs",
+          "line": 51,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+          "line": 178,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.795
+    },
+    {
+      "stem": "ready",
+      "def_count_in_source": 20,
+      "def_blocks": 37,
+      "def_files": 14,
+      "total_def_occs": 69,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 304,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 304,
+          "col": 7
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 1099,
+          "col": 2
+        }
+      ],
+      "context_diversity": 0.753
+    },
+    {
+      "stem": "as_fd",
+      "def_count_in_source": 20,
+      "def_blocks": 20,
+      "def_files": 16,
+      "total_def_occs": 20,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/mod.rs",
+          "line": 227,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/mod.rs",
+          "line": 295,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/mod.rs",
+          "line": 1648,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.426
+    },
+    {
+      "stem": "len",
+      "def_count_in_source": 19,
+      "def_blocks": 8,
+      "def_files": 7,
+      "total_def_occs": 8,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/join_set.rs",
+          "line": 88,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/unbounded.rs",
+          "line": 408,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/bounded.rs",
+          "line": 544,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.802
+    },
+    {
+      "stem": "recv",
+      "def_count_in_source": 17,
+      "def_blocks": 13,
+      "def_files": 7,
+      "total_def_occs": 13,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/unbounded.rs",
+          "line": 166,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/bounded.rs",
+          "line": 242,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/broadcast.rs",
+          "line": 434,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.727
+    },
+    {
+      "stem": "park",
+      "def_count_in_source": 17,
+      "def_blocks": 5,
+      "def_files": 4,
+      "total_def_occs": 5,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/multi_thread/worker.rs",
+          "line": 823,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/multi_thread/park.rs",
+          "line": 111,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/multi_thread/park.rs",
+          "line": 131,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.787
+    },
+    {
+      "stem": "clone",
+      "def_count_in_source": 16,
+      "def_blocks": 16,
+      "def_files": 11,
+      "total_def_occs": 16,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+          "line": 201,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+          "line": 1004,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/set_once.rs",
+          "line": 111,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.875
+    },
+    {
+      "stem": "send",
+      "def_count_in_source": 16,
+      "def_blocks": 47,
+      "def_files": 23,
+      "total_def_occs": 55,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+          "line": 196,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+          "line": 553,
+          "col": 3
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+          "line": 1063,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.775
+    },
+    {
+      "stem": "spawn",
+      "def_count_in_source": 16,
+      "def_blocks": 12,
+      "def_files": 11,
+      "total_def_occs": 13,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/spawn.rs",
+          "line": 173,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/mod.rs",
+          "line": 283,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/mod.rs",
+          "line": 283,
+          "col": 3
+        }
+      ],
+      "context_diversity": 0.705
+    },
+    {
+      "stem": "local_addr",
+      "def_count_in_source": 15,
+      "def_blocks": 15,
+      "def_files": 11,
+      "total_def_occs": 15,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+          "line": 941,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/split_owned.rs",
+          "line": 239,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/split_owned.rs",
+          "line": 358,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.445
+    },
+    {
+      "stem": "poll_recv",
+      "def_count_in_source": 15,
+      "def_blocks": 15,
+      "def_files": 9,
+      "total_def_occs": 15,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/oneshot.rs",
+          "line": 1316,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/unbounded.rs",
+          "line": 433,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/bounded.rs",
+          "line": 649,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.679
+    },
+    {
+      "stem": "as_raw",
+      "def_count_in_source": 15,
+      "def_blocks": 14,
+      "def_files": 10,
+      "total_def_occs": 14,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+          "line": 56,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+          "line": 482,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/idle_notified_set.rs",
+          "line": 477,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.659
+    },
+    {
+      "stem": "block_on",
+      "def_count_in_source": 14,
+      "def_blocks": 7,
+      "def_files": 7,
+      "total_def_occs": 7,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/local.rs",
+          "line": 672,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/time/tests/mod.rs",
+          "line": 13,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/tests/task_combinations.rs",
+          "line": 226,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.762
+    },
+    {
+      "stem": "wake",
+      "def_count_in_source": 14,
+      "def_blocks": 8,
+      "def_files": 5,
+      "total_def_occs": 8,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/wake.rs",
+          "line": 10,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/wake.rs",
+          "line": 43,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/idle_notified_set.rs",
+          "line": 465,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.761
+    },
+    {
+      "stem": "deref_mut",
+      "def_count_in_source": 14,
+      "def_blocks": 14,
+      "def_files": 10,
+      "total_def_occs": 14,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/try_lock.rs",
+          "line": 70,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/cacheline.rs",
+          "line": 85,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/write_guard_mapped.rs",
+          "line": 176,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.147
+    },
+    {
+      "stem": "close",
+      "def_count_in_source": 14,
+      "def_blocks": 8,
+      "def_files": 5,
+      "total_def_occs": 8,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/semaphore.rs",
+          "line": 962,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/oneshot.rs",
+          "line": 946,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/oneshot.rs",
+          "line": 1386,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.704
+    },
+    {
+      "stem": "poll_fill_buf",
+      "def_count_in_source": 13,
+      "def_blocks": 13,
+      "def_files": 9,
+      "total_def_occs": 13,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/take.rs",
+          "line": 107,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/empty.rs",
+          "line": 81,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/copy.rs",
+          "line": 29,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.622
+    },
+    {
+      "stem": "consume",
+      "def_count_in_source": 13,
+      "def_blocks": 13,
+      "def_files": 9,
+      "total_def_occs": 13,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/take.rs",
+          "line": 120,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/empty.rs",
+          "line": 88,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/chain.rs",
+          "line": 125,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.767
+    },
+    {
+      "stem": "get_mut",
+      "def_count_in_source": 13,
+      "def_blocks": 12,
+      "def_files": 11,
+      "total_def_occs": 12,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/timeout.rs",
+          "line": 194,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock.rs",
+          "line": 1089,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/once_cell.rs",
+          "line": 290,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.657
+    },
+    {
+      "stem": "try_io",
+      "def_count_in_source": 13,
+      "def_blocks": 11,
+      "def_files": 7,
+      "total_def_occs": 11,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 848,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 1637,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+          "line": 764,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.365
+    },
+    {
+      "stem": "split",
+      "def_count_in_source": 13,
+      "def_blocks": 11,
+      "def_files": 10,
+      "total_def_occs": 14,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/semaphore.rs",
+          "line": 1058,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/semaphore.rs",
+          "line": 1169,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+          "line": 994,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.752
+    },
+    {
+      "stem": "kill",
+      "def_count_in_source": 13,
+      "def_blocks": 13,
+      "def_files": 6,
+      "total_def_occs": 13,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+          "line": 94,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/reap.rs",
+          "line": 111,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/reap.rs",
+          "line": 179,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.751
+    },
+    {
+      "stem": "try_read",
+      "def_count_in_source": 13,
+      "def_blocks": 10,
+      "def_files": 9,
+      "total_def_occs": 10,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock.rs",
+          "line": 659,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 456,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 1249,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.481
+    },
+    {
+      "stem": "try_write",
+      "def_count_in_source": 13,
+      "def_blocks": 10,
+      "def_files": 9,
+      "total_def_occs": 10,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock.rs",
+          "line": 984,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 748,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 1538,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.476
+    },
+    {
+      "stem": "as_ref",
+      "def_count_in_source": 13,
+      "def_blocks": 11,
+      "def_files": 7,
+      "total_def_occs": 11,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/as_ref.rs",
+          "line": 10,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+          "line": 1107,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/split_owned.rs",
+          "line": 409,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.723
+    },
+    {
+      "stem": "as_raw_handle",
+      "def_count_in_source": 12,
+      "def_blocks": 12,
+      "def_files": 9,
+      "total_def_occs": 12,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+          "line": 146,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+          "line": 202,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/mod.rs",
+          "line": 1677,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.625
+    },
+    {
+      "stem": "peer_addr",
+      "def_count_in_source": 12,
+      "def_blocks": 12,
+      "def_files": 8,
+      "total_def_occs": 12,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+          "line": 961,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/split_owned.rs",
+          "line": 234,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/split_owned.rs",
+          "line": 353,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.311
+    },
+    {
+      "stem": "task",
+      "def_count_in_source": 12,
+      "def_blocks": 60,
+      "def_files": 25,
+      "total_def_occs": 86,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/timeout.rs",
+          "line": 210,
+          "col": 6
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/sleep.rs",
+          "line": 390,
+          "col": 6
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/sleep.rs",
+          "line": 463,
+          "col": 6
+        }
+      ],
+      "context_diversity": 0.801
+    },
+    {
+      "stem": "release",
+      "def_count_in_source": 12,
+      "def_blocks": 10,
+      "def_files": 10,
+      "total_def_occs": 10,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/local.rs",
+          "line": 1142,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/tests/loom_semaphore_batch.rs",
+          "line": 50,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/bounded.rs",
+          "line": 1854,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.655
+    },
+    {
+      "stem": "schedule",
+      "def_count_in_source": 12,
+      "def_blocks": 13,
+      "def_files": 9,
+      "total_def_occs": 14,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/local.rs",
+          "line": 1089,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/local.rs",
+          "line": 1147,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/tests/task.rs",
+          "line": 198,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.709
+    },
+    {
+      "stem": "from_std",
+      "def_count_in_source": 11,
+      "def_blocks": 11,
+      "def_files": 9,
+      "total_def_occs": 11,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/instant.rs",
+          "line": 52,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/mod.rs",
+          "line": 1511,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/mod.rs",
+          "line": 1526,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.732
+    },
+    {
+      "stem": "assert_unpin",
+      "def_count_in_source": 11,
+      "def_blocks": 11,
+      "def_files": 11,
+      "total_def_occs": 11,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/take.rs",
+          "line": 134,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/split.rs",
+          "line": 117,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/sink.rs",
+          "line": 90,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.267
+    },
+    {
+      "stem": "unpark",
+      "def_count_in_source": 11,
+      "def_blocks": 3,
+      "def_files": 2,
+      "total_def_occs": 3,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/multi_thread/park.rs",
+          "line": 276,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/park.rs",
+          "line": 176,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/park.rs",
+          "line": 251,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.782
+    },
+    {
+      "stem": "get_ref",
+      "def_count_in_source": 10,
+      "def_blocks": 10,
+      "def_files": 8,
+      "total_def_occs": 10,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/timeout.rs",
+          "line": 189,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/take.rs",
+          "line": 49,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/lines.rs",
+          "line": 80,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.732
+    },
+    {
+      "stem": "try_recv",
+      "def_count_in_source": 10,
+      "def_blocks": 7,
+      "def_files": 7,
+      "total_def_occs": 7,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/tests/loom_mpsc.rs",
+          "line": 136,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/oneshot.rs",
+          "line": 1170,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/unbounded.rs",
+          "line": 285,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.756
+    },
+    {
+      "stem": "const_new",
+      "def_count_in_source": 10,
+      "def_blocks": 7,
+      "def_files": 7,
+      "total_def_occs": 7,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+          "line": 539,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/set_once.rs",
+          "line": 189,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/semaphore.rs",
+          "line": 503,
+          "col": 2
+        }
+      ],
+      "context_diversity": 0.681
+    },
+    {
+      "stem": "skip_drop",
+      "def_count_in_source": 10,
+      "def_blocks": 10,
+      "def_files": 7,
+      "total_def_occs": 10,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/write_guard_mapped.rs",
+          "line": 35,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/write_guard.rs",
+          "line": 37,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/read_guard.rs",
+          "line": 33,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.476
+    },
+    {
+      "stem": "map",
+      "def_count_in_source": 10,
+      "def_blocks": 10,
+      "def_files": 7,
+      "total_def_occs": 10,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/write_guard_mapped.rs",
+          "line": 84,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/write_guard.rs",
+          "line": 87,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/read_guard.rs",
+          "line": 79,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.863
+    },
+    {
+      "stem": "try_map",
+      "def_count_in_source": 10,
+      "def_blocks": 10,
+      "def_files": 7,
+      "total_def_occs": 10,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/write_guard_mapped.rs",
+          "line": 140,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/write_guard.rs",
+          "line": 221,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/read_guard.rs",
+          "line": 131,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.212
+    },
+    {
+      "stem": "as_handle",
+      "def_count_in_source": 9,
+      "def_blocks": 9,
+      "def_files": 7,
+      "total_def_occs": 9,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/mod.rs",
+          "line": 1683,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/mod.rs",
+          "line": 1707,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 933,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.275
+    },
+    {
+      "stem": "open",
+      "def_count_in_source": 9,
+      "def_blocks": 7,
+      "def_files": 7,
+      "total_def_occs": 7,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/pidfd_reaper.rs",
+          "line": 29,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 2511,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/pipe.rs",
+          "line": 259,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.784
+    },
+    {
+      "stem": "async_io",
+      "def_count_in_source": 9,
+      "def_blocks": 7,
+      "def_files": 6,
+      "total_def_occs": 7,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 881,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 1670,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+          "line": 799,
+          "col": 2
+        }
+      ],
+      "context_diversity": 0.533
+    },
+    {
+      "stem": "into_std",
+      "def_count_in_source": 9,
+      "def_blocks": 9,
+      "def_files": 9,
+      "total_def_occs": 9,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/instant.rs",
+          "line": 65,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/mod.rs",
+          "line": 337,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+          "line": 900,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.616
+    },
+    {
+      "stem": "start_seek",
+      "def_count_in_source": 9,
+      "def_blocks": 9,
+      "def_files": 6,
+      "total_def_occs": 9,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/empty.rs",
+          "line": 137,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/buf_writer.rs",
+          "line": 226,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/buf_stream.rs",
+          "line": 179,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.677
+    },
+    {
+      "stem": "poll_complete",
+      "def_count_in_source": 9,
+      "def_blocks": 9,
+      "def_files": 6,
+      "total_def_occs": 9,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/empty.rs",
+          "line": 142,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/buf_writer.rs",
+          "line": 234,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/buf_stream.rs",
+          "line": 183,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.653
+    },
+    {
+      "stem": "try_read_buf",
+      "def_count_in_source": 9,
+      "def_blocks": 9,
+      "def_files": 8,
+      "total_def_occs": 9,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 599,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 1391,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+          "line": 507,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.087
+    },
+    {
+      "stem": "lock",
+      "def_count_in_source": 9,
+      "def_blocks": 4,
+      "def_files": 4,
+      "total_def_occs": 4,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mutex.rs",
+          "line": 433,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/multi_thread/worker.rs",
+          "line": 1570,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/lock.rs",
+          "line": 4,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.715
+    },
+    {
+      "stem": "load",
+      "def_count_in_source": 9,
+      "def_blocks": 3,
+      "def_files": 3,
+      "total_def_occs": 3,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/oneshot.rs",
+          "line": 1593,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/notify.rs",
+          "line": 288,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/multi_thread/idle.rs",
+          "line": 167,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.74
+    },
+    {
+      "stem": "now",
+      "def_count_in_source": 9,
+      "def_blocks": 5,
+      "def_files": 5,
+      "total_def_occs": 5,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/interval.rs",
+          "line": 334,
+          "col": 4
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/time/instant.rs",
+          "line": 47,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/time_alt/wheel/level.rs",
+          "line": 109,
+          "col": 2
+        }
+      ],
+      "context_diversity": 0.689
+    },
+    {
+      "stem": "wake_by_ref",
+      "def_count_in_source": 9,
+      "def_blocks": 5,
+      "def_files": 5,
+      "total_def_occs": 5,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/wake.rs",
+          "line": 13,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/idle_notified_set.rs",
+          "line": 437,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/tests/semaphore_batch.rs",
+          "line": 273,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.813
+    },
+    {
+      "stem": "next",
+      "def_count_in_source": 8,
+      "def_blocks": 7,
+      "def_files": 7,
+      "total_def_occs": 7,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+          "line": 294,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/bounded.rs",
+          "line": 1731,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/time_alt/cancellation_queue.rs",
+          "line": 40,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.773
+    },
+    {
+      "stem": "create",
+      "def_count_in_source": 8,
+      "def_blocks": 6,
+      "def_files": 6,
+      "total_def_occs": 8,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 2274,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/fs/open_options/mock_open_options.rs",
+          "line": 15,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/fs/open_options/mock_open_options.rs",
+          "line": 15,
+          "col": 4
+        }
+      ],
+      "context_diversity": 0.807
+    },
+    {
+      "stem": "bind",
+      "def_count_in_source": 8,
+      "def_blocks": 6,
+      "def_files": 6,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/socket.rs",
+          "line": 152,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/listener.rs",
+          "line": 75,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/datagram/socket.rs",
+          "line": 394,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.723
+    },
+    {
+      "stem": "take",
+      "def_count_in_source": 8,
+      "def_blocks": 5,
+      "def_files": 5,
+      "total_def_occs": 7,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/once_cell.rs",
+          "line": 453,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/take.rs",
+          "line": 13,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/mod.rs",
+          "line": 75,
+          "col": 2
+        }
+      ],
+      "context_diversity": 0.821
+    },
+    {
+      "stem": "cancel",
+      "def_count_in_source": 8,
+      "def_blocks": 6,
+      "def_files": 5,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/driver/op.rs",
+          "line": 156,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/uring/write.rs",
+          "line": 25,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/uring/statx.rs",
+          "line": 73,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.562
+    },
+    {
+      "stem": "try_wait",
+      "def_count_in_source": 8,
+      "def_blocks": 6,
+      "def_files": 4,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/reap.rs",
+          "line": 166,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/orphan.rs",
+          "line": 13,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/orphan.rs",
+          "line": 21,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.667
+    },
+    {
+      "stem": "get",
+      "def_count_in_source": 8,
+      "def_blocks": 5,
+      "def_files": 5,
+      "total_def_occs": 5,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/task_local.rs",
+          "line": 274,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/coop/mod.rs",
+          "line": 501,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/set_once.rs",
+          "line": 262,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.756
+    },
+    {
+      "stem": "doc",
+      "def_count_in_source": 8,
+      "def_blocks": 7,
+      "def_files": 3,
+      "total_def_occs": 7,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 36,
+          "col": 4
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/lib.rs",
+          "line": 647,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/doc/os.rs",
+          "line": 11,
+          "col": 4
+        }
+      ],
+      "context_diversity": 0.771
+    },
+    {
+      "stem": "with",
+      "def_count_in_source": 8,
+      "def_blocks": 3,
+      "def_files": 3,
+      "total_def_occs": 3,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/task_local.rs",
+          "line": 229,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/local.rs",
+          "line": 820,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/tests/task.rs",
+          "line": 360,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.801
+    },
+    {
+      "stem": "channel",
+      "def_count_in_source": 8,
+      "def_blocks": 4,
+      "def_files": 4,
+      "total_def_occs": 4,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+          "line": 553,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/oneshot.rs",
+          "line": 496,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/bounded.rs",
+          "line": 158,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.644
+    },
+    {
+      "stem": "same_channel",
+      "def_count_in_source": 8,
+      "def_blocks": 7,
+      "def_files": 4,
+      "total_def_occs": 7,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+          "line": 949,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/watch.rs",
+          "line": 1452,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/unbounded.rs",
+          "line": 660,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.345
+    },
+    {
+      "stem": "strong_count",
+      "def_count_in_source": 8,
+      "def_blocks": 6,
+      "def_files": 3,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/unbounded.rs",
+          "line": 676,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/unbounded.rs",
+          "line": 711,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/bounded.rs",
+          "line": 1589,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.537
+    },
+    {
+      "stem": "weak_count",
+      "def_count_in_source": 8,
+      "def_blocks": 6,
+      "def_files": 3,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/unbounded.rs",
+          "line": 681,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/unbounded.rs",
+          "line": 716,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/mpsc/bounded.rs",
+          "line": 1594,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.249
+    },
+    {
+      "stem": "handle",
+      "def_count_in_source": 8,
+      "def_blocks": 59,
+      "def_files": 30,
+      "total_def_occs": 86,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+          "line": 56,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+          "line": 56,
+          "col": 3
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/util/linked_list.rs",
+          "line": 482,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.749
+    },
+    {
+      "stem": "push",
+      "def_count_in_source": 8,
+      "def_blocks": 3,
+      "def_files": 2,
+      "total_def_occs": 3,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/multi_thread/worker.rs",
+          "line": 1543,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/multi_thread/overflow.rs",
+          "line": 6,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/multi_thread/overflow.rs",
+          "line": 15,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.853
+    },
+    {
+      "stem": "trace",
+      "def_count_in_source": 7,
+      "def_blocks": 5,
+      "def_files": 2,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/task/trace/mod.rs",
+          "line": 430,
+          "col": 8
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/dump.rs",
+          "line": 7,
+          "col": 5
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/dump.rs",
+          "line": 187,
+          "col": 2
+        }
+      ],
+      "context_diversity": 0.782
+    },
+    {
+      "stem": "flush",
+      "def_count_in_source": 7,
+      "def_blocks": 5,
+      "def_files": 5,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/windows.rs",
+          "line": 182,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/process/unix/mod.rs",
+          "line": 211,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/io/util/flush.rs",
+          "line": 17,
+          "col": 2
+        }
+      ],
+      "context_diversity": 0.747
+    },
+    {
+      "stem": "poll_read_ready",
+      "def_count_in_source": 7,
+      "def_blocks": 6,
+      "def_files": 5,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 387,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 1181,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+          "line": 294,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.43
+    },
+    {
+      "stem": "poll_write_ready",
+      "def_count_in_source": 7,
+      "def_blocks": 6,
+      "def_files": 5,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 694,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 1485,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+          "line": 610,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.477
+    },
+    {
+      "stem": "connect",
+      "def_count_in_source": 7,
+      "def_blocks": 7,
+      "def_files": 7,
+      "total_def_occs": 7,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/windows/named_pipe.rs",
+          "line": 191,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+          "line": 80,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/socket.rs",
+          "line": 200,
+          "col": 2
+        }
+      ],
+      "context_diversity": 0.629
+    },
+    {
+      "stem": "ctrl_c",
+      "def_count_in_source": 7,
+      "def_blocks": 4,
+      "def_files": 4,
+      "total_def_occs": 5,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/signal/windows/sys.rs",
+          "line": 136,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/signal/windows.rs",
+          "line": 45,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/signal/mod.rs",
+          "line": 50,
+          "col": 2
+        }
+      ],
+      "context_diversity": 0.761
+    },
+    {
+      "stem": "for_each",
+      "def_count_in_source": 7,
+      "def_blocks": 3,
+      "def_files": 2,
+      "total_def_occs": 3,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/signal/unix.rs",
+          "line": 54,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/signal/registry.rs",
+          "line": 34,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/signal/registry.rs",
+          "line": 44,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.765
+    },
+    {
+      "stem": "complete",
+      "def_count_in_source": 7,
+      "def_blocks": 7,
+      "def_files": 7,
+      "total_def_occs": 7,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/oneshot.rs",
+          "line": 1299,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/task/harness.rs",
+          "line": 330,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/driver/op.rs",
+          "line": 145,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.555
+    },
+    {
+      "stem": "wait",
+      "def_count_in_source": 7,
+      "def_blocks": 18,
+      "def_files": 8,
+      "total_def_occs": 22,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/set_once.rs",
+          "line": 338,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/notify.rs",
+          "line": 214,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/notify.rs",
+          "line": 236,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.575
+    },
+    {
+      "stem": "yield_now",
+      "def_count_in_source": 7,
+      "def_blocks": 4,
+      "def_files": 4,
+      "total_def_occs": 5,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/yield_now.rs",
+          "line": 37,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/mod.rs",
+          "line": 290,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/task/mod.rs",
+          "line": 290,
+          "col": 3
+        }
+      ],
+      "context_diversity": 0.63
+    },
+    {
+      "stem": "run",
+      "def_count_in_source": 7,
+      "def_blocks": 5,
+      "def_files": 3,
+      "total_def_occs": 5,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/tests/loom_mpsc.rs",
+          "line": 151,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/multi_thread/worker.rs",
+          "line": 518,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/scheduler/multi_thread/worker.rs",
+          "line": 571,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.679
+    },
+    {
+      "stem": "downgrade",
+      "def_count_in_source": 7,
+      "def_blocks": 6,
+      "def_files": 6,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/tests/loom_rwlock.rs",
+          "line": 85,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/write_guard.rs",
+          "line": 375,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/sync/rwlock/owned_write_guard.rs",
+          "line": 358,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.74
+    },
+    {
+      "stem": "level",
+      "def_count_in_source": 7,
+      "def_blocks": 6,
+      "def_files": 2,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/time_alt/wheel/level.rs",
+          "line": 165,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/time_alt/wheel/level.rs",
+          "line": 169,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/runtime/time_alt/wheel/level.rs",
+          "line": 174,
+          "col": 3
+        }
+      ],
+      "context_diversity": 0.752
+    },
+    {
+      "stem": "as_socket",
+      "def_count_in_source": 6,
+      "def_blocks": 6,
+      "def_files": 5,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/udp.rs",
+          "line": 275,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/udp.rs",
+          "line": 2353,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/tcp/stream.rs",
+          "line": 1559,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.702
+    },
+    {
+      "stem": "metadata",
+      "def_count_in_source": 6,
+      "def_blocks": 6,
+      "def_files": 6,
+      "total_def_occs": 11,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/fs/symlink_metadata.rs",
+          "line": 11,
+          "col": 8
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/fs/read_dir.rs",
+          "line": 298,
+          "col": 2
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/fs/read_dir.rs",
+          "line": 298,
+          "col": 5
+        }
+      ],
+      "context_diversity": 0.801
+    },
+    {
+      "stem": "try_from",
+      "def_count_in_source": 6,
+      "def_blocks": 6,
+      "def_files": 6,
+      "total_def_occs": 6,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/stream.rs",
+          "line": 1021,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/listener.rs",
+          "line": 241,
+          "col": 0
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/datagram/socket.rs",
+          "line": 1599,
+          "col": 0
+        }
+      ],
+      "context_diversity": 0.745
+    },
+    {
+      "stem": "reunite",
+      "def_count_in_source": 6,
+      "def_blocks": 4,
+      "def_files": 2,
+      "total_def_occs": 4,
+      "sample_locations": [
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/split_owned.rs",
+          "line": 106,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/unix/split_owned.rs",
+          "line": 260,
+          "col": 1
+        },
+        {
+          "file": "/tmp/tokio-corpus/tokio/src/net/tcp/split_owned.rs",
+          "line": 106,
+          "col": 1
+        }
+      ],
+      "context_diversity": 0.529
+    }
+  ]
+}

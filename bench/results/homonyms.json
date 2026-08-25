@@ -1,0 +1,2025 @@
+{
+  "bench": "bench_homonyms",
+  "corpus": "/tmp/tokio-corpus/tokio/src",
+  "n_anchors": 50,
+  "thresholds": {
+    "0.0": {
+      "median_mAP": 0.1493,
+      "median_NDCG10": 0.0948,
+      "median_P5": 0.2,
+      "mean_mAP": 0.1918,
+      "mean_NDCG10": 0.2002,
+      "mean_P5": 0.2256,
+      "total_hits": 37196,
+      "total_correct": 6982,
+      "n_anchors": 39,
+      "per_anchor": [
+        {
+          "mAP": 0.0193,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 620,
+          "correct": 14,
+          "anchor_id": "hom-001",
+          "stem": "clone",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1217,
+          "ndcg10": 0.2201,
+          "p5": 0.2,
+          "count": 226,
+          "correct": 12,
+          "anchor_id": "hom-002",
+          "stem": "map",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.077,
+          "ndcg10": 0.0948,
+          "p5": 0.2,
+          "count": 347,
+          "correct": 35,
+          "anchor_id": "hom-003",
+          "stem": "default",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9872,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 3141,
+          "correct": 3089,
+          "anchor_id": "hom-004",
+          "stem": "task",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.238,
+          "ndcg10": 0.0694,
+          "p5": 0.0,
+          "count": 830,
+          "correct": 103,
+          "anchor_id": "hom-005",
+          "stem": "write",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0392,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1328,
+          "correct": 35,
+          "anchor_id": "hom-006",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1789,
+          "ndcg10": 0.65,
+          "p5": 0.8,
+          "count": 1457,
+          "correct": 253,
+          "anchor_id": "hom-007",
+          "stem": "send",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1878,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-008",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2955,
+          "ndcg10": 0.2051,
+          "p5": 0.2,
+          "count": 55,
+          "correct": 12,
+          "anchor_id": "hom-009",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1691,
+          "ndcg10": 0.0851,
+          "p5": 0.2,
+          "count": 654,
+          "correct": 102,
+          "anchor_id": "hom-010",
+          "stem": "drop",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1419,
+          "ndcg10": 0.2048,
+          "p5": 0.4,
+          "count": 333,
+          "correct": 52,
+          "anchor_id": "hom-011",
+          "stem": "shutdown",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1376,
+          "ndcg10": 0.3938,
+          "p5": 0.4,
+          "count": 2258,
+          "correct": 318,
+          "anchor_id": "hom-012",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3133,
+          "ndcg10": 0.1799,
+          "p5": 0.4,
+          "count": 1565,
+          "correct": 46,
+          "anchor_id": "hom-013",
+          "stem": "ready",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0481,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 120,
+          "correct": 7,
+          "anchor_id": "hom-014",
+          "stem": "split",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1934,
+          "ndcg10": 0.0663,
+          "p5": 0.0,
+          "count": 84,
+          "correct": 19,
+          "anchor_id": "hom-015",
+          "stem": "kill",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2733,
+          "ndcg10": 0.4153,
+          "p5": 0.6,
+          "count": 85,
+          "correct": 21,
+          "anchor_id": "hom-018",
+          "stem": "from_std",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0622,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 942,
+          "correct": 83,
+          "anchor_id": "hom-021",
+          "stem": "spawn",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.6332,
+          "ndcg10": 0.6215,
+          "p5": 0.6,
+          "count": 442,
+          "correct": 262,
+          "anchor_id": "hom-025",
+          "stem": "len",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.299,
+          "ndcg10": 0.2051,
+          "p5": 0.2,
+          "count": 55,
+          "correct": 12,
+          "anchor_id": "hom-026",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2964,
+          "ndcg10": 0.2051,
+          "p5": 0.2,
+          "count": 55,
+          "correct": 12,
+          "anchor_id": "hom-027",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0483,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 120,
+          "correct": 7,
+          "anchor_id": "hom-028",
+          "stem": "split",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1937,
+          "ndcg10": 0.0663,
+          "p5": 0.0,
+          "count": 84,
+          "correct": 19,
+          "anchor_id": "hom-029",
+          "stem": "kill",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1149,
+          "ndcg10": 0.3149,
+          "p5": 0.4,
+          "count": 347,
+          "correct": 35,
+          "anchor_id": "hom-030",
+          "stem": "default",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.2333,
+          "ndcg10": 0.2025,
+          "p5": 0.2,
+          "count": 830,
+          "correct": 103,
+          "anchor_id": "hom-031",
+          "stem": "write",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1212,
+          "ndcg10": 0.2201,
+          "p5": 0.2,
+          "count": 226,
+          "correct": 12,
+          "anchor_id": "hom-032",
+          "stem": "map",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1887,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-033",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1493,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1457,
+          "correct": 253,
+          "anchor_id": "hom-034",
+          "stem": "send",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1698,
+          "ndcg10": 0.8482,
+          "p5": 1.0,
+          "count": 2258,
+          "correct": 318,
+          "anchor_id": "hom-036",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.6089,
+          "ndcg10": 0.7799,
+          "p5": 0.8,
+          "count": 620,
+          "correct": 383,
+          "anchor_id": "hom-037",
+          "stem": "clone",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1886,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-038",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0392,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1328,
+          "correct": 35,
+          "anchor_id": "hom-039",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0392,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1328,
+          "correct": 35,
+          "anchor_id": "hom-040",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.115,
+          "ndcg10": 0.2201,
+          "p5": 0.2,
+          "count": 333,
+          "correct": 33,
+          "anchor_id": "hom-041",
+          "stem": "shutdown",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.149,
+          "ndcg10": 0.2489,
+          "p5": 0.4,
+          "count": 333,
+          "correct": 52,
+          "anchor_id": "hom-043",
+          "stem": "shutdown",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-044",
+          "stem": "handle",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-046",
+          "stem": "task",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 3141,
+          "correct": 0,
+          "anchor_id": "hom-047",
+          "stem": "task",
+          "anchor_label": "module_name"
+        },
+        {
+          "mAP": 0.1346,
+          "ndcg10": 0.2895,
+          "p5": 0.2,
+          "count": 2258,
+          "correct": 318,
+          "anchor_id": "hom-048",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.2761,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-049",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        }
+      ]
+    },
+    "0.1": {
+      "median_mAP": 0.1493,
+      "median_NDCG10": 0.0948,
+      "median_P5": 0.2,
+      "mean_mAP": 0.1918,
+      "mean_NDCG10": 0.2002,
+      "mean_P5": 0.2256,
+      "total_hits": 37196,
+      "total_correct": 6982,
+      "n_anchors": 39,
+      "per_anchor": [
+        {
+          "mAP": 0.0193,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 620,
+          "correct": 14,
+          "anchor_id": "hom-001",
+          "stem": "clone",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1217,
+          "ndcg10": 0.2201,
+          "p5": 0.2,
+          "count": 226,
+          "correct": 12,
+          "anchor_id": "hom-002",
+          "stem": "map",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.077,
+          "ndcg10": 0.0948,
+          "p5": 0.2,
+          "count": 347,
+          "correct": 35,
+          "anchor_id": "hom-003",
+          "stem": "default",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9872,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 3141,
+          "correct": 3089,
+          "anchor_id": "hom-004",
+          "stem": "task",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.238,
+          "ndcg10": 0.0694,
+          "p5": 0.0,
+          "count": 830,
+          "correct": 103,
+          "anchor_id": "hom-005",
+          "stem": "write",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0392,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1328,
+          "correct": 35,
+          "anchor_id": "hom-006",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1789,
+          "ndcg10": 0.65,
+          "p5": 0.8,
+          "count": 1457,
+          "correct": 253,
+          "anchor_id": "hom-007",
+          "stem": "send",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1878,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-008",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2955,
+          "ndcg10": 0.2051,
+          "p5": 0.2,
+          "count": 55,
+          "correct": 12,
+          "anchor_id": "hom-009",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1691,
+          "ndcg10": 0.0851,
+          "p5": 0.2,
+          "count": 654,
+          "correct": 102,
+          "anchor_id": "hom-010",
+          "stem": "drop",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1419,
+          "ndcg10": 0.2048,
+          "p5": 0.4,
+          "count": 333,
+          "correct": 52,
+          "anchor_id": "hom-011",
+          "stem": "shutdown",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1376,
+          "ndcg10": 0.3938,
+          "p5": 0.4,
+          "count": 2258,
+          "correct": 318,
+          "anchor_id": "hom-012",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3133,
+          "ndcg10": 0.1799,
+          "p5": 0.4,
+          "count": 1565,
+          "correct": 46,
+          "anchor_id": "hom-013",
+          "stem": "ready",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0481,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 120,
+          "correct": 7,
+          "anchor_id": "hom-014",
+          "stem": "split",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1934,
+          "ndcg10": 0.0663,
+          "p5": 0.0,
+          "count": 84,
+          "correct": 19,
+          "anchor_id": "hom-015",
+          "stem": "kill",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2733,
+          "ndcg10": 0.4153,
+          "p5": 0.6,
+          "count": 85,
+          "correct": 21,
+          "anchor_id": "hom-018",
+          "stem": "from_std",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0622,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 942,
+          "correct": 83,
+          "anchor_id": "hom-021",
+          "stem": "spawn",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.6332,
+          "ndcg10": 0.6215,
+          "p5": 0.6,
+          "count": 442,
+          "correct": 262,
+          "anchor_id": "hom-025",
+          "stem": "len",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.299,
+          "ndcg10": 0.2051,
+          "p5": 0.2,
+          "count": 55,
+          "correct": 12,
+          "anchor_id": "hom-026",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2964,
+          "ndcg10": 0.2051,
+          "p5": 0.2,
+          "count": 55,
+          "correct": 12,
+          "anchor_id": "hom-027",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0483,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 120,
+          "correct": 7,
+          "anchor_id": "hom-028",
+          "stem": "split",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1937,
+          "ndcg10": 0.0663,
+          "p5": 0.0,
+          "count": 84,
+          "correct": 19,
+          "anchor_id": "hom-029",
+          "stem": "kill",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1149,
+          "ndcg10": 0.3149,
+          "p5": 0.4,
+          "count": 347,
+          "correct": 35,
+          "anchor_id": "hom-030",
+          "stem": "default",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.2333,
+          "ndcg10": 0.2025,
+          "p5": 0.2,
+          "count": 830,
+          "correct": 103,
+          "anchor_id": "hom-031",
+          "stem": "write",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1212,
+          "ndcg10": 0.2201,
+          "p5": 0.2,
+          "count": 226,
+          "correct": 12,
+          "anchor_id": "hom-032",
+          "stem": "map",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1887,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-033",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1493,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1457,
+          "correct": 253,
+          "anchor_id": "hom-034",
+          "stem": "send",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1698,
+          "ndcg10": 0.8482,
+          "p5": 1.0,
+          "count": 2258,
+          "correct": 318,
+          "anchor_id": "hom-036",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.6089,
+          "ndcg10": 0.7799,
+          "p5": 0.8,
+          "count": 620,
+          "correct": 383,
+          "anchor_id": "hom-037",
+          "stem": "clone",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1886,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-038",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0392,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1328,
+          "correct": 35,
+          "anchor_id": "hom-039",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0392,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1328,
+          "correct": 35,
+          "anchor_id": "hom-040",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.115,
+          "ndcg10": 0.2201,
+          "p5": 0.2,
+          "count": 333,
+          "correct": 33,
+          "anchor_id": "hom-041",
+          "stem": "shutdown",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.149,
+          "ndcg10": 0.2489,
+          "p5": 0.4,
+          "count": 333,
+          "correct": 52,
+          "anchor_id": "hom-043",
+          "stem": "shutdown",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-044",
+          "stem": "handle",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-046",
+          "stem": "task",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 3141,
+          "correct": 0,
+          "anchor_id": "hom-047",
+          "stem": "task",
+          "anchor_label": "module_name"
+        },
+        {
+          "mAP": 0.1346,
+          "ndcg10": 0.2895,
+          "p5": 0.2,
+          "count": 2258,
+          "correct": 318,
+          "anchor_id": "hom-048",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.2761,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-049",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        }
+      ]
+    },
+    "0.3": {
+      "median_mAP": 0.1887,
+      "median_NDCG10": 0.2051,
+      "median_P5": 0.2,
+      "mean_mAP": 0.2332,
+      "mean_NDCG10": 0.2572,
+      "mean_P5": 0.2462,
+      "total_hits": 25257,
+      "total_correct": 6014,
+      "n_anchors": 39,
+      "per_anchor": [
+        {
+          "mAP": 0.4314,
+          "ndcg10": 0.5096,
+          "p5": 0.4,
+          "count": 17,
+          "correct": 6,
+          "anchor_id": "hom-001",
+          "stem": "clone",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1217,
+          "ndcg10": 0.2201,
+          "p5": 0.2,
+          "count": 226,
+          "correct": 12,
+          "anchor_id": "hom-002",
+          "stem": "map",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.4811,
+          "ndcg10": 0.4451,
+          "p5": 0.4,
+          "count": 39,
+          "correct": 19,
+          "anchor_id": "hom-003",
+          "stem": "default",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9872,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 3141,
+          "correct": 3089,
+          "anchor_id": "hom-004",
+          "stem": "task",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.238,
+          "ndcg10": 0.0694,
+          "p5": 0.0,
+          "count": 830,
+          "correct": 103,
+          "anchor_id": "hom-005",
+          "stem": "write",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.5,
+          "ndcg10": 0.6859,
+          "p5": 0.4,
+          "count": 11,
+          "correct": 5,
+          "anchor_id": "hom-006",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1789,
+          "ndcg10": 0.65,
+          "p5": 0.8,
+          "count": 1457,
+          "correct": 253,
+          "anchor_id": "hom-007",
+          "stem": "send",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1878,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-008",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2955,
+          "ndcg10": 0.2051,
+          "p5": 0.2,
+          "count": 55,
+          "correct": 12,
+          "anchor_id": "hom-009",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2,
+          "ndcg10": 0.3869,
+          "p5": 0.2,
+          "count": 6,
+          "correct": 1,
+          "anchor_id": "hom-010",
+          "stem": "drop",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1419,
+          "ndcg10": 0.2048,
+          "p5": 0.4,
+          "count": 333,
+          "correct": 52,
+          "anchor_id": "hom-011",
+          "stem": "shutdown",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1376,
+          "ndcg10": 0.3938,
+          "p5": 0.4,
+          "count": 2258,
+          "correct": 318,
+          "anchor_id": "hom-012",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3133,
+          "ndcg10": 0.1799,
+          "p5": 0.4,
+          "count": 1565,
+          "correct": 46,
+          "anchor_id": "hom-013",
+          "stem": "ready",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0481,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 120,
+          "correct": 7,
+          "anchor_id": "hom-014",
+          "stem": "split",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1934,
+          "ndcg10": 0.0663,
+          "p5": 0.0,
+          "count": 84,
+          "correct": 19,
+          "anchor_id": "hom-015",
+          "stem": "kill",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2733,
+          "ndcg10": 0.4153,
+          "p5": 0.6,
+          "count": 85,
+          "correct": 21,
+          "anchor_id": "hom-018",
+          "stem": "from_std",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0625,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 16,
+          "correct": 1,
+          "anchor_id": "hom-021",
+          "stem": "spawn",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.6332,
+          "ndcg10": 0.6215,
+          "p5": 0.6,
+          "count": 442,
+          "correct": 262,
+          "anchor_id": "hom-025",
+          "stem": "len",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.299,
+          "ndcg10": 0.2051,
+          "p5": 0.2,
+          "count": 55,
+          "correct": 12,
+          "anchor_id": "hom-026",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2964,
+          "ndcg10": 0.2051,
+          "p5": 0.2,
+          "count": 55,
+          "correct": 12,
+          "anchor_id": "hom-027",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0483,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 120,
+          "correct": 7,
+          "anchor_id": "hom-028",
+          "stem": "split",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1937,
+          "ndcg10": 0.0663,
+          "p5": 0.0,
+          "count": 84,
+          "correct": 19,
+          "anchor_id": "hom-029",
+          "stem": "kill",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1149,
+          "ndcg10": 0.3149,
+          "p5": 0.4,
+          "count": 347,
+          "correct": 35,
+          "anchor_id": "hom-030",
+          "stem": "default",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.2333,
+          "ndcg10": 0.2025,
+          "p5": 0.2,
+          "count": 830,
+          "correct": 103,
+          "anchor_id": "hom-031",
+          "stem": "write",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1212,
+          "ndcg10": 0.2201,
+          "p5": 0.2,
+          "count": 226,
+          "correct": 12,
+          "anchor_id": "hom-032",
+          "stem": "map",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1887,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-033",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 5,
+          "correct": 0,
+          "anchor_id": "hom-034",
+          "stem": "send",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1698,
+          "ndcg10": 0.8482,
+          "p5": 1.0,
+          "count": 2258,
+          "correct": 318,
+          "anchor_id": "hom-036",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3244,
+          "ndcg10": 0.3181,
+          "p5": 0.2,
+          "count": 23,
+          "correct": 7,
+          "anchor_id": "hom-037",
+          "stem": "clone",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1886,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-038",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.4667,
+          "ndcg10": 0.6415,
+          "p5": 0.4,
+          "count": 10,
+          "correct": 5,
+          "anchor_id": "hom-039",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.5,
+          "ndcg10": 0.4451,
+          "p5": 0.4,
+          "count": 30,
+          "correct": 15,
+          "anchor_id": "hom-040",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.115,
+          "ndcg10": 0.2201,
+          "p5": 0.2,
+          "count": 333,
+          "correct": 33,
+          "anchor_id": "hom-041",
+          "stem": "shutdown",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1,
+          "correct": 0,
+          "anchor_id": "hom-043",
+          "stem": "shutdown",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-044",
+          "stem": "handle",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-046",
+          "stem": "task",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1,
+          "correct": 0,
+          "anchor_id": "hom-047",
+          "stem": "task",
+          "anchor_label": "module_name"
+        },
+        {
+          "mAP": 0.1346,
+          "ndcg10": 0.2895,
+          "p5": 0.2,
+          "count": 2258,
+          "correct": 318,
+          "anchor_id": "hom-048",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.2761,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-049",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        }
+      ]
+    },
+    "0.5": {
+      "median_mAP": 0.1887,
+      "median_NDCG10": 0.2051,
+      "median_P5": 0.2,
+      "mean_mAP": 0.2332,
+      "mean_NDCG10": 0.2572,
+      "mean_P5": 0.2462,
+      "total_hits": 25257,
+      "total_correct": 6014,
+      "n_anchors": 39,
+      "per_anchor": [
+        {
+          "mAP": 0.4314,
+          "ndcg10": 0.5096,
+          "p5": 0.4,
+          "count": 17,
+          "correct": 6,
+          "anchor_id": "hom-001",
+          "stem": "clone",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1217,
+          "ndcg10": 0.2201,
+          "p5": 0.2,
+          "count": 226,
+          "correct": 12,
+          "anchor_id": "hom-002",
+          "stem": "map",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.4811,
+          "ndcg10": 0.4451,
+          "p5": 0.4,
+          "count": 39,
+          "correct": 19,
+          "anchor_id": "hom-003",
+          "stem": "default",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.9872,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 3141,
+          "correct": 3089,
+          "anchor_id": "hom-004",
+          "stem": "task",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.238,
+          "ndcg10": 0.0694,
+          "p5": 0.0,
+          "count": 830,
+          "correct": 103,
+          "anchor_id": "hom-005",
+          "stem": "write",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.5,
+          "ndcg10": 0.6859,
+          "p5": 0.4,
+          "count": 11,
+          "correct": 5,
+          "anchor_id": "hom-006",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1789,
+          "ndcg10": 0.65,
+          "p5": 0.8,
+          "count": 1457,
+          "correct": 253,
+          "anchor_id": "hom-007",
+          "stem": "send",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1878,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-008",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2955,
+          "ndcg10": 0.2051,
+          "p5": 0.2,
+          "count": 55,
+          "correct": 12,
+          "anchor_id": "hom-009",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2,
+          "ndcg10": 0.3869,
+          "p5": 0.2,
+          "count": 6,
+          "correct": 1,
+          "anchor_id": "hom-010",
+          "stem": "drop",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1419,
+          "ndcg10": 0.2048,
+          "p5": 0.4,
+          "count": 333,
+          "correct": 52,
+          "anchor_id": "hom-011",
+          "stem": "shutdown",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1376,
+          "ndcg10": 0.3938,
+          "p5": 0.4,
+          "count": 2258,
+          "correct": 318,
+          "anchor_id": "hom-012",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3133,
+          "ndcg10": 0.1799,
+          "p5": 0.4,
+          "count": 1565,
+          "correct": 46,
+          "anchor_id": "hom-013",
+          "stem": "ready",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0481,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 120,
+          "correct": 7,
+          "anchor_id": "hom-014",
+          "stem": "split",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1934,
+          "ndcg10": 0.0663,
+          "p5": 0.0,
+          "count": 84,
+          "correct": 19,
+          "anchor_id": "hom-015",
+          "stem": "kill",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2733,
+          "ndcg10": 0.4153,
+          "p5": 0.6,
+          "count": 85,
+          "correct": 21,
+          "anchor_id": "hom-018",
+          "stem": "from_std",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0625,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 16,
+          "correct": 1,
+          "anchor_id": "hom-021",
+          "stem": "spawn",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.6332,
+          "ndcg10": 0.6215,
+          "p5": 0.6,
+          "count": 442,
+          "correct": 262,
+          "anchor_id": "hom-025",
+          "stem": "len",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.299,
+          "ndcg10": 0.2051,
+          "p5": 0.2,
+          "count": 55,
+          "correct": 12,
+          "anchor_id": "hom-026",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2964,
+          "ndcg10": 0.2051,
+          "p5": 0.2,
+          "count": 55,
+          "correct": 12,
+          "anchor_id": "hom-027",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0483,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 120,
+          "correct": 7,
+          "anchor_id": "hom-028",
+          "stem": "split",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1937,
+          "ndcg10": 0.0663,
+          "p5": 0.0,
+          "count": 84,
+          "correct": 19,
+          "anchor_id": "hom-029",
+          "stem": "kill",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1149,
+          "ndcg10": 0.3149,
+          "p5": 0.4,
+          "count": 347,
+          "correct": 35,
+          "anchor_id": "hom-030",
+          "stem": "default",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.2333,
+          "ndcg10": 0.2025,
+          "p5": 0.2,
+          "count": 830,
+          "correct": 103,
+          "anchor_id": "hom-031",
+          "stem": "write",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1212,
+          "ndcg10": 0.2201,
+          "p5": 0.2,
+          "count": 226,
+          "correct": 12,
+          "anchor_id": "hom-032",
+          "stem": "map",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.1887,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-033",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 5,
+          "correct": 0,
+          "anchor_id": "hom-034",
+          "stem": "send",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1698,
+          "ndcg10": 0.8482,
+          "p5": 1.0,
+          "count": 2258,
+          "correct": 318,
+          "anchor_id": "hom-036",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3244,
+          "ndcg10": 0.3181,
+          "p5": 0.2,
+          "count": 23,
+          "correct": 7,
+          "anchor_id": "hom-037",
+          "stem": "clone",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.1886,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-038",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.4667,
+          "ndcg10": 0.6415,
+          "p5": 0.4,
+          "count": 10,
+          "correct": 5,
+          "anchor_id": "hom-039",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.5,
+          "ndcg10": 0.4451,
+          "p5": 0.4,
+          "count": 30,
+          "correct": 15,
+          "anchor_id": "hom-040",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.115,
+          "ndcg10": 0.2201,
+          "p5": 0.2,
+          "count": 333,
+          "correct": 33,
+          "anchor_id": "hom-041",
+          "stem": "shutdown",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1,
+          "correct": 0,
+          "anchor_id": "hom-043",
+          "stem": "shutdown",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-044",
+          "stem": "handle",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-046",
+          "stem": "task",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1,
+          "correct": 0,
+          "anchor_id": "hom-047",
+          "stem": "task",
+          "anchor_label": "module_name"
+        },
+        {
+          "mAP": 0.1346,
+          "ndcg10": 0.2895,
+          "p5": 0.2,
+          "count": 2258,
+          "correct": 318,
+          "anchor_id": "hom-048",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.2761,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1984,
+          "correct": 223,
+          "anchor_id": "hom-049",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        }
+      ]
+    },
+    "0.7": {
+      "median_mAP": 0.3373,
+      "median_NDCG10": 0.3869,
+      "median_P5": 0.2,
+      "mean_mAP": 0.3623,
+      "mean_NDCG10": 0.3719,
+      "mean_P5": 0.2803,
+      "total_hits": 1162,
+      "total_correct": 274,
+      "n_anchors": 39,
+      "per_anchor": [
+        {
+          "mAP": 0.4314,
+          "ndcg10": 0.5096,
+          "p5": 0.4,
+          "count": 17,
+          "correct": 6,
+          "anchor_id": "hom-001",
+          "stem": "clone",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3917,
+          "ndcg10": 0.4519,
+          "p5": 0.4,
+          "count": 42,
+          "correct": 10,
+          "anchor_id": "hom-002",
+          "stem": "map",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.4811,
+          "ndcg10": 0.4451,
+          "p5": 0.4,
+          "count": 39,
+          "correct": 19,
+          "anchor_id": "hom-003",
+          "stem": "default",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 1.0,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 11,
+          "correct": 11,
+          "anchor_id": "hom-004",
+          "stem": "task",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.23,
+          "ndcg10": 0.1171,
+          "p5": 0.2,
+          "count": 27,
+          "correct": 6,
+          "anchor_id": "hom-005",
+          "stem": "write",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.5,
+          "ndcg10": 0.6859,
+          "p5": 0.4,
+          "count": 11,
+          "correct": 5,
+          "anchor_id": "hom-006",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3139,
+          "ndcg10": 0.1622,
+          "p5": 0.0,
+          "count": 16,
+          "correct": 7,
+          "anchor_id": "hom-007",
+          "stem": "send",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0958,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 100,
+          "correct": 8,
+          "anchor_id": "hom-008",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.5833,
+          "ndcg10": 0.6934,
+          "p5": 0.6667,
+          "count": 3,
+          "correct": 2,
+          "anchor_id": "hom-009",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2,
+          "ndcg10": 0.3869,
+          "p5": 0.2,
+          "count": 6,
+          "correct": 1,
+          "anchor_id": "hom-010",
+          "stem": "drop",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1,
+          "correct": 0,
+          "anchor_id": "hom-011",
+          "stem": "shutdown",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.75,
+          "ndcg10": 0.8772,
+          "p5": 0.4,
+          "count": 5,
+          "correct": 2,
+          "anchor_id": "hom-012",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3002,
+          "ndcg10": 0.1518,
+          "p5": 0.0,
+          "count": 249,
+          "correct": 41,
+          "anchor_id": "hom-013",
+          "stem": "ready",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.3667,
+          "ndcg10": 0.5438,
+          "p5": 0.4,
+          "count": 6,
+          "correct": 2,
+          "anchor_id": "hom-014",
+          "stem": "split",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2745,
+          "ndcg10": 0.1776,
+          "p5": 0.2,
+          "count": 31,
+          "correct": 8,
+          "anchor_id": "hom-015",
+          "stem": "kill",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 1.0,
+          "ndcg10": 1.0,
+          "p5": 1.0,
+          "count": 2,
+          "correct": 2,
+          "anchor_id": "hom-018",
+          "stem": "from_std",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0625,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 16,
+          "correct": 1,
+          "anchor_id": "hom-021",
+          "stem": "spawn",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.5961,
+          "ndcg10": 0.6215,
+          "p5": 0.6,
+          "count": 43,
+          "correct": 26,
+          "anchor_id": "hom-025",
+          "stem": "len",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.569,
+          "ndcg10": 0.5649,
+          "p5": 0.6,
+          "count": 18,
+          "correct": 8,
+          "anchor_id": "hom-026",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.385,
+          "ndcg10": 0.3692,
+          "p5": 0.4,
+          "count": 15,
+          "correct": 6,
+          "anchor_id": "hom-027",
+          "stem": "consume",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 8,
+          "correct": 0,
+          "anchor_id": "hom-028",
+          "stem": "split",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.2399,
+          "ndcg10": 0.1931,
+          "p5": 0.2,
+          "count": 29,
+          "correct": 7,
+          "anchor_id": "hom-029",
+          "stem": "kill",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.5451,
+          "ndcg10": 0.5549,
+          "p5": 0.6,
+          "count": 42,
+          "correct": 21,
+          "anchor_id": "hom-030",
+          "stem": "default",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3373,
+          "ndcg10": 0.5257,
+          "p5": 0.2,
+          "count": 14,
+          "correct": 3,
+          "anchor_id": "hom-031",
+          "stem": "write",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.3792,
+          "ndcg10": 0.4519,
+          "p5": 0.4,
+          "count": 42,
+          "correct": 10,
+          "anchor_id": "hom-032",
+          "stem": "map",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0898,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 101,
+          "correct": 7,
+          "anchor_id": "hom-033",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 5,
+          "correct": 0,
+          "anchor_id": "hom-034",
+          "stem": "send",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.6551,
+          "ndcg10": 0.6154,
+          "p5": 0.6,
+          "count": 27,
+          "correct": 16,
+          "anchor_id": "hom-036",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.3244,
+          "ndcg10": 0.3181,
+          "p5": 0.2,
+          "count": 23,
+          "correct": 7,
+          "anchor_id": "hom-037",
+          "stem": "clone",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0598,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 155,
+          "correct": 10,
+          "anchor_id": "hom-038",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.4667,
+          "ndcg10": 0.6415,
+          "p5": 0.4,
+          "count": 10,
+          "correct": 5,
+          "anchor_id": "hom-039",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.5,
+          "ndcg10": 0.4451,
+          "p5": 0.4,
+          "count": 30,
+          "correct": 15,
+          "anchor_id": "hom-040",
+          "stem": "from",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 1.0,
+          "ndcg10": 1.0,
+          "p5": 0.3333,
+          "count": 3,
+          "correct": 1,
+          "anchor_id": "hom-041",
+          "stem": "shutdown",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1,
+          "correct": 0,
+          "anchor_id": "hom-043",
+          "stem": "shutdown",
+          "anchor_label": "method_call"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-044",
+          "stem": "handle",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 0,
+          "correct": 0,
+          "anchor_id": "hom-046",
+          "stem": "task",
+          "anchor_label": "type_name"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 1,
+          "correct": 0,
+          "anchor_id": "hom-047",
+          "stem": "task",
+          "anchor_label": "module_name"
+        },
+        {
+          "mAP": 1.0,
+          "ndcg10": 1.0,
+          "p5": 0.3333,
+          "count": 3,
+          "correct": 1,
+          "anchor_id": "hom-048",
+          "stem": "new",
+          "anchor_label": "function_def"
+        },
+        {
+          "mAP": 0.0,
+          "ndcg10": 0.0,
+          "p5": 0.0,
+          "count": 10,
+          "correct": 0,
+          "anchor_id": "hom-049",
+          "stem": "poll",
+          "anchor_label": "method_call"
+        }
+      ]
+    }
+  },
+  "recommended_threshold": 0.7,
+  "pass": false,
+  "generated_at": "2026-06-28T23:36:38.251438+00:00"
+}
