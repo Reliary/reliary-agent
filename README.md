@@ -42,39 +42,45 @@ For automatic interception (no manual prefix), set `RELIARY_SIFT_BASH=1` and ins
 
 ### Code intelligence (MCP tools)
 
+8 curated tools in the primary menu:
+
 | Tool | What it returns |
 |------|----------------|
-| `reliary_find_references_with_source` | file:line + source text per reference. Type-aware: distinguishes BufWriter::consume from Take::consume. |
-| `reliary_goto_def` | Immediately jump to definition with anchor_file+anchor_line for follow-up queries. |
-| `reliary_callgraph` | Callers + callees from function body scanning. |
-| `reliary_search` | BM25 full-text search across the index. |
-| `reliary_dead_symbols` | Unused functions with file:line, path-scoped. |
-| `reliary_fix` | Pattern-based edit within a function body. |
-| `reliary_risk` | Pre-edit risk score + dependent symbols. |
+| `reliary_find_references` | Single entry point for all symbol questions. Modes: `def_only=true` → "where is X defined"; `usage_only=true` → "who calls X"; `methods=true` → "list methods on X"; `dead_only=true` (+`path`) → "find dead code"; `path_filter='io/util/'` → scope to a module; no params → general references. One-line answer with raw code evidence. |
+| `reliary_search` | BM25 file search with never-empty fallback (closest files by vocabulary similarity). |
+| `reliary_goto_def` | Deprecated — use `reliary_find_references(name=X, def_only=true)`. Still works. |
+| `reliary_call_graph` | Callers + callees with source. `direction=inbound/outbound/both`, `depth` (entry points auto-expand). |
+| `reliary_list_methods` | Methods on a type with file:line. Alias of the same handler. |
+| `reliary_find_dead_code` | Unused functions, path-scoped. Alias of the same handler. |
+| `reliary_describe` | Symbol overview: purpose, signature, callers, methods. `methods`/`dead_only` route to the same handlers. |
+| `reliary_similar` | Structurally similar functions (near-clone detection). |
 
 ### Bash compression (reliary wrap)
 
-Universal text compressor that works on ANY command output. No per-command filters needed. Achieves 30-80% compression on real shell output depending on content structure.
+Universal text compressor that works on ANY command output. No per-command filters needed. 46.3% average compression across the 6 fixtures in the V14 benchmark (see `~/src/sift/scripts/bench_vs_rtk.py`). Content readers on source files (`cat`/`head`/`tail`/`less`/`bat <source.rs>`) pass through uncompressed so model-built edits never see mangled code.
 
 ## Benchmarks
 
-10-query multi-turn session on tokio, deepseek-v4-flash, 2 seeds:
+Deterministic claim-verification bench (10 questions on a reliary corpus snapshot, deepseek-v4-flash, 4 seeds 42/17/123/456, result file `bench/results/v64_final_3way.jsonl`):
 
-| Metric | Reliary | Grep-only | Δ |
-|--------|---------|-----------|---|
-| Score | 23-24/30 | 23-25/30 | Tied |
-| WC (input + 4× output) | ~130k | ~240k | -46% |
-| Tokens in | ~124k | ~229k | -46% |
-| Tool bytes | ~10k | ~31k | -68% |
-| Dead-ends | 8 | 4 | +4 |
+| Metric | Reliary (A) | Altbackend (B) | Grep (C) |
+|--------|-------------|----------------|----------|
+| F1 (claim-weighted) | **0.642** | 0.299 | 0.686 |
+| Precision | **0.986** | 0.539 | 0.904 |
+| Recall | 0.476 | 0.208 | **0.554** |
+| Keyword score /30 | **24.0** | 23.5 | 23.5 |
+| Billed cost | **9,574** | 39,938 | 61,322 |
+| Dead-ends | **0.0** | 5.0 | 2.2 |
+| Tool calls | **11.8** | 31.5 | 26.8 |
+| Tool bytes | **3,374** | 26,239 | 66,227 |
 
-Reliary uses 46% fewer tokens than grep for the same score. Tool output is 68% smaller because structured results replace raw file dumps.
+Every model claim (`symbol at file:line`) is verified mechanically against the index — no LLM judge. Repro: `python3 bench/run_snapshot_bench.py --bin target/release/reliary --corpus /tmp/rel8-corpus --conds A,B,C --seeds 42 17 123 456` then `python3 bench/deterministic_verify.py --input bench/results/v64_final_3way.jsonl --corpus /tmp/rel8-corpus`.
 
 Full reproduction: `python3 bench/long_session_bench.py --conditions A,C --seeds 42 17`
 
 ## MCP tool menu
 
-The default menu exposes 16 curated tools. Set `RELIARY_FULL_MENU=1` for all variants.
+The default menu exposes 8 curated tools (`search`, `find_references`, `goto_def`, `call_graph`, `list_methods`, `find_dead_code`, `describe`, `similar`). Specialist research variants (`callgraph_v2`, `methods_on`, `find_references_type_flow`, `find_references_boltzmann`, `trace_path`, `query_ast`, `brace_graph`, `architecture`, `risk`, `fix`, `prior`, `compress`, `retrieve`, `stats`) still exist as dispatch targets but are not listed.
 
 ## CLI reference
 

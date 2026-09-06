@@ -28,6 +28,14 @@ fn phrase_gens() -> FxHashMap<i64, u64> {
     g.get_or_insert_with(FxHashMap::default).clone()
 }
 
+/// V61: single-entry lookup without cloning the whole map.
+/// The hot path (mcp.rs phrase_generation) was cloning the ENTIRE
+/// generation map under lock on every call.
+fn phrase_gen(phrase_id: i64) -> Option<u64> {
+    let mut g = PHRASE_GENS.lock().unwrap_or_else(|e| e.into_inner());
+    g.as_ref().and_then(|m| m.get(&phrase_id).copied())
+}
+
 fn phrase_gens_store<F: FnOnce(&mut FxHashMap<i64, u64>)>(f: F) {
     let mut g = PHRASE_GENS.lock().unwrap_or_else(|e| e.into_inner());
     f(g.get_or_insert_with(FxHashMap::default));
@@ -35,7 +43,7 @@ fn phrase_gens_store<F: FnOnce(&mut FxHashMap<i64, u64>)>(f: F) {
 
 /// Current generation for one phrase (0 if never built).
 pub fn phrase_generation(phrase_id: i64) -> u64 {
-    phrase_gens().get(&phrase_id).copied().unwrap_or(0)
+    phrase_gen(phrase_id).unwrap_or(0)
 }
 
 #[inline]
@@ -43,10 +51,12 @@ pub(crate) fn bump_gen_if_inserted(n: usize) {
     let _ = n; // retained for callers; per-phrase bumps happen in ensure_* paths
 }
 
-
 /// Full invalidation (file-level rebuild touches many phrases).
 pub fn invalidate_all_phrase_gens() {
-    phrase_gens().clear();
+    let mut g = PHRASE_GENS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = g.as_mut() {
+        m.clear();
+    }
 }
 
 #[inline]
@@ -79,16 +89,51 @@ pub fn is_source_like(content: &str) -> bool {
 
     let mut code_lines = 0usize;
     let mut non_blank = 0usize;
+    let mut markdown_lines = 0usize;
 
     for line in &sample {
         let trimmed = line.trim();
         if trimmed.is_empty() { continue; }
         non_blank += 1;
 
+        // V63f: markdown-marker lines (`#`, `- `, `* `, `> `, `` ` ``, `|`)
+        // — prose docs with embedded code fences still pass the code-ratio
+        // check because the fenced lines count as code. Marker dominance
+        // (>50%) is the grammar-free signal that this is a doc, not source.
+        // `#` is NOT a marker when it's a C preprocessor directive.
+        let is_marker = (trimmed.starts_with('#')
+            && !trimmed.starts_with("#include")
+            && !trimmed.starts_with("#define")
+            && !trimmed.starts_with("#pragma")
+            && !trimmed.starts_with("#if")
+            && !trimmed.starts_with("#elif")
+            && !trimmed.starts_with("#else")
+            && !trimmed.starts_with("#endif")
+            && !trimmed.starts_with("#undef"))
+            || trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+            || trimmed.starts_with("> ")
+            || trimmed.starts_with('`')
+            || trimmed.starts_with('|');
+        if is_marker {
+            markdown_lines += 1;
+        }
+
         // Comment-like: starts with //, #, *, -, >, <!--
-        if trimmed.starts_with("//") || trimmed.starts_with('#')
-            || trimmed.starts_with('*') || trimmed.starts_with("<!--")
+        // V61: `#` is NOT a comment when it's a C preprocessor directive
+        // (#include/#define/#if/#pragma) — header-heavy C files were being
+        // rejected as "not source" (ratio <= 0.10).
+        if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("<!--")
             || (trimmed.starts_with("- ") && !trimmed.starts_with("-- "))
+            || (trimmed.starts_with('#')
+                && !trimmed.starts_with("#include")
+                && !trimmed.starts_with("#define")
+                && !trimmed.starts_with("#pragma")
+                && !trimmed.starts_with("#if")
+                && !trimmed.starts_with("#elif")
+                && !trimmed.starts_with("#else")
+                && !trimmed.starts_with("#endif")
+                && !trimmed.starts_with("#undef"))
         {
             continue; // comment, not code
         }
@@ -145,7 +190,16 @@ pub fn is_source_like(content: &str) -> bool {
         return false;
     }
     let ratio = code_lines as f64 / non_blank as f64;
-    if ratio <= 0.10 {
+    // V63f: markdown-marker dominance — >50% of non-blank lines starting
+    // with #/- /* >/`/| means this is a prose doc (even with embedded code
+    // fences), not source. Grammar-free: character-class counting.
+    if non_blank >= 10 && markdown_lines as f64 / non_blank as f64 > 0.5 {
+        eprintln!("[guard:is_source_like] skipped (markdown-dominant: {}/{} marker lines)", markdown_lines, non_blank);
+        return false;
+    }
+    // V61: small comment-heavy files (e.g. 11 doc lines + 1 fn) were rejected
+    // at ratio <= 0.10 — accept any file with >= 1 code line when tiny.
+    if ratio <= 0.10 && !(non_blank < 20 && code_lines >= 1) {
         eprintln!("[guard:is_source_like] skipped (ratio={:.3} <= 0.10, code={}, non_blank={})", ratio, code_lines, non_blank);
         return false;
     }
@@ -270,114 +324,127 @@ pub fn ensure_occurrence_for_phrase(
     // Insert in a single transaction for speed.
     db.execute_batch("BEGIN IMMEDIATE")?;
 
-    let mut stmt = db.prepare_cached(
-        "INSERT INTO occurrence (phrase_id, file_id, line, col, is_def, block_id, tag)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
-    )?;
+    let result = (|| -> rusqlite::Result<usize> {
+        let mut stmt = db.prepare_cached(
+            "INSERT INTO occurrence (phrase_id, file_id, line, col, is_def, block_id, tag)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+        )?;
 
-    let mut total = 0usize;
-    for (file_id, file_path) in &file_ids {
-        // V13: per-file check — don't skip if another file already has rows
-        // for this phrase.
-        if occurrence_has_file(db, *file_id, phrase_id)? {
-            continue;
-        }
-        let content = match fs::read_to_string(file_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        // V54: use the pre-computed is_source column (set at trust time) instead
-        // of re-scanning the whole file content per phrase. O(1) vs O(n).
-        let is_source_col: bool = db.query_row(
-            "SELECT is_source FROM file_map WHERE id = ?1",
-            params![*file_id], |r| r.get(0),
-        ).unwrap_or(true);
-        if !is_source_col {
-            continue;
-        }
-
-        let lines: Vec<&str> = content.lines().collect();
-
-        // V54: batch-load block ranges for this file ONCE — binary search per
-        // line instead of one SQL round-trip per matching token.
-        let block_ranges: Vec<(i64, i32, i32)> = {
-            let mut stmt = db.prepare_cached(
-                "SELECT block_id, start_line, end_line FROM block WHERE file_id = ?1"
-            )?;
-            let mut rows = stmt.query(params![*file_id])?;
-            let mut v = Vec::new();
-            while let Some(r) = rows.next()? {
-                v.push((r.get(0)?, r.get(1)?, r.get(2)?));
+        let mut total = 0usize;
+        for (file_id, file_path) in &file_ids {
+            // V13: per-file check — don't skip if another file already has rows
+            // for this phrase.
+            if occurrence_has_file(db, *file_id, phrase_id)? {
+                continue;
             }
-            v
-        };
-        let block_id_for_line = |line_no: i32| -> i64 {
-            let mut best: i64 = 0;
-            let mut best_span: i32 = i32::MAX;
-            for &(bid, sl, el) in &block_ranges {
-                if sl <= line_no && line_no <= el {
-                    let span = el - sl;
-                    if span < best_span {
-                        best_span = span;
-                        best = bid;
+            let content = match fs::read_to_string(file_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            // V54: use the pre-computed is_source column (set at trust time) instead
+            // of re-scanning the whole file content per phrase. O(1) vs O(n).
+            let is_source_col: bool = db.query_row(
+                "SELECT is_source FROM file_map WHERE id = ?1",
+                params![*file_id], |r| r.get(0),
+            ).unwrap_or(true);
+            if !is_source_col {
+                continue;
+            }
+
+            let lines: Vec<&str> = content.lines().collect();
+
+            // V54: batch-load block ranges for this file ONCE — binary search per
+            // line instead of one SQL round-trip per matching token.
+            let block_ranges: Vec<(i64, i32, i32)> = {
+                let mut stmt = db.prepare_cached(
+                    "SELECT block_id, start_line, end_line FROM block WHERE file_id = ?1"
+                )?;
+                let mut rows = stmt.query(params![*file_id])?;
+                let mut v = Vec::new();
+                while let Some(r) = rows.next()? {
+                    v.push((r.get(0)?, r.get(1)?, r.get(2)?));
+                }
+                v
+            };
+            let block_id_for_line = |line_no: i32| -> i64 {
+                let mut best: i64 = 0;
+                let mut best_span: i32 = i32::MAX;
+                for &(bid, sl, el) in &block_ranges {
+                    if sl <= line_no && line_no <= el {
+                        let span = el - sl;
+                        if span < best_span {
+                            best_span = span;
+                            best = bid;
+                        }
                     }
                 }
-            }
-            best
-        };
+                best
+            };
 
-        // Pre-compute line_tags (small array, reused).
-        let mut line_tags: Vec<u8> = Vec::with_capacity(lines.len());
-        let mut brace_depth: i32 = 0;
-        // V59: capture the DEFINED NAME per line, not just a bool. The old
-        // code marked every identifier on a def-line as is_def=1 — so
-        // `StructuralResult` in a fn's return type inherited the fn's def
-        // flag, and def-lookup returned the fn line for struct queries.
-        let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
-        for line in &lines {
-            let (open_count, close_count) = crate::ingest::count_braces(line);
-            let prev_depth = brace_depth;
-            brace_depth += open_count as i32 - close_count as i32;
-            if brace_depth < 0 { brace_depth = 0; }
-            let result = crate::structural::classify_structural(line, prev_depth, open_count > 0, false);
-            line_tags.push(result.tag);
-            line_def_names.push(result.defined_name.map(|s| s.to_string()));
+            // Pre-compute line_tags (small array, reused).
+            let mut line_tags: Vec<u8> = Vec::with_capacity(lines.len());
+            let mut brace_depth: i32 = 0;
+            // V59: capture the DEFINED NAME per line, not just a bool. The old
+            // code marked every identifier on a def-line as is_def=1 — so
+            // `StructuralResult` in a fn's return type inherited the fn's def
+            // flag, and def-lookup returned the fn line for struct queries.
+            let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
+            for line in &lines {
+                let (open_count, close_count) = crate::ingest::count_braces(line);
+                let prev_depth = brace_depth;
+                brace_depth += open_count as i32 - close_count as i32;
+                if brace_depth < 0 { brace_depth = 0; }
+                let result = crate::structural::classify_structural(line, prev_depth, open_count > 0, false);
+                line_tags.push(result.tag);
+                line_def_names.push(result.defined_name.map(|s| s.to_string()));
+            }
+
+            for (li, line) in lines.iter().enumerate() {
+                let line_tag = line_tags.get(li).copied().unwrap_or(0);
+                let line_def_name = line_def_names.get(li).cloned().flatten();
+                for (col, token) in crate::scan_identifiers(line).into_iter().enumerate() {
+                    let stemmed = crate::stem_identifier(&token);
+                    if stemmed != phrase_text {
+                        continue;
+                    }
+                    if crate::keywords::is_keyword(&stemmed) {
+                        continue;
+                    }
+                    let col_idx = col as i32;
+                    let line_no = li as i32;  // 0-based, matches MCP `+1` convention
+                    // V59: is_def iff this token IS the line's defined name.
+                    // Case-insensitive: scan_identifiers lowercases, the
+                    // classifier returns source-case names.
+                    let is_def_int = if line_tag >= 1 && line_tag <= 4
+                        && line_def_name.as_deref().map(|d| d.eq_ignore_ascii_case(&token)).unwrap_or(false)
+                    { 1 } else { 0 };
+                    let tag = if is_def_int == 1 { line_tag } else { 0 };
+                    let block_id = block_id_for_line(line_no);
+                    stmt.execute(params![phrase_id, *file_id, line_no, col_idx, is_def_int, block_id, tag as i64])?;
+                    total += 1;
+                }
+            }
         }
+        Ok(total)
+    })();
 
-        let mut jit_debug_hits = 0usize;
-        for (li, line) in lines.iter().enumerate() {
-            let line_tag = line_tags.get(li).copied().unwrap_or(0);
-            let line_def_name = line_def_names.get(li).cloned().flatten();
-            for (col, token) in crate::scan_identifiers(line).into_iter().enumerate() {
-                let stemmed = crate::stem_identifier(&token);
-                if stemmed == phrase_text { jit_debug_hits += 1; }
-                if stemmed != phrase_text {
-                    continue;
-                }
-                if crate::keywords::is_keyword(&stemmed) {
-                    continue;
-                }
-                let col_idx = col as i32;
-                let line_no = li as i32;  // 0-based, matches MCP `+1` convention
-                // V59: is_def iff this token IS the line's defined name.
-                // Case-insensitive: scan_identifiers lowercases, the
-                // classifier returns source-case names.
-                let is_def_int = if line_tag >= 1 && line_tag <= 4
-                    && line_def_name.as_deref().map(|d| d.eq_ignore_ascii_case(&token)).unwrap_or(false)
-                { 1 } else { 0 };
-                let tag = if is_def_int == 1 { line_tag } else { 0 };
-                let block_id = block_id_for_line(line_no);
-                stmt.execute(params![phrase_id, *file_id, line_no, col_idx, is_def_int, block_id, tag as i64])?;
-                total += 1;
-            }
+    // V60: COMMIT on success, ROLLBACK on error so the shared connection is
+    // never left inside an open write transaction (a stuck BEGIN IMMEDIATE
+    // would make every subsequent JIT build fail with "transaction within a
+    // transaction", and callers' is_err→continue would skip the phrase
+    // forever on this connection).
+    match result {
+        Ok(total) => {
+            db.execute_batch("COMMIT")?;
+            if total > 0 { bump_phrase_gen(db, phrase_id); }
+            Ok(total)
+        }
+        Err(e) => {
+            let _ = db.execute_batch("ROLLBACK");
+            Err(e)
         }
     }
-
-    db.execute_batch("COMMIT")?;
-
-    eprintln!("[jit-debug] phrase={} total={} (probe removed from scope)", phrase_text, total);
-    { if total > 0 { bump_phrase_gen(db, phrase_id); } Ok(total) }
 }
 
 /// Bulk JIT build for multiple phrases. Used by `reliary_reindex_all_occurrences`
@@ -530,98 +597,108 @@ fn ensure_occurrence_for_file_impl(
     let mut total = 0usize;
     db.execute_batch("BEGIN IMMEDIATE")?;
 
-    // P2-5: ensure blocks ONCE before the line loop instead of per-line.
-    if let Err(e) = crate::lazy_tables::ensure_blocks_for_file(db, file_id) {
-        eprintln!("[lazy_occurrence] ensure_blocks_for_file failed for file_id={}: {}", file_id, e);
-    }
-    // Pre-build block_id lookup for all lines (avoids one SQL query per line).
-    let block_ids: Vec<i64> = {
-        let mut stmt = db.prepare_cached(
-            "SELECT start_line, end_line, block_id FROM block WHERE file_id = ?1 ORDER BY start_line"
-        )?;
-        let ranges: Vec<(i32, i32, i64)> = stmt.query_map(params![file_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })?.filter_map(|r| r.ok()).collect();
-        let mut map = vec![0i64; lines.len()];
-        for (start, end, bid) in ranges {
-            let start = start.max(0) as usize;
-            let end = (end.max(0) as usize).min(map.len().saturating_sub(1));
-            for li in start..=end {
-                map[li] = bid;
-            }
+    let result = (|| -> rusqlite::Result<usize> {
+        // P2-5: ensure blocks ONCE before the line loop instead of per-line.
+        if let Err(e) = crate::lazy_tables::ensure_blocks_for_file(db, file_id) {
+            eprintln!("[lazy_occurrence] ensure_blocks_for_file failed for file_id={}: {}", file_id, e);
         }
-        map
-    };
-
-    // M6: Accumulate rows into a batch, flush in chunks of 500.
-    // Multi-row INSERT is 3-10× faster than individual executes for large files.
-    let mut batch: Vec<(i64, i64, i32, i32, i32, i64, i64)> = Vec::with_capacity(500);
-
-    for (li, line) in lines.iter().enumerate() {
-        let line_tag = line_tags.get(li).copied().unwrap_or(0);
-        let line_is_def = lines_is_def.get(li).copied().unwrap_or(false);
-        let is_def_int = if line_is_def { 1 } else { 0 };
-
-        // Use pre-built block_id lookup (O(1) instead of per-line SQL).
-        let block_id: i64 = *block_ids.get(li).unwrap_or(&0);
-
-        // Path B: strip trailing // comments before scanning identifiers.
-        let code = crate::structural::strip_line_comment(line);
-
-        for (col, token) in crate::scan_identifiers(code).into_iter().enumerate() {
-            // V39: use stem_identifier to preserve snake_case identifiers.
-            // porter_stem strips the `al` suffix from `structural` → `structur`,
-            // destroying compound names like `classify_structural`.
-            let stemmed = crate::stem_identifier(&token);
-            if crate::keywords::is_keyword(&stemmed) {
-                continue;
-            }
-            // Lookup or insert phrase_id.
-            let phrase_id = match phrase_cache.get(&stemmed) {
-                Some(&id) => id,
-                None => {
-                    db.execute(
-                        "INSERT OR IGNORE INTO phrases (phrase) VALUES (?1)",
-                        params![stemmed],
-                    )?;
-                    let id: i64 = match db.query_row(
-                        "SELECT id FROM phrases WHERE phrase = ?1",
-                        params![stemmed],
-                        |r| r.get(0),
-                    ) {
-                        Ok(id) => id,
-                        Err(_) => continue,
-                    };
-                    phrase_cache.insert(stemmed.clone(), id);
-                    id
+        // Pre-build block_id lookup for all lines (avoids one SQL query per line).
+        let block_ids: Vec<i64> = {
+            let mut stmt = db.prepare_cached(
+                "SELECT start_line, end_line, block_id FROM block WHERE file_id = ?1 ORDER BY start_line"
+            )?;
+            let ranges: Vec<(i32, i32, i64)> = stmt.query_map(params![file_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?.filter_map(|r| r.ok()).collect();
+            let mut map = vec![0i64; lines.len()];
+            for (start, end, bid) in ranges {
+                let start = start.max(0) as usize;
+                let end = (end.max(0) as usize).min(map.len().saturating_sub(1));
+                for li in start..=end {
+                    map[li] = bid;
                 }
-            };
+            }
+            map
+        };
 
-            // Add to batch instead of executing immediately.
-            batch.push((phrase_id, file_id, li as i32, col as i32, is_def_int, block_id, line_tag as i64));
-            total += 1;
+        // M6: Accumulate rows into a batch, flush in chunks of 500.
+        // Multi-row INSERT is 3-10× faster than individual executes for large files.
+        let mut batch: Vec<(i64, i64, i32, i32, i32, i64, i64)> = Vec::with_capacity(500);
 
-            // Flush batch every 500 rows.
-            if batch.len() >= 500 {
-                flush_occurrence_batch(db, &mut batch)?;
+        for (li, line) in lines.iter().enumerate() {
+            let line_tag = line_tags.get(li).copied().unwrap_or(0);
+            let line_is_def = lines_is_def.get(li).copied().unwrap_or(false);
+            let is_def_int = if line_is_def { 1 } else { 0 };
+
+            // Use pre-built block_id lookup (O(1) instead of per-line SQL).
+            let block_id: i64 = *block_ids.get(li).unwrap_or(&0);
+
+            // Path B: strip trailing // comments before scanning identifiers.
+            let code = crate::structural::strip_line_comment(line);
+
+            for (col, token) in crate::scan_identifiers(code).into_iter().enumerate() {
+                // V39: use stem_identifier to preserve snake_case identifiers.
+                // porter_stem strips the `al` suffix from `structural` → `structur`,
+                // destroying compound names like `classify_structural`.
+                let stemmed = crate::stem_identifier(&token);
+                if crate::keywords::is_keyword(&stemmed) {
+                    continue;
+                }
+                // Lookup or insert phrase_id.
+                let phrase_id = match phrase_cache.get(&stemmed) {
+                    Some(&id) => id,
+                    None => {
+                        db.execute(
+                            "INSERT OR IGNORE INTO phrases (phrase) VALUES (?1)",
+                            params![stemmed],
+                        )?;
+                        let id: i64 = match db.query_row(
+                            "SELECT id FROM phrases WHERE phrase = ?1",
+                            params![stemmed],
+                            |r| r.get(0),
+                        ) {
+                            Ok(id) => id,
+                            Err(_) => continue,
+                        };
+                        phrase_cache.insert(stemmed.clone(), id);
+                        id
+                    }
+                };
+
+                // Add to batch instead of executing immediately.
+                batch.push((phrase_id, file_id, li as i32, col as i32, is_def_int, block_id, line_tag as i64));
+                total += 1;
+
+                // Flush batch every 500 rows.
+                if batch.len() >= 500 {
+                    flush_occurrence_batch(db, &mut batch)?;
+                }
             }
         }
-    }
 
-    // Flush remaining rows.
-    if !batch.is_empty() {
-        flush_occurrence_batch(db, &mut batch)?;
-    }
+        // Flush remaining rows.
+        if !batch.is_empty() {
+            flush_occurrence_batch(db, &mut batch)?;
+        }
+        Ok(total)
+    })();
 
-    // V52: The caller's phrase_cache is now &mut — we already wrote new entries into it
-    // during the line loop (via phrase_cache.insert). No merge needed at function end.
-
-    let commit_result = db.execute_batch("COMMIT");
-    if let Err(e) = commit_result {
-        eprintln!("[lazy_occurrence] COMMIT failed for file_id={}: {}", file_id, e);
-        return Err(e);
+    // V60: COMMIT on success, ROLLBACK on error so the shared connection is
+    // never left inside an open write transaction.
+    match result {
+        Ok(total) => {
+            if let Err(e) = db.execute_batch("COMMIT") {
+                eprintln!("[lazy_occurrence] COMMIT failed for file_id={}: {}", file_id, e);
+                return Err(e);
+            }
+            if total > 0 { invalidate_all_phrase_gens(); }
+            Ok(total)
+        }
+        Err(e) => {
+            let _ = db.execute_batch("ROLLBACK");
+            Err(e)
+        }
     }
-    { if total > 0 { invalidate_all_phrase_gens(); } Ok(total) }
 }
 
 /// V52: Same as ensure_occurrence_for_file but accepts a pre-loaded phrase cache.
@@ -736,79 +813,93 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
     let mut total = 0usize;
     db.execute_batch("BEGIN IMMEDIATE")?;
 
-    // P4-3: Hoist ensure_blocks_for_file_with_content out of the per-line loop.
-    // It was running SELECT EXISTS(...) once per line — L redundant queries per file.
-    // Also pre-build block_ids array (mirrors ensure_occurrence_for_file which
-    // already hoisted this).
-    if let Err(e) = crate::lazy_tables::ensure_blocks_for_file_with_content(db, file_id, content) {
-        eprintln!("[lazy_occurrence] ensure_blocks_for_file_with_content failed for file_id={}: {}", file_id, e);
-    }
-    // V52: Batch the block_id lookup — was: one SQL query per line (L rounds for L-line files).
-    // Now: one query gets all ranges, Rust loop populates the map.
-    let block_ids: Vec<i64> = {
-        let mut stmt = db.prepare_cached(
-            "SELECT start_line, end_line, block_id FROM block WHERE file_id = ?1 ORDER BY start_line"
-        )?;
-        let ranges: Vec<(i32, i32, i64)> = stmt.query_map(params![file_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })?.filter_map(|r| r.ok()).collect();
-        let mut map = vec![0i64; lines.len()];
-        for (start, end, bid) in ranges {
-            let start = start.max(0) as usize;
-            let end = (end.max(0) as usize).min(map.len().saturating_sub(1));
-            for li in start..=end {
-                map[li] = bid;
-            }
+    let result = (|| -> rusqlite::Result<usize> {
+        // P4-3: Hoist ensure_blocks_for_file_with_content out of the per-line loop.
+        // It was running SELECT EXISTS(...) once per line — L redundant queries per file.
+        // Also pre-build block_ids array (mirrors ensure_occurrence_for_file which
+        // already hoisted this).
+        if let Err(e) = crate::lazy_tables::ensure_blocks_for_file_with_content(db, file_id, content) {
+            eprintln!("[lazy_occurrence] ensure_blocks_for_file_with_content failed for file_id={}: {}", file_id, e);
         }
-        map
-    };
-
-    for (li, line) in lines.iter().enumerate() {
-        let line_tag = line_tags.get(li).copied().unwrap_or(0);
-        let line_is_def = lines_is_def.get(li).copied().unwrap_or(false);
-        let is_def_int = if line_is_def { 1 } else { 0 };
-
-        // P4-3: use pre-built block_ids array (hoisted out of the loop).
-        let block_id = block_ids.get(li).copied().unwrap_or(0);
-
-        for (col, token) in crate::scan_identifiers(line).into_iter().enumerate() {
-            // V41: use stem_identifier to preserve snake_case identifiers.
-            // porter_stem strips the `al` suffix from `structural` → `structur`,
-            // which makes `classify_structural` unsearchable. stem_identifier
-            // preserves the full identifier when it contains underscores.
-            let stemmed = crate::stem_identifier(&token);
-            if crate::keywords::is_keyword(&stemmed) {
-                continue;
-            }
-            let phrase_id = match phrase_cache.get(&stemmed) {
-                Some(&id) => id,
-                None => {
-                    db.execute(
-                        "INSERT OR IGNORE INTO phrases (phrase) VALUES (?1)",
-                        params![stemmed],
-                    )?;
-                    let id: i64 = match db.query_row(
-                        "SELECT id FROM phrases WHERE phrase = ?1",
-                        params![stemmed],
-                        |r| r.get(0),
-                    ) {
-                        Ok(id) => id,
-                        Err(_) => continue,
-                    };
-                    phrase_cache.insert(stemmed.clone(), id);
-                    id
+        // V52: Batch the block_id lookup — was: one SQL query per line (L rounds for L-line files).
+        // Now: one query gets all ranges, Rust loop populates the map.
+        let block_ids: Vec<i64> = {
+            let mut stmt = db.prepare_cached(
+                "SELECT start_line, end_line, block_id FROM block WHERE file_id = ?1 ORDER BY start_line"
+            )?;
+            let ranges: Vec<(i32, i32, i64)> = stmt.query_map(params![file_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?.filter_map(|r| r.ok()).collect();
+            let mut map = vec![0i64; lines.len()];
+            for (start, end, bid) in ranges {
+                let start = start.max(0) as usize;
+                let end = (end.max(0) as usize).min(map.len().saturating_sub(1));
+                for li in start..=end {
+                    map[li] = bid;
                 }
-            };
+            }
+            map
+        };
 
-            let col_idx = col as i32;
-            let line_no = li as i32;
-            stmt.execute(params![phrase_id, file_id, line_no, col_idx, is_def_int, block_id, line_tag as i64])?;
-            total += 1;
+        for (li, line) in lines.iter().enumerate() {
+            let line_tag = line_tags.get(li).copied().unwrap_or(0);
+            let line_is_def = lines_is_def.get(li).copied().unwrap_or(false);
+            let is_def_int = if line_is_def { 1 } else { 0 };
+
+            // P4-3: use pre-built block_ids array (hoisted out of the loop).
+            let block_id = block_ids.get(li).copied().unwrap_or(0);
+
+            for (col, token) in crate::scan_identifiers(line).into_iter().enumerate() {
+                // V41: use stem_identifier to preserve snake_case identifiers.
+                // porter_stem strips the `al` suffix from `structural` → `structur`,
+                // which makes `classify_structural` unsearchable. stem_identifier
+                // preserves the full identifier when it contains underscores.
+                let stemmed = crate::stem_identifier(&token);
+                if crate::keywords::is_keyword(&stemmed) {
+                    continue;
+                }
+                let phrase_id = match phrase_cache.get(&stemmed) {
+                    Some(&id) => id,
+                    None => {
+                        db.execute(
+                            "INSERT OR IGNORE INTO phrases (phrase) VALUES (?1)",
+                            params![stemmed],
+                        )?;
+                        let id: i64 = match db.query_row(
+                            "SELECT id FROM phrases WHERE phrase = ?1",
+                            params![stemmed],
+                            |r| r.get(0),
+                        ) {
+                            Ok(id) => id,
+                            Err(_) => continue,
+                        };
+                        phrase_cache.insert(stemmed.clone(), id);
+                        id
+                    }
+                };
+
+                let col_idx = col as i32;
+                let line_no = li as i32;
+                stmt.execute(params![phrase_id, file_id, line_no, col_idx, is_def_int, block_id, line_tag as i64])?;
+                total += 1;
+            }
+        }
+        Ok(total)
+    })();
+
+    // V60: COMMIT on success, ROLLBACK on error so the shared connection is
+    // never left inside an open write transaction.
+    match result {
+        Ok(total) => {
+            db.execute_batch("COMMIT")?;
+            if total > 0 { invalidate_all_phrase_gens(); }
+            Ok(total)
+        }
+        Err(e) => {
+            let _ = db.execute_batch("ROLLBACK");
+            Err(e)
         }
     }
-
-    db.execute_batch("COMMIT")?;
-    { if total > 0 { invalidate_all_phrase_gens(); } Ok(total) }
 }
 
 #[cfg(test)]

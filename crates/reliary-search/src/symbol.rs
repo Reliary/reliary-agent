@@ -39,10 +39,10 @@ pub fn block_id_at(db: &Connection, file_id: i64, line: i32) -> rusqlite::Result
     if crate::lazy_tables::ensure_blocks_for_file(db, file_id).is_err() { eprintln!("[symbol] ensure_blocks_for_file failed for file_id={}", file_id); }
     // V51: convert 1-indexed MCP param to 0-indexed (block table uses 0-indexed lines).
     let line_0idx = line.saturating_sub(1);
-    // P1-5: Use idx_block_range covering index. The smallest enclosing block
-    // is the one with the largest end_line among those starting before `line`.
+    // V60: require end_line >= line so gap lines (blank/comment between
+    // blocks) don't resolve to a block that already ended.
     let mut stmt = db.prepare_cached(
-        "SELECT block_id FROM block WHERE file_id = ?1 AND start_line <= ?2 ORDER BY end_line DESC LIMIT 1",
+        "SELECT block_id FROM block WHERE file_id = ?1 AND start_line <= ?2 AND end_line >= ?2 ORDER BY end_line DESC LIMIT 1",
     )?;
     let mut rows = stmt.query(params![file_id, line_0idx])?;
     if let Some(r) = rows.next()? {
@@ -247,8 +247,13 @@ fn cosine_f32(a: &FxHashMap<i64, f32>, b: &FxHashMap<i64, f32>) -> f32 {
 }
 
 /// Stem a raw token the same way the indexer does (for callers that supply raw names).
+/// V61: use stem_identifier — the indexer (ingest.rs, lazy_occurrence.rs) stores
+/// stem_identifier outputs which preserve snake_case/CamelCase compounds.
+/// porter_stem strips `al` from `structural` → `structur`, destroying compound
+/// names like `classify_structural` (every such lookup missed and paid the
+/// noisy unstemmed fallback).
 pub fn stem(token: &str) -> String {
-    crate::porter_stem(token)
+    crate::stem_identifier(token)
 }
 
 /// Resolve (raw_name) → phrase_id, or None if the stem isn't in the index.
@@ -347,7 +352,7 @@ pub fn find_references_centered(
     let anchor_centered = centered_bag(&anchor_raw, &corpus_mean);
     let mut stmt = db.prepare_cached(
         "SELECT o.occ_id, o.file_id, f.file_path, o.line, o.col, o.is_def, o.block_id
-         FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1",
+         FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1 AND f.is_source = 1",
     )?;
     let mut rows = stmt.query(params![phrase_id])?;
     let mut hits = Vec::new();
@@ -444,15 +449,17 @@ pub fn find_references_prototype(
     // Anchor's similarity to each prototype.
     let anchor_proto_sim: Vec<f32> = prototypes.iter().map(|p| {
         if *p == anchor_block { 1.0 } else {
-            let pb = bag_cache.get(p).expect("bag pre-inserted");
-            cosine(&anchor_bag, pb)
+            match bag_cache.get(p) {
+                Some(pb) => cosine(&anchor_bag, pb),
+                None => 0.0, // bag build failed — skip this prototype
+            }
         }
     }).collect();
 
     // Now score all occurrences.
     let mut occ_stmt = db.prepare_cached(
         "SELECT o.occ_id, o.file_id, f.file_path, o.line, o.col, o.is_def, o.block_id
-         FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1",
+         FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1 AND f.is_source = 1",
     )?;
     let mut occ_rows = occ_stmt.query(params![phrase_id])?;
     let mut hits = Vec::new();
@@ -477,8 +484,9 @@ pub fn find_references_prototype(
         for (i, &p) in prototypes.iter().enumerate() {
             let aps = anchor_proto_sim[i];
             if aps < 1e-6 { continue; }
-            let pb = bag_cache.get(&p).expect("bag pre-inserted");
-            let cb = bag_cache.get(&block_id).expect("bag pre-inserted");
+            let (Some(pb), Some(cb)) = (bag_cache.get(&p), bag_cache.get(&block_id)) else {
+                continue; // bag build failed — skip
+            };
             let cs = cosine(pb, cb);
             let combined = aps * cs;
             if combined > sim { sim = combined; }
@@ -798,7 +806,7 @@ pub fn goto_def(
         "SELECT id FROM file_map WHERE file_path = ?1",
         params![anchor_file],
         |r| r.get(0),
-    ).ok();
+    ).ok(); // GUARDED: intentional — None means file not indexed, handled below
     let anchor_block_id: i64 = anchor_file_id
         .and_then(|fid| block_id_at(db, fid, anchor_line).ok().flatten())
         .unwrap_or(0);
@@ -979,30 +987,42 @@ pub fn dead_symbols(db: &Connection, limit: usize, path_filter: Option<&str>, fu
     // V13: path_filter scopes to a module (e.g., "io/util"). functions_only
     // restricts to tag=1 (function definitions).
     let path_pattern = path_filter.map(|p| {
-        // Normalize: strip leading/trailing slashes, ensure it's a prefix match
+        // Normalize: strip leading/trailing slashes, ensure it's a prefix match.
+        // Handle both absolute (`/tmp/corpus/src/`) and relative (`src/`) forms.
         let p = p.trim_start_matches('/').trim_end_matches('/');
-        if p.is_empty() { "%".to_string() } else { format!("%/{}%", p) }
+        if p.is_empty() {
+            "%".to_string()
+        } else if p.starts_with("tmp/") || p.starts_with("home/") || p.starts_with("Users/") || p.starts_with("usr/") {
+            // Absolute-ish path: match anywhere the normalized tail appears.
+            // file_map stores absolute paths (e.g. /tmp/corpus/src/augment.rs).
+            // Filter "src" -> matches ".../src/...". Filter "tmp/corpus/src" ->
+            // matches the tail. Drop the leading mount component.
+            let tail = p.split('/').skip(2).collect::<Vec<_>>().join("/");
+            if tail.is_empty() { "%".to_string() } else { format!("%{tail}%") }
+        } else {
+            format!("%/{}%", p)
+        }
     });
     let sql = if path_filter.is_some() && functions_only {
         "SELECT o.phrase_id, f.file_path, o.line, o.col, o.block_id
          FROM occurrence o JOIN file_map f ON f.id = o.file_id
-         WHERE o.is_def = 1 AND o.tag = 1 AND f.file_path LIKE ?1
-         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) ASC, o.occ_id"
+         WHERE o.is_def = 1 AND o.tag = 1 AND f.is_source = 1 AND f.file_path LIKE ?1
+         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) DESC, o.occ_id"
     } else if path_filter.is_some() {
         "SELECT o.phrase_id, f.file_path, o.line, o.col, o.block_id
          FROM occurrence o JOIN file_map f ON f.id = o.file_id
-         WHERE o.is_def = 1 AND f.file_path LIKE ?1
-         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) ASC, o.occ_id"
+         WHERE o.is_def = 1 AND f.is_source = 1 AND f.file_path LIKE ?1
+         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) DESC, o.occ_id"
     } else if functions_only {
         "SELECT o.phrase_id, f.file_path, o.line, o.col, o.block_id
          FROM occurrence o JOIN file_map f ON f.id = o.file_id
-         WHERE o.is_def = 1 AND o.tag = 1
-         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) ASC, o.occ_id"
+         WHERE o.is_def = 1 AND o.tag = 1 AND f.is_source = 1
+         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) DESC, o.occ_id"
     } else {
         "SELECT o.phrase_id, f.file_path, o.line, o.col, o.block_id
          FROM occurrence o JOIN file_map f ON f.id = o.file_id
-         WHERE o.is_def = 1
-         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) ASC, o.occ_id"
+         WHERE o.is_def = 1 AND f.is_source = 1
+         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) DESC, o.occ_id"
     };
     let mut stmt = db.prepare_cached(sql)?;
     let mut rows = match &path_pattern {
@@ -1178,7 +1198,7 @@ pub fn find_references_role(
     // All occurrences of the phrase.
     let mut stmt = db.prepare_cached(
         "SELECT o.occ_id, o.file_id, f.file_path, o.line, o.col, o.is_def, o.block_id
-         FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1",
+         FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1 AND f.is_source = 1",
     )?;
     let mut rows = stmt.query(params![phrase_id])?;
     let mut hits = Vec::new();

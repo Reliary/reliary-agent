@@ -87,7 +87,25 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     // V26: Match arms (`=>`) and block starts (`{`) are never definitions.
     // Grammar-free — `=>` is universal across Rust, JS arrow functions (which
     // are caught by the `is_function_signature` path), and pattern matching.
-    let has_match_arrow = bytes.windows(2).any(|w| w == b"=>");
+    // V61: scan for `=>` OUTSIDE strings/comments — `let arrow = "=>";` or
+    // `let ret = f(); // => result` must not trigger the guard.
+    let has_match_arrow = {
+        let mut found = false;
+        let mut in_str = false;
+        let mut esc = false;
+        let mut k = 0usize;
+        while k + 1 < bytes.len() {
+            let c = bytes[k];
+            if esc { esc = false; k += 1; continue; }
+            if c == b'\\' && in_str { esc = true; k += 1; continue; }
+            if c == b'"' { in_str = !in_str; k += 1; continue; }
+            if in_str { k += 1; continue; }
+            if c == b'/' && k + 1 < bytes.len() && bytes[k + 1] == b'/' { break; }
+            if c == b'=' && bytes[k + 1] == b'>' { found = true; break; }
+            k += 1;
+        }
+        found
+    };
     if has_match_arrow {
         return StructuralResult { tag: 0, is_def: false, defined_name: None };
     }
@@ -130,7 +148,13 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
                     // Check depth filter — local bindings at any depth are fine.
                     return StructuralResult {
                         tag: 6, // local_binding
-                        is_def: true,
+                        // V66c: NOT a definition for code-intelligence purposes.
+                        // The line-level is_def propagates to EVERY token on the
+                        // line (ingest writes is_def per line), so `let bg =
+                        // build_brace_graph(...)` was poisoning the phrase
+                        // `build_brace_graph` with a phantom is_def=1 row at the
+                        // call site. Variables aren't find-definitions.
+                        is_def: false,
                         defined_name: Some(name),
                     };
                 }
@@ -175,10 +199,49 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
         }
     }
 
-if is_function_signature && paren_pos.is_some() {
+    if is_function_signature && paren_pos.is_some() {
         // P3-1 principled: the function name is the LAST identifier whose
         // next non-whitespace char is `(` or `<`. delim_pos = right after the name.
-        if let Some((_, idx)) = find_function_name_pos(&delims) {
+        if let Some((name_start, idx)) = find_function_name_pos(&delims) {
+            // V65: a bare call like `impl_target_identifier(before_brace)` is
+            // NOT a definition. The name must be preceded by a declaration
+            // keyword (`fn`, `pub`, `async`, `unsafe`, `extern`, `const`) or
+            // by a block boundary (`{`, `}`) or line start. A call is
+            // preceded by `=`/`,`/`(`/`)`/`.`/`return`/`if`/`else`/`while`/
+            // `for`/`match`/`let` — an expression context. Grammar-free:
+            // inspect the char before the name (skipping whitespace).
+            let before_name = trimmed[..name_start].trim_end();
+            let before_bytes = before_name.as_bytes();
+            let decl_ok = if before_bytes.is_empty() {
+                // Name at line start with no declaration keyword = a bare call
+                // (`impl_target_identifier(before_brace)`), not a definition.
+                false
+            } else {
+                let last_c = before_bytes[before_bytes.len() - 1];
+                let keyword_before = before_name.ends_with("pub")
+                    || before_name.ends_with("pub(crate)")
+                    || before_name.ends_with("pub(super)")
+                    || before_name.ends_with("fn")
+                    || before_name.ends_with("async")
+                    || before_name.ends_with("unsafe")
+                    || before_name.ends_with("extern")
+                    || before_name.ends_with("const")
+                    || before_name.ends_with("function")
+                    || before_name.ends_with("func")
+                    || before_name.ends_with("public")
+                    || before_name.ends_with("private")
+                    || before_name.ends_with("protected")
+                    || before_name.ends_with("static")
+                    || before_name.ends_with("void")
+                    || before_name.ends_with("export")
+                    || before_name.ends_with("default")
+                    || before_name.ends_with("macro_rules")
+                    || before_name.ends_with("def");
+                (last_c == b'{' || last_c == b'}') || keyword_before
+            };
+            if !decl_ok {
+                return StructuralResult { tag: 0, is_def: false, defined_name: None };
+            }
             delim_pos = Some(delims.ident_ends[idx] as usize);
         } else {
             return StructuralResult { tag: 0, is_def: false, defined_name: None };
@@ -826,8 +889,12 @@ pub fn strip_line_comment(line: &str) -> &str {
         if b == b'/' && pos + 1 < bytes.len() && bytes[pos + 1] == b'/' {
             return &line[..pos];
         }
-        // Check for # comment (Python/Ruby/shell)
-        if b == b'#' {
+        // Check for # comment (Python/Ruby/shell).
+        // V61: NOT a comment when followed by `[` (Rust attribute `#[test]`)
+        // or `"` (raw string prefix `r#"..."#`) — treating those as comments
+        // made every `#[test] fn foo() {` line invisible to the brace graph
+        // (the `{` was stripped, the closing `}` orphaned every later block).
+        if b == b'#' && pos + 1 < bytes.len() && bytes[pos + 1] != b'[' && bytes[pos + 1] != b'"' {
             return &line[..pos];
         }
         pos += 1;
@@ -1078,9 +1145,12 @@ mod tests {
     #[test]
     fn test_local_binding() {
         let r = classify_structural("let mut park = CachedParkThread::new();", 2, false, false);
-        // `let ... = ...` → local_binding (tag 6)
+        // `let ... = ...` → local_binding (tag 6).
+        // V66c: is_def=false — line-level is_def propagates to every token on
+        // the line, so is_def=true here poisons OTHER phrases (the callee in
+        // `let x = callee(...)`) with phantom def rows.
         assert_eq!(r.tag, 6);
-        assert!(r.is_def);
+        assert!(!r.is_def);
         assert_eq!(r.defined_name, Some("park"));
     }
 

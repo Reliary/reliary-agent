@@ -325,7 +325,7 @@ fn closest_symbols(db: &Connection, name: &str, limit: usize) -> Vec<String> {
     Vec::new()
 }
 
-fn respond(id: u64, result: serde_json::Value) {
+fn respond(id: &serde_json::Value, result: serde_json::Value) {
     let response = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -337,7 +337,7 @@ fn respond(id: u64, result: serde_json::Value) {
     out.flush().unwrap_or_default();
 }
 
-fn respond_error(id: u64, code: i32, message: &str) {
+fn respond_error(id: &serde_json::Value, code: i32, message: &str) {
     let response = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -361,7 +361,7 @@ pub fn tool_definitions() -> &'static Vec<serde_json::Value> {
             // 1. SEARCH: Find files/symbols by name or topic.
             serde_json::json!({ "name": "reliary_search", "description": "BM25 full-text search across the indexed codebase. Returns matching files ranked by relevance. USE THIS TOOL when you don't know the exact symbol name — e.g. 'find files about connection pooling', 'where is request handling implemented', 'find authentication code'. For symbol-level lookups (where is X defined, who calls X, etc.), use reliary_find_references instead — it returns structured one-line answers. Search returns a list of files with paths and relevance scores. The tool never returns empty — if no exact match, closest files by vocabulary similarity are returned.", "inputSchema": { "type": "object", "properties": { "query": {"type": "string", "description": "Natural-language search query. Examples: 'connection pooling', 'request handling', 'authentication'."}, "path": {"type": "string", "description": "Work directory to search. Defaults to '.'."}, "limit": {"type": "integer", "default": 15, "description": "Max files to return (default 15)"} }, "required": ["query"], "input_examples": [ { "query": "connection pooling" }, { "query": "request handling", "limit": 5 }, { "query": "authentication middleware" } ] } }),
             // 2. FIND_REFERENCES: Find all usages of a symbol. Absorbs with_source, type_flow, boltzmann.
-            serde_json::json!({ "name": "reliary_find_references", "description": "Find references to a symbol in the indexed codebase. USE THIS TOOL for ALL symbol-level code questions. It replaces goto_def, find_references, call_graph, list_methods, find_dead_code, and describe in a single entry point with mode parameters. The output is a structured one-line answer with raw code evidence — copy it verbatim into your response. Mode flags: def_only=true → 'where is X defined' (returns top definition with source code). usage_only=true → 'who calls X' or 'callers of X' (returns CALLERS only — NOT what X calls). For 'what does X call / which helpers does X use', use reliary_call_graph with direction=outbound instead. methods=true → 'list methods on Type X' (returns method names of an impl block). dead_only=true → 'find dead code in path=X' (returns unused functions; path required, name ignored). path_filter='io/util/' → restrict to one module/folder (use when question specifies a module). NO params → general references to the symbol. If unsure which mode, call WITHOUT mode flags first — the tool returns all relevant knowledge.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol name to look up. Use the exact identifier name including underscores (e.g. 'block_on', 'Sleep', 'consume')."}, "def_only": {"type": "boolean", "default": false, "description": "Return ONLY the definition location. Use for 'where is X defined'."}, "usage_only": {"type": "boolean", "default": false, "description": "Return ONLY call sites (non-test files). Use for 'who calls X' or 'callers of X'."}, "methods": {"type": "boolean", "default": false, "description": "List methods on a type. Use for 'what methods does X have'."}, "dead_only": {"type": "boolean", "default": false, "description": "Find unused code. Pass path to scope the search."}, "path": {"type": "string", "description": "Work directory. Required for dead_only. Defaults to '.'."}, "path_filter": {"type": "string", "description": "Restrict to one module. Examples: 'io/util/' for tokio io utilities, 'crates/reliary-search/' for a Rust subdirectory. Use when question mentions a specific module."}, "file_only": {"type": "boolean", "default": false, "description": "V53: Return only the distinct list of files that mention this symbol (no file:line, no qualified names). Use for 'which files use X' or 'find files importing X' queries. Cheaper than full references."} }, "required": ["name"], "input_examples": [ { "name": "block_on", "def_only": true }, { "name": "spawn", "usage_only": true }, { "name": "Sleep", "methods": true }, { "name": "consume", "path_filter": "io/util/" }, { "name": "", "dead_only": true, "path": "src/" }, { "name": "HashMap", "file_only": true } ] } }),
+            serde_json::json!({ "name": "reliary_find_references", "description": "Find references to a symbol in the indexed codebase. USE THIS TOOL for ALL symbol-level code questions. It replaces goto_def, find_references, call_graph, list_methods, find_dead_code, and describe in a single entry point with mode parameters. The output is a structured one-line answer with raw code evidence — copy it verbatim into your response. Mode flags: def_only=true → 'where is X defined' (returns top definition with source code). usage_only=true → 'who calls X' or 'callers of X' (returns CALLERS only — NOT what X calls). For 'what does X call / which helpers does X use', use reliary_call_graph with direction=outbound instead. methods=true → 'list methods on Type X' (returns method names of an impl block). dead_only=true → 'find dead code in path=X' (returns unused functions; path required, name ignored). path_filter='io/util/' → restrict to one module/folder (use when question specifies a module). NO params → general references to the symbol. If unsure which mode, call WITHOUT mode flags first — the tool returns all relevant knowledge.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol name to look up. Use the exact identifier name including underscores (e.g. 'block_on', 'Sleep', 'consume')."}, "def_only": {"type": "boolean", "default": false, "description": "Return ONLY the definition location. Use for 'where is X defined'."}, "usage_only": {"type": "boolean", "default": false, "description": "Return ONLY call sites (non-test files). Use for 'who calls X' or 'callers of X'."}, "methods": {"type": "boolean", "default": false, "description": "List methods on a type. Use for 'what methods does X have'."}, "dead_only": {"type": "boolean", "default": false, "description": "Find unused code. Pass path to scope the search."}, "path": {"type": "string", "description": "Work directory. Required for dead_only. Defaults to '.'."}, "path_filter": {"type": "string", "description": "Restrict to one module. Examples: 'io/util/' for tokio io utilities, 'crates/reliary-search/' for a Rust subdirectory. Use when question mentions a specific module."}, "file_only": {"type": "boolean", "default": false, "description": "V53: Return only the distinct list of files that mention this symbol (no file:line, no qualified names). Use for 'which files use X' or 'find files importing X' queries. Cheaper than full references."} }, "required": [], "input_examples": [ { "name": "block_on", "def_only": true }, { "name": "spawn", "usage_only": true }, { "name": "Sleep", "methods": true }, { "name": "consume", "path_filter": "io/util/" }, { "name": "", "dead_only": true, "path": "src/" }, { "name": "HashMap", "file_only": true } ] } }),
             // 3. GOTO_DEF: Jump to the definition of a symbol.
             serde_json::json!({ "name": "reliary_goto_def", "description": "DEPRECATED: use reliary_find_references(name=X, def_only=true) instead — it returns the same information in a structured format. This tool still works but is not the preferred entry point.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string"}, "anchor_file": {"type": "string", "description": "Optional. Path to file containing the usage."}, "anchor_line": {"type": "integer", "description": "Optional. 1-based line of the usage."}, "path": {"type": "string"} }, "required": ["name"] } }),
             // 4. CALL_GRAPH: Who calls X? What does X call? Absorbs callgraph, callgraph_v2, trace_path, call_graph.
@@ -483,6 +483,26 @@ pub fn err_invalid_path(msg: &str) -> DispatchResult {
 pub fn err_missing_param(name: &str) -> DispatchResult {
     DispatchResult::Error(codes::INVALID_PARAMS, format!("missing required parameter '{}'", name))
 }
+/// V66e: normalize a dead-code scope so it matches against absolute stored
+/// paths. Strip "./", leading "/", trailing "/" — leaving a clean suffix like
+/// "src" or "tmp/corpus/src" that dead_symbols' %/{scope}% LIKE can match.
+fn normalize_scope(s: &str) -> String {
+    let t = s.trim_start_matches("./").trim_matches('/');
+    if t.is_empty() { "src".to_string() } else { t.to_string() }
+}
+
+/// V66e: render a stored absolute path relative to the corpus root so tool
+/// output is verifiable: "/tmp/corpus/src/search.rs" -> "src/search.rs".
+/// Falls back to the basename for paths outside a src/ tree.
+fn corpus_rel_path(path: &str) -> String {
+    if let Some(idx) = path.find("/src/") {
+        return path[idx + 1..].to_string();
+    }
+    if let Some(idx) = path.find("/lib/") {
+        return path[idx + 1..].to_string();
+    }
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
 /// M7: Require a non-empty 'name' parameter. Returns it or an error.
 pub fn require_name(args: &serde_json::Map<String, serde_json::Value>) -> Result<String, DispatchResult> {
     args.get("name").and_then(|v| v.as_str())
@@ -568,6 +588,18 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
         // are kept for backwards compat in the 62-tool full menu.
         "reliary_call_graph" => {
             // Aliased to callgraph_v2 (best handler). Translate param if needed.
+            // V60: honor `direction` — inbound → callers only, outbound → callees only.
+            let direction = args.get("direction").and_then(|v| v.as_str()).unwrap_or("both");
+            if direction == "inbound" {
+                let mut a = args.clone();
+                a.insert("usage_only".into(), serde_json::Value::Bool(true));
+                return dispatch_tool_call("reliary_find_references", &a);
+            }
+            if direction == "outbound" {
+                let mut a = args.clone();
+                a.insert("summary".into(), serde_json::Value::Bool(true));
+                return dispatch_tool_call("reliary_callgraph_v2", &a);
+            }
             return dispatch_tool_call("reliary_callgraph_v2", args);
         }
         "reliary_list_methods" => {
@@ -588,7 +620,7 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                     Ok(t) => t,
                     Err(r) => return r,
                 };
-                match reliary_search::callgraph_v2::find_methods_on(&db, name) {
+                let result = match reliary_search::callgraph_v2::find_methods_on(&db, name) {
                     Ok(mr) => {
                         // V38: raw code output — each method's actual signature.
                         let mut text = String::new();
@@ -601,40 +633,70 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                                 }
                             }
                         }
-                        return DispatchResult::Success(serde_json::json!({
+                        DispatchResult::Success(serde_json::json!({
                             "content": [{ "type": "text", "text": text }]
-                        }));
+                        }))
                     }
-                    Err(e) => return err_db(format!("methods_on: {}", e)),
-                }
+                    Err(e) => err_db(format!("methods_on: {}", e)),
+                };
+                return_cached_db(db);
+                return result;
             }
             if dead_only {
-                let path_filter = args.get("path").and_then(|v| v.as_str()).filter(|s| !s.is_empty() && *s != ".");
+                // V66d: honor BOTH `path` and `path_filter` as the scope (the
+                // model reaches for path_filter naturally).
+                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".").to_string();
+                let pf = args.get("path_filter").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let scope: Option<String> = if !pf.is_empty() {
+                    Some(normalize_scope(&pf))
+                } else {
+                    // V66e: auto-scope repo roots (path="." or a root) to src/
+                    // when a src/ dir exists, avoiding bench/config noise.
+                    let (db2, _) = match open_symbol_index(&path) {
+                        Ok(t) => t,
+                        Err(r) => return r,
+                    };
+                    let has_src = db2.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM file_map WHERE file_path LIKE '%/src/%' LIMIT 1)",
+                        [], |r| r.get::<_, i64>(0),
+                    ).unwrap_or(0) > 0;
+                    let root_like = path == "." || !path.contains("src");
+                    if has_src && root_like {
+                        let base = if path == "." { "" } else { path.trim_end_matches('/') };
+                        Some(normalize_scope(&format!("{}/src", base)))
+                    } else if path != "." {
+                        Some(normalize_scope(&path))
+                    } else {
+                        None
+                    }
+                };
+                let path_filter = scope.as_deref();
                 let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
-                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                let (db, _dir) = match open_symbol_index(path) {
+                let (db, _dir) = match open_symbol_index(&path) {
                     Ok(t) => t,
                     Err(r) => return r,
                 };
                 let functions_only = args.get("functions_only").and_then(|v| v.as_bool()).unwrap_or(true);
-                match reliary_search::symbol::dead_symbols(&db, limit, path_filter, functions_only) {
+                let result = match reliary_search::symbol::dead_symbols(&db, limit, path_filter, functions_only) {
                     Ok(dead) => {
                         // V40: One-line dead code output
                         let text = if dead.is_empty() {
                             "No dead code found.\n".to_string()
                         } else {
                             let parts: Vec<String> = dead.iter().take(5).map(|(stem, file, line, _)| {
-                                let f_short = file.rsplit('/').next().unwrap_or(file);
+                                let f_short = corpus_rel_path(file);
                                 format!("{} at {}:{}", stem, f_short, line + 1)
                             }).collect();
                             format!("Dead code: {}.\n", parts.join(", "))
                         };
-                        return DispatchResult::Success(serde_json::json!({
+                        DispatchResult::Success(serde_json::json!({
                             "content": [{ "type": "text", "text": text }]
-                        }));
+                        }))
                     }
-                    Err(e) => return err_db(format!("dead_symbols: {}", e)),
-                }
+                    Err(e) => err_db(format!("dead_symbols: {}", e)),
+                };
+                return_cached_db(db);
+                return result;
             }
             return dispatch_tool_call("reliary_pack_query", args);
         }        "reliary_similar" => {
@@ -656,6 +718,7 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                     .collect();
                 format!("Functions similar to {}: {}\n", name, items.join(", "))
             };
+            return_cached_db(db);
             DispatchResult::Success(serde_json::json!({
                 "content": [{ "type": "text", "text": text }]
             }))
@@ -690,7 +753,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             let th = args.get("threshold").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
             let temp = args.get("temperature").and_then(|v| v.as_f64()).unwrap_or(2.0) as f32;
             let tau = args.get("tau").and_then(|v| v.as_f64()).unwrap_or(0.05) as f32;
-            match reliary_search::type_flow::find_references_type_flow(&db, sym, &af, al, th) {
+            let result = match reliary_search::type_flow::find_references_type_flow(&db, sym, &af, al, th) {
                 Ok(hits) => {
                     let raw_hits: Vec<_> = hits.iter().map(|h| reliary_search::boltzmann::RawHit {
                         file: h.file_path.clone(),
@@ -718,7 +781,9 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     }))
                 }
                 Err(e) => err_db(format!("boltzmann: {}", e)),
-            }
+            };
+            return_cached_db(db);
+            result
         }
         "reliary_risk" => {
             let file_arg = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
@@ -1120,7 +1185,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
 fn disp_query_ast(name: &str, args: &serde_json::Map<String, serde_json::Value>) -> DispatchResult {
     let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
     let file = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
-    let max_results = args.get("max_results").and_then(|v| v.as_i64()).unwrap_or(100) as usize;
+    let max_results = args.get("max_results").and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000) as usize;
     let fp = match safe_path(file, ".") {
         Ok(p) => p,
         Err(e) => return err_invalid_path(&format!("invalid file path: {}", e)),
@@ -1214,7 +1279,22 @@ fn handle_symbol_tool_with_db(
     match name {
         "reliary_find_references" => {
             let sym = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            if sym.is_empty() { return err_missing_param("name"); }
+            // V66: dead_only is name-exempt (path-scoped dead-code scan).
+            let mut dead_only_early = args.get("dead_only").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut methods_early = args.get("methods").and_then(|v| v.as_bool()).unwrap_or(false);
+            // V66b: mode-flag-as-name recovery — the model sometimes passes the
+            // mode flag name as the symbol ("name": "dead_only"). Treat that as
+            // intent: route to the named mode instead of a literal symbol lookup.
+            match sym {
+                "dead_only" | "find_dead_code" | "dead code" => {
+                    dead_only_early = true;
+                }
+                "methods" | "list_methods" | "list methods" => {
+                    methods_early = true;
+                }
+                _ => {}
+            }
+            if sym.is_empty() && !dead_only_early { return err_missing_param("name"); }
             let af_raw = args.get("anchor_file").and_then(|v| v.as_str()).unwrap_or("");
             let af = resolve_af(af_raw);
 let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i32; let al = if al_raw > 0 { al_raw - 1 } else { al_raw };
@@ -1227,17 +1307,23 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
 
             // V38 bug fix: if methods=true or dead_only=true was passed to find_references,
             // route to describe's methods/dead_only handlers instead of silently ignoring.
-            let methods = args.get("methods").and_then(|v| v.as_bool()).unwrap_or(false);
+            // V66b: also honor mode-intent recovered from name-as-flag above.
+            let methods = methods_early || args.get("methods").and_then(|v| v.as_bool()).unwrap_or(false);
             if methods {
-                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                let (db, _dir) = match open_symbol_index(path) { Ok(t) => t, Err(r) => return r };
-                return match reliary_search::callgraph_v2::find_methods_on(&db, sym) {
+                return match reliary_search::callgraph_v2::find_methods_on(db, sym) {
                     Ok(mr) => {
                         let text = if mr.methods.is_empty() {
                             format!("No methods found on {}.\n", sym)
                         } else {
                             // V58c: per-method file:line evidence.
                             // V59g: include field type / signature evidence.
+                            // V66d: surface the impl block location so the model
+                            // can cite "impl at file:line" as a distinct fact.
+                            let impl_loc = mr.impl_file.as_ref().map(|f| {
+                                format!(" (impl at {}:{})",
+                                    std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.clone()),
+                                    mr.impl_line.unwrap_or(0) + 1)
+                            }).unwrap_or_default();
                             let entries: Vec<String> = mr.methods.iter().take(8)
                                 .map(|m| {
                                     let loc = format!("{}:{}",
@@ -1247,26 +1333,56 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                                     else { format!("{}: {} ({})", m.name, m.source, loc) }
                                 })
                                 .collect();
-                            format!("Methods on {}: {}.\n", sym, entries.join(", "))
+                            format!("Methods on {}{}: {}.\n", sym, impl_loc, entries.join(", "))
                         };
                         DispatchResult::Success(serde_json::json!({ "content": [{ "type": "text", "text": text }] }))
                     }
                     Err(e) => err_db(format!("methods_on: {}", e)),
                 };
             }
-            let dead_only = args.get("dead_only").and_then(|v| v.as_bool()).unwrap_or(false);
+            let dead_only = dead_only_early || args.get("dead_only").and_then(|v| v.as_bool()).unwrap_or(false);
             if dead_only {
+                // V66d: accept BOTH `path` and `path_filter` as the scope — the
+                // model naturally reaches for path_filter (the general module
+                // param) even though dead_only's description says `path`.
                 let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                let pf = args.get("path_filter").and_then(|v| v.as_str()).unwrap_or("");
                 let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
                 let functions_only = args.get("functions_only").and_then(|v| v.as_bool()).unwrap_or(true);
-                let path_filter = if path == "." { None } else { Some(path) };
-                let (db, _dir) = match open_symbol_index(path) { Ok(t) => t, Err(r) => return r };
-                return match reliary_search::symbol::dead_symbols(&db, limit, path_filter, functions_only) {
+                let scope: Option<String> = if !pf.is_empty() {
+                    Some(normalize_scope(&pf))
+                } else {
+                    // V66e: scope to the repo's src/ dir when it exists and the
+                    // caller asked for the root (path="." or a repo root). This
+                    // avoids bench scripts / config files dominating dead-code.
+                    let (db2, _) = match open_symbol_index(path) {
+                        Ok(t) => t,
+                        Err(r) => return r,
+                    };
+                    let has_src = db2.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM file_map WHERE file_path LIKE '%/src/%' LIMIT 1)",
+                        [], |r| r.get::<_, i64>(0),
+                    ).unwrap_or(0) > 0;
+                    let root_like = path == "." || !path.contains("src");
+                    if has_src && root_like {
+                        let base = if path == "." { "" } else { path.trim_end_matches('/') };
+                        Some(normalize_scope(&format!("{}/src", base)))
+                    } else if path != "." {
+                        Some(normalize_scope(path))
+                    } else {
+                        None
+                    }
+                };
+                let path_filter = scope.as_deref();
+                return match reliary_search::symbol::dead_symbols(db, limit, path_filter, functions_only) {
                     Ok(dead) => {
                         let mut text = String::new();
                         for (stem, file, line, _col) in dead.iter() {
-                            let f_short = file.rsplit('/').next().unwrap_or(file);
-                            text.push_str(&format!("{}:{}\n", f_short, line + 1));
+                            // V66e: show corpus-relative path (strip the absolute
+                            // mount) so the model can verify the scope, e.g.
+                            // "src/search.rs:187" not the bare "search.rs:187".
+                            let rel = corpus_rel_path(file);
+                            text.push_str(&format!("{}:{}\n", rel, line + 1));
                             if let Some(meta) = reliary_search::file_meta::get(file) {
                                 if let Some(src_line) = meta.lines.get(*line as usize) {
                                     text.push_str(&format!("    {}\n", src_line));
@@ -1317,7 +1433,7 @@ let phrase_id = reliary_search::symbol::phrase_id_for(&db, &sym_stemmed).ok().fl
                 // same name in the bench harness.
                 let sql = "SELECT f.file_path, o.line, o.col, o.is_def, o.tag
                      FROM occurrence o JOIN file_map f ON f.id = o.file_id
-                     WHERE o.phrase_id = ?1 AND f.file_path LIKE ?2
+                     WHERE o.phrase_id = ?1 AND f.file_path LIKE ?2 AND f.is_source = 1
                      ORDER BY o.is_def DESC,
                               (CASE WHEN f.file_path LIKE '%.rs' THEN 0 ELSE 1 END),
                               (CASE WHEN f.file_path LIKE '%/crates/%' THEN 0 ELSE 1 END),
@@ -1363,12 +1479,18 @@ let phrase_id = reliary_search::symbol::phrase_id_for(&db, &sym_stemmed).ok().fl
 
             // V53: file_only → return only distinct file paths, no per-hit details.
             // Cheaper than full references for "which files use X" queries.
-            if file_only && !def_only && !usage_only && path_filter.is_empty() {
+            // V60: honor file_only even when path_filter is set (filter the
+            // distinct query by the filter instead of dropping the flag).
+            if file_only && !def_only && !usage_only {
                 if let Some(pid) = phrase_id {
-                    let file_pattern = "%".to_string();
+                    let file_pattern = if path_filter.is_empty() {
+                        "%".to_string()
+                    } else {
+                        format!("%{}%", path_filter)
+                    };
                     let distinct_sql = "SELECT DISTINCT f.file_path
                          FROM occurrence o JOIN file_map f ON f.id = o.file_id
-                         WHERE o.phrase_id = ?1 AND f.file_path LIKE ?2
+                         WHERE o.phrase_id = ?1 AND f.file_path LIKE ?2 AND f.is_source = 1
                          ORDER BY f.file_path
                          LIMIT 30";
                     if let Ok(mut stmt) = db.prepare_cached(distinct_sql) {
@@ -1458,14 +1580,19 @@ if def_only {
 }
 
             // V40: usage_only → one-line callers answer (max 5, test files excluded)
+            // V62: judge flagged incomplete caller sets (missing
+            // lazy_occurrence.rs, scope_types.rs) — the .take(5) truncated
+            // the full caller list. Bump to 12; still compact.
             if usage_only {
                 let callers: Vec<_> = hits.iter()
                     .filter(|h| !h.is_def)
                     .filter(|h| {
                         let fp = &h.file_path;
                         !fp.contains("/tests/") && !fp.contains("/test/") && !fp.contains("/examples/") && !fp.contains("/benches/")
+                        // V66c: bench dirs with or without leading slash (relative paths)
+                        && !fp.contains("/bench/") && !fp.starts_with("bench/") && !fp.starts_with("/bench/")
                     })
-                    .take(5)
+                    .take(12)
                     .collect();
                 if callers.is_empty() {
                     // V59 B1b + V59e guard: trait fallback only for TYPE
@@ -1668,12 +1795,19 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         let last = sym.rsplit("::").next().unwrap_or(sym);
                         if let Ok(cg2) = reliary_search::callgraph_v2::build_call_graph(&db, last, ".", anchor, delegate_depth(last)) {
                             let caller_names: Vec<&str> = cg2.callers.iter().map(|c| c.name.as_str()).collect();
-                            let callee_names: Vec<&str> = cg2.callees.iter().map(|c| c.name.as_str()).collect();
+                            // V64: callees include their definition site so answers can cite file:line.
+                            let callee_list: Vec<String> = cg2.callees.iter().map(|c| {
+                                match (&c.def_file, &c.def_line) {
+                                    (Some(f), Some(l)) => format!("{} ({}:{})", c.name,
+                                        std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.clone()), l + 1),
+                                    _ => c.name.clone(),
+                                }
+                            }).collect();
                             // Phase 2-4: compact format
                             let text = format!(
                                 "callers({}): {}\ncallees({}): {}",
                                 caller_names.len(), caller_names.join(" "),
-                                callee_names.len(), callee_names.join(" "),
+                                callee_list.len(), callee_list.join(", "),
                             );
                             return DispatchResult::Success(serde_json::json!({
                                 "content": [{ "type": "text", "text": text }]
@@ -1681,9 +1815,16 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         }
                     }
                     let caller_names: Vec<&str> = cg.callers.iter().map(|c| c.name.as_str()).collect();
-                    let callee_names: Vec<&str> = cg.callees.iter().map(|c| c.name.as_str()).collect();
+                    // V64: callees include their definition site so answers can cite file:line.
+                    let callee_list: Vec<String> = cg.callees.iter().map(|c| {
+                        match (&c.def_file, &c.def_line) {
+                            (Some(f), Some(l)) => format!("{} ({}:{})", c.name,
+                                std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.clone()), l + 1),
+                            _ => c.name.clone(),
+                        }
+                    }).collect();
                     // Phase 6: add hint when empty
-                    let text = if caller_names.is_empty() && callee_names.is_empty() {
+                    let text = if caller_names.is_empty() && callee_list.is_empty() {
                         format!(
                             "callers(0)\ncallees(0)\nhint: try reliary_goto_def(\"{}\") first, then pass anchor_file+anchor_line here.",
                             sym
@@ -1692,7 +1833,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         format!(
                             "callers({}): {}\ncallees({}): {}",
                             caller_names.len(), caller_names.join(" "),
-                            callee_names.len(), callee_names.join(" "),
+                            callee_list.len(), callee_list.join(", "),
                         )
                     };
                     DispatchResult::Success(serde_json::json!({
@@ -1726,7 +1867,10 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         cg.source_preview = format!("{}...", &cg.source_preview[..end]);
                     }
                     cg.callers.truncate(5);
-                    let callee_limit = if delegate_depth(sym) > 1 { 20 } else { 5 };
+                    // V66d: raise callee cap 8→15 — a function calling 13 helpers
+                    // was truncated, hiding real callees from the model. General
+                    // completeness; adds ~7 short entries worst case.
+                    let callee_limit = if delegate_depth(sym) > 1 { 20 } else { 15 };
                     cg.callees.truncate(callee_limit);
                     for c in cg.callers.iter_mut() {
                         c.source = c.source.trim().to_string();
@@ -1747,18 +1891,27 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         let callers_str = if cg.callers.is_empty() {
                             "none".to_string()
                         } else {
-                            cg.callers.iter().take(5).map(|c| format!("{}:{}", c.file.rsplit('/').next().unwrap_or("?"), c.line)).collect::<Vec<_>>().join(", ")
+                            cg.callers.iter().take(8).map(|c| format!("{}:{}", c.file.rsplit('/').next().unwrap_or("?"), c.line)).collect::<Vec<_>>().join(", ")
                         };
                         let callees_str = if cg.callees.is_empty() {
                             "none".to_string()
                         } else {
-                            cg.callees.iter().take(5).map(|c| c.name.clone()).collect::<Vec<_>>().join(", ")
+                            // V64: include callee def sites so answers can cite file:line.
+                            cg.callees.iter().take(10).map(|c| match (&c.def_file, &c.def_line) {
+                                (Some(f), Some(l)) => format!("{} ({}:{})", c.name,
+                                    std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.clone()), l + 1),
+                                _ => c.name.clone(),
+                            }).collect::<Vec<_>>().join(", ")
                         };
                         format!("{} is called by: {}. {} calls: {}.\n", cg.anchor_name, callers_str, cg.anchor_name, callees_str)
                     } else {
                         // V40: One-line call_graph (non-summary)
-                        let callees_str: Vec<String> = cg.callees.iter().take(5).map(|c| c.name.clone()).collect();
-                        let callers_str: Vec<String> = cg.callers.iter().take(5).map(|c| format!("{}:{}", c.file.rsplit('/').next().unwrap_or("?"), c.line)).collect();
+                        let callees_str: Vec<String> = cg.callees.iter().take(10).map(|c| match (&c.def_file, &c.def_line) {
+                            (Some(f), Some(l)) => format!("{} ({}:{})", c.name,
+                                std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.clone()), l + 1),
+                            _ => c.name.clone(),
+                        }).collect();
+                        let callers_str: Vec<String> = cg.callers.iter().take(8).map(|c| format!("{}:{}", c.file.rsplit('/').next().unwrap_or("?"), c.line)).collect();
                         format!("{} calls: {}. {} is called by: {}.\n",
                             cg.anchor_name,
                             if callees_str.is_empty() { "none".to_string() } else { callees_str.join(", ") },
@@ -1886,20 +2039,20 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     .unwrap_or("");
                 let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(30) as usize;
                 let functions_only = args.get("functions_only").and_then(|v| v.as_bool()).unwrap_or(true);
-                let (db, dir) = match open_symbol_index(dpath) { Ok(t) => t, Err(r) => return r };
                 let pf: Option<&str> = if dpath == "." || dpath.is_empty() { None } else { Some(&dpath[..]) };
-                return match reliary_search::symbol::dead_symbols(&db, limit, pf, functions_only) {
+                let dir_label = if dpath.is_empty() { "." } else { &dpath[..] };
+                return match reliary_search::symbol::dead_symbols(db, limit, pf, functions_only) {
                     Ok(items) => {
                         // dead_symbols returns (phrase_text, file_path, line0, col)
                         let text = if items.is_empty() {
-                            format!("No dead code found under {}.\n", dir)
+                            format!("No dead code found under {}.\n", dir_label)
                         } else {
                             let lines: Vec<String> = items.iter().take(12)
                                 .map(|(name, fp, line0, _col)| format!("{} at {}:{} (0 cross-file refs)", name,
                                     std::path::Path::new(fp).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| fp.clone()),
                                     line0 + 1))
                                 .collect();
-                            format!("Dead code in {}: {} items. {}\n", dir, items.len(), lines.join("; "))
+                            format!("Dead code in {}: {} items. {}\n", dir_label, items.len(), lines.join("; "))
                         };
                         DispatchResult::Success(serde_json::json!({ "content": [{ "type": "text", "text": text }] }))
                     }
@@ -1909,9 +2062,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
 
             // V57: forward methods/dead_only routing (same as find_references).
             if args.get("methods").and_then(|v| v.as_bool()).unwrap_or(false) {
-                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                let (db, _dir) = match open_symbol_index(path) { Ok(t) => t, Err(r) => return r };
-                return match reliary_search::callgraph_v2::find_methods_on(&db, sym) {
+                return match reliary_search::callgraph_v2::find_methods_on(db, sym) {
                     Ok(mr) => {
                         let text = if mr.methods.is_empty() {
                             format!("No methods found on {}.\n", sym)
@@ -1935,9 +2086,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 };
             }
             if args.get("def_only").and_then(|v| v.as_bool()).unwrap_or(false) {
-                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                let (db, _dir) = match open_symbol_index(path) { Ok(t) => t, Err(r) => return r };
-                return match reliary_search::type_flow::top_candidate_definitions(&db, sym).into_iter().next() {
+                return match reliary_search::type_flow::top_candidate_definitions(db, sym).into_iter().next() {
                     Some((fp, line, _)) => {
                         let f_short = std::path::Path::new(&fp).file_name()
                             .map(|x| x.to_string_lossy().to_string()).unwrap_or(fp.clone());
@@ -1965,15 +2114,13 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             // which returns raw JSON with zero hits for keywords like
             // "Default" that have no occurrence rows.
             if args.get("usage_only").and_then(|v| v.as_bool()).unwrap_or(false) {
-                let path2 = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                let (db, _dir) = match open_symbol_index(path2) { Ok(t) => t, Err(r) => return r };
                 // V59e guard: only fire for TYPE names (PascalCase).
                 // A lowercase method name like 'consume' would otherwise get
                 // an unrelated trait-impls answer.
                 let looks_type = sym.chars().next()
                     .map(|c| c.is_ascii_uppercase()).unwrap_or(false);
                 if looks_type {
-                    let impls = reliary_search::callgraph_v2::find_trait_impls(&db, sym);
+                    let impls = reliary_search::callgraph_v2::find_trait_impls(db, sym);
                     if !impls.is_empty() {
                         let items: Vec<String> = impls.iter().take(8)
                             .map(|i| format!("{} ({}:{})", i.type_name,
@@ -1987,7 +2134,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     }
                 }
                 // Fall through to generic usage handling below via shared handler.
-                return handle_symbol_tool("reliary_find_references", args);
+                return handle_symbol_tool_with_db("reliary_find_references", args, db, dir);
             }
 
             let af_raw = args.get("anchor_file").and_then(|v| v.as_str()).unwrap_or("");
@@ -2375,7 +2522,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
 
 // ── Stdio transport (fallback, always available) ──
 
-fn handle_tool_call_stdio(id: u64, params: &serde_json::Value) {
+fn handle_tool_call_stdio(id: &serde_json::Value, params: &serde_json::Value) {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let empty_map = serde_json::Map::new();
     if let Some(v) = params.get("arguments") {
@@ -2532,7 +2679,7 @@ pub fn serve_stdio() {
             Err(_) => continue,
         };
 
-        let id = msg.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+        let id = msg.get("id").cloned().unwrap_or(serde_json::Value::Null);
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
 
         match method {
@@ -2556,7 +2703,13 @@ pub fn serve_stdio() {
                             Ok(h) => {
                                 eprintln!("[INFO] watcher started on {:?}", h.workdir.display());
                                 // Stash the handle so it isn't dropped.
-                                let _ = WATCHER_HANDLE.set(h);
+                                // V61: a second initialize must not spawn a second
+                                // watcher — OnceLock::set silently ignores the
+                                // duplicate, leaking a thread that reindexes
+                                // concurrently with the first.
+                                if WATCHER_HANDLE.set(h).is_err() {
+                                    eprintln!("[mcp] watcher already running — ignoring duplicate initialize");
+                                }
                             }
                             Err(e) => { eprintln!("[WARN] watcher start skipped: {:?}", e); }
                         }
@@ -2630,7 +2783,7 @@ pub fn serve_stdio() {
                         }
                     }
                 }
-                respond(id, serde_json::json!({
+                respond(&id, serde_json::json!({
                     "protocolVersion": "2024-11-05",
                     "capabilities": { "tools": {} },
                     "serverInfo": {
@@ -2642,18 +2795,18 @@ pub fn serve_stdio() {
             }
             "notifications/initialized" => {}
             "tools/list" => {
-                respond(id, serde_json::json!({ "tools": tool_definitions_filtered() }));
+                respond(&id, serde_json::json!({ "tools": tool_definitions_filtered() }));
             }
             "tools/call" => {
                 let params = match msg.get("params") {
                     Some(p) => p,
-                    None => { respond_error(id, -32602, "missing params"); continue; }
+                    None => { respond_error(&id, -32602, "missing params"); continue; }
                 };
-                handle_tool_call_stdio(id, params);
+                handle_tool_call_stdio(&id, params);
             }
             _ => {
                 if !method.starts_with("notifications/") {
-                    respond_error(id, -32601, &format!("method not found: {}", method));
+                    respond_error(&id, -32601, &format!("method not found: {}", method));
                 }
             }
         }
@@ -2702,7 +2855,7 @@ mod tests {
             "name": "nonexistent_tool",
             "arguments": {}
         });
-        handle_tool_call_stdio(1, &params); // Should not panic
+        handle_tool_call_stdio(&serde_json::json!(1), &params); // Should not panic
     }
 
     #[test]
@@ -2711,7 +2864,7 @@ mod tests {
             "name": "reliary_search",
             "arguments": {}
         });
-        handle_tool_call_stdio(1, &params); // Should not panic
+        handle_tool_call_stdio(&serde_json::json!(1), &params); // Should not panic
     }
 
     #[test]
@@ -2720,7 +2873,7 @@ mod tests {
             "name": "reliary_compress",
             "arguments": { "text": "hello world" }
         });
-        handle_tool_call_stdio(1, &params); // Should not panic
+        handle_tool_call_stdio(&serde_json::json!(1), &params); // Should not panic
     }
 
     #[test]

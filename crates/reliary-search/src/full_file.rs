@@ -277,7 +277,7 @@ pub fn find_references_full_file(
 
     let mut stmt = db.prepare_cached(
         "SELECT o.occ_id, o.file_id, f.file_path, o.line, o.col, o.is_def, o.block_id
-         FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1",
+         FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1 AND f.is_source = 1",
     )?;
     let mut rows = stmt.query(params![phrase_id])?;
     let mut occs: Vec<(i64, i64, String, i32, i32, bool, i64)> = Vec::new();

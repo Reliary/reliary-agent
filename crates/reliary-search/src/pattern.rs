@@ -233,7 +233,7 @@ pub fn find_references_pattern(
     // All occurrences of the phrase.
     let mut stmt = db.prepare_cached(
         "SELECT o.occ_id, o.file_id, f.file_path, o.line, o.col, o.is_def, o.block_id
-         FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1",
+         FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1 AND f.is_source = 1",
     )?;
     let mut rows = stmt.query(params![phrase_id])?;
     let mut hits = Vec::new();
@@ -321,7 +321,7 @@ pub fn find_references_pattern_hybrid(
     // All occurrences.
     let mut stmt = db.prepare_cached(
         "SELECT o.occ_id, o.file_id, f.file_path, o.line, o.col, o.is_def, o.block_id
-         FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1",
+         FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1 AND f.is_source = 1",
     )?;
     let mut rows = stmt.query(params![phrase_id])?;
     let mut hits = Vec::new();

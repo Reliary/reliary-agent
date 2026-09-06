@@ -97,7 +97,7 @@ fn reindex_file(db_path: &str, file: &str, content: &str, phrases: &[String]) ->
                 "SELECT file_blob FROM phrase_occ WHERE phrase_id = ?1",
                 params![pid],
                 |r| r.get(0),
-            ).ok();
+            ).ok(); // GUARDED: intentional — None means no blob yet, skip below
             let blob = match blob {
                 Some(b) => b,
                 None => continue,
@@ -186,6 +186,10 @@ fn reindex_file(db_path: &str, file: &str, content: &str, phrases: &[String]) ->
     if let Err(e) = reliary_search::lazy_tables::ensure_all_for_file_with_content(&db, file_id, content) {
         eprintln!("reindex lazy_tables: {}", e);
     }
+
+    // V60: the file's occurrence rows changed — invalidate the result cache
+    // so `cached:` repeats don't serve pre-edit text.
+    reliary_search::lazy_occurrence::invalidate_all_phrase_gens();
 
     true
 }

@@ -9,7 +9,7 @@
 //     reasoning on compressed text from the start.
 //   - Log turn count for diagnostics.
 
-const { execFileSync } = require("child_process");
+const { execFileSync, spawnSync } = require("child_process");
 const { existsSync, writeFileSync, unlinkSync } = require("fs");
 const { tmpdir } = require("os");
 const { join } = require("path");
@@ -127,17 +127,27 @@ function handleToolCall(event) {
   if (SIFT_BASH && name === "bash" && RELIARY_BIN) {
     const cmd = input.command || "";
     if (!cmd || cmd.length < 20) return; // skip trivial commands
-    try {
-      const result = execFileSync(RELIARY_BIN, ["wrap", "bash", "-c", cmd], {
-        encoding: "utf-8", timeout: 120000, maxBuffer: 10 * 1024 * 1024
-      });
-      gateLog("debug", `sift: ${cmd.slice(0, 40)} → ${result.length} chars`);
-      return { block: true, reason: result };
-    } catch (e) {
-      // wrap failed or exit code != 0 — pass through to original bash
-      gateLog("debug", `sift passthrough: ${e.message ? e.message.slice(0, 60) : "error"}`);
-      return;
+    // V61: spawnSync (not execFileSync) — execFileSync THROWS on non-zero
+    // exit and LOSES stdout (grep -q no-match = exit 1 with useful stdout),
+    // and the catch let Pi re-execute the command (double execution of
+    // side-effect commands). spawnSync captures stdout/stderr on any exit
+    // code, and we always block + return the result so Pi never re-runs.
+    const result = spawnSync(RELIARY_BIN, ["wrap", "bash", "-c", cmd], {
+      encoding: "utf-8", timeout: 120000, maxBuffer: 10 * 1024 * 1024
+    });
+    if (result.error) {
+      gateLog("debug", `sift spawn error: ${result.error.message ? result.error.message.slice(0, 60) : "error"}`);
+      return; // binary missing — let Pi run normally
     }
+    if (result.status === 0) {
+      gateLog("debug", `sift: ${cmd.slice(0, 40)} → ${result.stdout.length} chars`);
+      return { block: true, reason: result.stdout };
+    }
+    // Non-zero exit: wrap ran the command; return its (possibly useful)
+    // stdout/stderr to the LLM. Never let Pi re-execute.
+    const out = (result.stdout || result.stderr || "").trim();
+    gateLog("debug", `sift exit ${result.status}: ${out.slice(0, 60)}`);
+    return { block: true, reason: out || `(exit ${result.status})` };
   }
   // Code discovery gate: block first grep/read per session, redirect to reliary tools.
   // Toggle: RELIARY_GATE=1 (default OFF).

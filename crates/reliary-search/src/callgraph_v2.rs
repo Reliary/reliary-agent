@@ -12,7 +12,7 @@
 //! the EXACT callees of a function by scanning its brace-delimited body for
 //! function call patterns. Grammar-free, universal, deterministic.
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::Serialize;
 use smallvec::SmallVec;
 
@@ -97,8 +97,11 @@ fn extract_call_patterns(start_line: i32, lines: &[String]) -> Vec<(i32, String,
     // P8-11: removed dead `buf` variable.
     while chars_idx < lines.len() {
         let line = &lines[chars_idx];
+        // V60: strip line comments before scanning so `// calls spawn(..)`
+        // doc lines don't produce phantom callees.
+        let stripped = crate::structural::strip_line_comment(line);
         // Scan within a single line for identifier( or identifier  (
-        let bytes = line.as_bytes();
+        let bytes = stripped.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
             // Start of identifier: letter or underscore.
@@ -131,11 +134,19 @@ fn extract_call_patterns(start_line: i32, lines: &[String]) -> Vec<(i32, String,
                 }
                 if j < bytes.len() && bytes[j] == b'(' {
                     // Exclude `if(` `while(` `for(` `match(` `switch(` etc — handled by STOPWORDS.
-                    let ident = &line[start..end];
+                    let ident = &stripped[start..end];
+                    // V64: skip method calls on a receiver (`x.trim_start()`,
+                    // `self.len()`) — these are std/trait methods, not free
+                    // functions in the codebase. A real fn call is at the
+                    // start of an expression: preceded by start-of-line,
+                    // `(`, `,`, `=`, `&`, or whitespace-after-operator.
+                    let prev = if start == 0 { b' ' } else { stripped.as_bytes()[start - 1] };
+                    let is_method_call = matches!(prev, b'.' | b'?');
+                    if is_method_call { i = end; continue; }
                     let line_no = start_line + chars_idx as i32;
                     // P8-7: only clone the line when a call pattern is actually found.
                     // Was: line.clone() for every line in the function body.
-                    out.push((line_no, ident.to_string(), line.clone()));
+                    out.push((line_no, ident.to_string(), stripped.to_string()));
                 }
             } else {
                 i += 1;
@@ -252,6 +263,7 @@ fn find_definition(db: &Connection, name: &str) -> Option<(String, i32)> {
                    AND f.file_path NOT LIKE '%.toml'
                  ORDER BY (o.tag = 1) DESC,
                           (f.file_path LIKE '%/tests/%') ASC,
+                          (f.file_path NOT LIKE '%.rs') ASC,
                           LENGTH(f.file_path) ASC,
                           o.occ_id LIMIT 20",
             ).ok() {
@@ -270,11 +282,29 @@ fn find_definition(db: &Connection, name: &str) -> Option<(String, i32)> {
                 None => continue,
             }
         };
-        while let Some(r) = rows.next().ok()? {
-            let fp: String = r.get(0).ok()?;
-            let ln: i32 = r.get(1).ok()?;
-            if find_function_body(&fp, ln).is_some() {
-                return Some((fp, ln));
+        // V61: don't swallow row errors as "no definition" — a corrupted row
+        // silently killed the whole candidate loop and every caller treated
+        // the result as a genuine miss.
+        loop {
+            match rows.next() {
+                Ok(Some(r)) => {
+                    let fp: String = match r.get(0) {
+                        Ok(v) => v,
+                        Err(e) => { eprintln!("[callgraph_v2] find_definition row get: {}", e); continue; }
+                    };
+                    let ln: i32 = match r.get(1) {
+                        Ok(v) => v,
+                        Err(e) => { eprintln!("[callgraph_v2] find_definition row get: {}", e); continue; }
+                    };
+                    if find_function_body(&fp, ln + 1).is_some() {
+                        return Some((fp, ln + 1));
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    eprintln!("[callgraph_v2] find_definition next: {}", e);
+                    return None;
+                }
             }
         }
     }
@@ -398,11 +428,28 @@ pub fn find_definition_near(db: &Connection, name: &str, context_file: &str) -> 
             Some(r) => r,
             None => continue,
         };
-        while let Some(r) = rows.next().ok()? {
-            let fp: String = r.get(0).ok()?;
-            let ln: i32 = r.get(1).ok()?;
-            if find_function_body(&fp, ln).is_some() {
-                return Some((fp, ln));
+        // V61: don't swallow row errors as "no definition" — a corrupted row
+        // silently killed the whole candidate loop.
+        loop {
+            match rows.next() {
+                Ok(Some(r)) => {
+                    let fp: String = match r.get(0) {
+                        Ok(v) => v,
+                        Err(e) => { eprintln!("[callgraph_v2] find_definition row get: {}", e); continue; }
+                    };
+                    let ln: i32 = match r.get(1) {
+                        Ok(v) => v,
+                        Err(e) => { eprintln!("[callgraph_v2] find_definition row get: {}", e); continue; }
+                    };
+                    if find_function_body(&fp, ln).is_some() {
+                        return Some((fp, ln));
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    eprintln!("[callgraph_v2] find_definition next: {}", e);
+                    return None;
+                }
             }
         }
     }
@@ -556,6 +603,22 @@ pub fn build_call_graph(
         seen_callees.insert(ident.clone());
         // Try to find a definition for this callee.
         let (def_file, def_line) = find_definition(db, &ident).map(|(f, l)| (Some(f), Some(l))).unwrap_or((None, None));
+        // V64: skip std-lib/primitive methods — they have no def in the index
+        // (def_file None) or their "definition" resolved into a random indexed
+        // file (trim_start → lib.rs:113 noise). Keep only callees that resolve
+        // to a real source-file definition with a plausible name match.
+        if let (Some(ref df), Some(dl)) = (&def_file, &def_line) {
+            // The definition's line must actually contain the identifier —
+            // guards against phrase-fallback resolving to unrelated files.
+            // V65: def_line is 1-indexed; file_meta.lines is 0-indexed.
+            let contains = crate::file_meta::get(df)
+                .and_then(|m| m.lines.get(dl.saturating_sub(1) as usize).map(|s| s.contains(&ident)))
+                .unwrap_or(false);
+            if !contains { continue; }
+        } else {
+            // No definition anywhere — likely a std method. Drop it.
+            continue;
+        }
         callees.push(Callee {
             name: ident,
             def_file,
@@ -705,8 +768,34 @@ fn build_callers(
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
         .unwrap_or_default();
-    let hits = crate::pattern::find_references_pattern_hybrid(db, search_name, anchor_file, anchor_line, 0.1, 30)
-        .unwrap_or_default();
+    // V65: callers must NOT be similarity-gated. pattern_hybrid drops real
+    // call sites when the call context differs from the def context (def vs
+    // call windows rarely match). A call site is a call site — query the
+    // occurrence table directly for non-def occurrences of the phrase.
+    let phrase_id = match crate::symbol::phrase_id_for(db, search_name)? {
+        Some(id) => id,
+        None => {
+            return Ok(vec![]);
+        }
+    };
+    let mut stmt = db.prepare_cached(
+        "SELECT o.occ_id, o.file_id, f.file_path, o.line, o.col, o.is_def, o.block_id
+         FROM occurrence o JOIN file_map f ON f.id = o.file_id
+         WHERE o.phrase_id = ?1 AND f.is_source = 1 AND o.is_def = 0
+         ORDER BY o.line LIMIT 200",
+    )?;
+    let hits: Vec<crate::symbol::OccHit> = stmt.query_map(params![phrase_id], |r| {
+        Ok(crate::symbol::OccHit {
+            occ_id: r.get(0)?,
+            file_id: r.get(1)?,
+            file_path: r.get(2)?,
+            line: r.get(3)?,
+            col: r.get(4)?,
+            is_def: r.get::<_, i64>(5)? != 0,
+            block_id: r.get(6)?,
+            similarity: 1.0,
+        })
+    })?.filter_map(|r| r.ok()).collect();
     let mut callers = Vec::new();
     let mut deferred_same_file: Vec<Caller> = Vec::new();
     for h in hits.iter() {
@@ -721,9 +810,12 @@ fn build_callers(
             continue;
         }
         // V29 Phase 2: Skip test/example/bench files — not production callers.
+        // V66c: match "bench/" with or without leading slash (relative corpus
+        // paths like "bench/reliary_bench.py" have no leading separator).
         let fp = &h.file_path;
         if fp.contains("/tests/") || fp.contains("/test/") || fp.contains("/examples/")
-            || fp.contains("/benches/") || fp.contains("/bench/") || fp.ends_with("_test.rs")
+            || fp.contains("/benches/") || fp.contains("/bench/") || fp.starts_with("bench/")
+            || fp.starts_with("/bench/") || fp.ends_with("_test.rs")
             || fp.ends_with("_tests.rs")
         {
             continue;
@@ -811,6 +903,12 @@ pub struct MethodsResult {
     pub impl_blocks_found: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub related_types: Vec<String>,
+    // V66d: location of the first matching impl block, so callers can cite
+    // "impl at file:line" — the impl line is a distinct fact from the methods.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impl_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impl_line: Option<i32>,
 }
 
 /// Find all methods declared on a type.
@@ -891,6 +989,7 @@ pub fn find_trait_impls(db: &Connection, trait_name: &str) -> Vec<TraitImpl> {
 pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<MethodsResult> {
     let mut methods: Vec<MethodOn> = Vec::new();
     let mut impl_blocks_found = 0usize;
+    let mut impl_loc: Option<(String, i32)> = None;
     // M7: SmallVec for the internal collection (avoids heap for ≤8 types).
     // Convert to Vec at the end for the Serialize struct field.
     let mut related_types: SmallVec<[String; 8]> = SmallVec::new();
@@ -951,7 +1050,7 @@ pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<Met
         };
         // Walk all brace-blocks, find those whose start-line text contains
         // the type name and has `impl` or `for <type>` pattern.
-        collect_methods_in_impl_blocks(&root, fp, type_name, &mut methods, &mut impl_blocks_found);
+        collect_methods_in_impl_blocks(&root, fp, type_name, &mut methods, &mut impl_blocks_found, &mut impl_loc);
         // Also find sibling types: scan the file for impl blocks whose target
         // type name CONTAINS our type as a stem. Grammar-free string overlap.
         find_sibling_types(&root, fp, type_name, &mut related_types);
@@ -978,7 +1077,11 @@ pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<Met
                         || t.starts_with("pub struct ") || t.starts_with("pub(crate) struct ");
                     if is_struct_line && t.contains(type_name) {
                         in_struct = true;
-                        struct_depth = 1;
+                        // V60: start at 0 — the struct line's own `{` (if any)
+                        // counts below. A struct without a brace on the decl
+                        // line (multi-line `struct Foo\n{`) still enters via
+                        // the next line's `{`.
+                        struct_depth = 0;
                         continue;
                     }
                     continue;
@@ -989,7 +1092,13 @@ pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<Met
                 if opens > 0 { struct_depth += opens; }
                 if closes > 0 {
                     struct_depth = struct_depth.saturating_sub(closes);
-                    if struct_depth == 0 { break; }
+                    // V60: exit the struct block entirely when it closes so
+                    // later lines (tests, other code) aren't scanned as fields.
+                    // The `if !in_struct` branch re-enters for the 2nd+ structs.
+                    if struct_depth == 0 {
+                        in_struct = false;
+                        continue;
+                    }
                 }
                 if opens > 0 { continue; }
                 // Field line: `name: Type` (not a method/comment).
@@ -1034,6 +1143,8 @@ pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<Met
         methods,
         impl_blocks_found,
         related_types: related_types.into_vec(),
+        impl_file: impl_loc.as_ref().map(|(f, _)| f.clone()),
+        impl_line: impl_loc.map(|(_, l)| l),
     })
 }
 
@@ -1162,6 +1273,7 @@ fn collect_methods_in_impl_blocks(
     type_name: &str,
     out: &mut Vec<MethodOn>,
     count: &mut usize,
+    impl_loc: &mut Option<(String, i32)>,
 ) {
     // Arc 62 bug fix: DON'T skip function_def nodes — impl blocks are classified
     // as function_def too. Instead, always check the line text for impl keywords.
@@ -1177,6 +1289,9 @@ fn collect_methods_in_impl_blocks(
         && (lft.contains(type_name) || lft.contains(&format!("for {}", type_name)));
 if is_impl {
         *count += 1;
+        if impl_loc.is_none() {
+            *impl_loc = Some((file_path.to_string(), node.start_line));
+        }
         // Extract fn definitions inside this block.
         for child in &node.children {
             // Check if child is a function definition (has `(` after name, or starts with `pub fn`/`fn`/`async fn`).
@@ -1206,7 +1321,7 @@ if is_impl {
     }
     // Always recurse into children to find deeper impl blocks.
     for child in &node.children {
-        collect_methods_in_impl_blocks(child, file_path, type_name, out, count);
+        collect_methods_in_impl_blocks(child, file_path, type_name, out, count, impl_loc);
     }
 }
 

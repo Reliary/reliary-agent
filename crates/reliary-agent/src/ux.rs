@@ -137,7 +137,7 @@ fn doctor_checks(installs: &[InstallInfo]) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
 
     // --- Binary reachability (critical: MCP server needs this) ---
-    let exe = std::env::current_exe().ok();
+    let exe = std::env::current_exe().ok(); // GUARDED: intentional — None falls back to "reliary"
     let exe_name = exe.as_ref()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
@@ -466,6 +466,16 @@ pub fn clean(global: bool, all: bool) {
     }
 
     if do_global {
+        // V61: doctor flags >100 tee entries but clean --global never
+        // removed them — /tmp/reliary-tee grew forever.
+        match crate::tee::clean_tee() {
+            Ok(bytes) if bytes > 0 => {
+                println!("{}✓{} Cleaned {} bytes of tee artifacts (/tmp/reliary-tee)", color(), reset(), bytes);
+            }
+            _ => {
+                println!("{}-{} No tee artifacts to clean", yellow(), reset());
+            }
+        }
         if let Some(home) = home_dir() {
             let global_dir = home.join(".reliary");
             if global_dir.exists() {

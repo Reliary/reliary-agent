@@ -39,9 +39,12 @@ from llm_conn import (deepseek_chat, mcp_call, TOKIO_CORPUS, DEEPSEEK_MODEL,
 
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 RESULTS_DIR = SCRIPT_DIR / "results"
-ALTBACKEND_BIN = "$HOME/.local/bin/codebase-memory-mcp"
+def _expand(p: str) -> str:
+    """Expand a literal $HOME prefix (the scrub left unexpanded paths)."""
+    return os.path.expandvars(p)
+ALTBACKEND_BIN = _expand("$HOME/.local/bin/codebase-memory-mcp")
 ALTBACKEND_PROJECT = "tmp-tokio-corpus-tokio-src"
-RELIARY_BIN = "$HOME/src/reliary8/target/release/reliary"
+RELIARY_BIN = _expand("$HOME/src/reliary8/target/release/reliary")
 
 MAX_TURNS = 6
 SEEDS = [42, 123, 789]
@@ -488,7 +491,7 @@ TOOL SELECTION:
 - "find references/usages of X" → find_references(name=X)
 - "find implementations in module X" → find_references(name=X, path_filter="X/")
 - "list methods on Type X" → find_references(name=X, methods=true)
-- "find dead code in module X" → find_references(dead_only=true, path="X")
+- "find dead code in module X" → find_references(dead_only=true, path="X") — ALWAYS pass the module/crate path from the question (e.g. "crates/reliary-search/src"). Never pass path="." or omit it; a whole-repo dead-code scan returns irrelevant files. If the first result contains files outside the asked module, re-run with the scoped path.
 - "explain X" / "what does X do" → describe(name=X)
 - "search for files about topic" → search(query="topic")
 

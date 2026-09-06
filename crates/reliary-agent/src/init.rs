@@ -317,7 +317,12 @@ fn install_claude_hooks(hooks_dir: &PathBuf) -> bool {
     // V14: register sift pretooluse in ~/.claude/settings.json so it fires
     // automatically on Bash tool calls (RTK parity — user doesn't need to set
     // RELIARY_SIFT_BASH=1 manually).
-    register_claude_sift_hook();
+    // V61: register_claude_sift_hook returns false when settings.json is
+    // malformed — init must not report success with a dead hook.
+    if !register_claude_sift_hook() {
+        eprintln!("{} Failed to register sift hook in ~/.claude/settings.json (malformed JSON?)", "\u{26A0}\u{FE0F}");
+        return false;
+    }
     true
 }
 
@@ -586,6 +591,10 @@ pub fn uninstall() {
     // 5. Claude Code hooks
     println!("Removing Claude Code hooks...");
     if let Some(home) = home_dir() {
+        // V61: also strip the PreToolUse entry from ~/.claude/settings.json —
+        // uninstall only removed the hook FILES before, leaving a broken
+        // command reference that fires on every Bash call.
+        remove_claude_sift_hook(&home);
         let hooks_dir = home.join(".claude/hooks");
         if hooks_dir.exists() {
             let gate_path = hooks_dir.join("reliary-code-gate");
@@ -629,6 +638,54 @@ pub fn uninstall() {
     }
 
     println!("Uninstall complete. You can now safely run `cargo uninstall reliary-agent`.");
+}
+
+/// V61: strip the sift PreToolUse entry from ~/.claude/settings.json.
+/// Mirror of register_claude_sift_hook — uninstall must remove what
+/// install created (it previously only deleted the hook files, leaving a
+/// broken command reference that fired on every Bash tool call).
+fn remove_claude_sift_hook(home: &std::path::Path) {
+    let settings_path = home.join(".claude/settings.json");
+    if !settings_path.exists() { return; }
+    let content = match fs::read_to_string(&settings_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let mut v: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let removed = v.get_mut("hooks")
+        .and_then(|h| h.get_mut("PreToolUse"))
+        .and_then(|p| p.as_array_mut())
+        .map(|arr| {
+            let before = arr.len();
+            arr.retain(|entry| {
+                !entry.get("hooks").and_then(|h| h.as_array())
+                    .map(|hooks| {
+                        hooks.iter().any(|h| {
+                            h.get("command").and_then(|c| c.as_str())
+                                .map(|c| c.contains("reliary-sift-pretooluse"))
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+            });
+            arr.len() != before
+        })
+        .unwrap_or(false);
+    if !removed { return; }
+    // Drop empty PreToolUse array to keep settings clean.
+    if let Some(arr) = v.get("hooks").and_then(|h| h.get("PreToolUse")).and_then(|p| p.as_array()) {
+        if arr.is_empty() {
+            if let Some(hooks) = v.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+                hooks.remove("PreToolUse");
+            }
+        }
+    }
+    if let Ok(new_content) = serde_json::to_string_pretty(&v) {
+        let _ = atomic_write(&settings_path.to_string_lossy(), &new_content);
+    }
 }
 
 fn remove_mcp_server(cfg_path: &PathBuf, server_name: &str, mcp_key: &str) -> bool {

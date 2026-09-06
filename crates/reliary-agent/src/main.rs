@@ -4,6 +4,8 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod mcp;
+mod fix_agent;
+mod deterministic_fix;
 
 mod log;
 mod reindex;
@@ -399,18 +401,32 @@ pub fn run_index(path: &str) {
     match reliary_core::safe_open_db(&db_path_str) {
         Ok(db) => {
             if reliary_search::schema::create_new_db(&db).is_err() {
-                eprintln!("{} Database schema creation failed", color::red("✗"));
+                // V61: restore the old index — a failed schema build must not
+                // leave a broken empty DB in place.
+                let _ = std::fs::rename(&bak_path, &db_path_str);
+                eprintln!("{} Database schema creation failed (old index restored)", color::red("✗"));
                 return;
             }
             let result = crate::ux::with_spinner(&format!("indexing {}", path), || {
                 reliary_search::ingest::index_directory(&db, path)
             });
             match result {
-                Ok(count) => eprintln!("{} {} files indexed", color::green("✓"), count),
-                Err(e) => eprintln!("{} Indexing error: {}", color::red("✗"), e),
+                Ok(count) => {
+                    let _ = std::fs::remove_file(&bak_path);
+                    eprintln!("{} {} files indexed", color::green("✓"), count);
+                }
+                Err(e) => {
+                    // V61: restore the old index on ingest failure.
+                    drop(db);
+                    let _ = std::fs::rename(&bak_path, &db_path_str);
+                    eprintln!("{} Indexing error: {} (old index restored)", color::red("✗"), e);
+                }
             }
         }
-        Err(e) => eprintln!("{} DB create error: {}", color::red("✗"), e),
+        Err(e) => {
+            let _ = std::fs::rename(&bak_path, &db_path_str);
+            eprintln!("{} DB create error: {} (old index restored)", color::red("✗"), e);
+        }
     }
 }
 
@@ -823,6 +839,30 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+    /// Autonomous bug-fix agent: LLM drives reliary's tools to resolve a task.
+    /// Reads the repo index, calls find_references/callgraph/search to locate
+    /// the code, applies edits via the grammar-free edit primitive, then runs
+    /// the verifier. Self-contained single binary (no external agent needed).
+    Fix {
+        /// Task description ("fix the panic in ingest.rs")
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        task: Vec<String>,
+        /// Project directory (default: current)
+        #[arg(long, default_value = ".")]
+        path: String,
+        /// Max agent iterations (default: 12)
+        #[arg(long, default_value = "12")]
+        max_iters: usize,
+        /// Verification command template ({file} replaced). Default: cargo check -p reliary-search
+        #[arg(long)]
+        verify: Option<String>,
+        /// Dry run: show planned edits without applying
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit structured JSON progress on stdout
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate for
@@ -891,8 +931,50 @@ fn exec_wrap(cmd: &[String]) {
     let program = &cmd[0];
     let args = &cmd[1..];
 
+    // V67: content readers (cat/head/tail/less/more/bat) on a single
+    // source-like file must PASSTHROUGH — compression drops structurally
+    // critical lines (e.g. a struct's closing brace), and a model that
+    // builds an edit from the compressed view produces broken edits.
+    // (Edit-safety directive: sift must not break edit operations.)
+    // Non-source targets (logs, data dumps) still compress.
+    let program_name_v67 = std::path::Path::new(program).file_name()
+        .and_then(|n| n.to_str()).unwrap_or(program);
+    if matches!(program_name_v67, "cat" | "head" | "tail" | "less" | "more" | "bat") {
+        let file_args: Vec<&String> = args.iter()
+            .filter(|a| !a.starts_with('-'))
+            .collect();
+        if file_args.len() == 1 {
+            let path = std::path::Path::new(file_args[0].as_str());
+            if path.is_file() {
+                if let Ok(sample) = std::fs::read(path) {
+                    let text = String::from_utf8_lossy(&sample);
+                    if reliary_search::lazy_occurrence::is_source_like(&text) {
+                        // Passthrough: run the command directly, no compression.
+                        let output = match std::process::Command::new(program)
+                            .args(args)
+                            .stdin(std::process::Stdio::inherit())
+                            .stdout(std::process::Stdio::inherit())
+                            .stderr(std::process::Stdio::inherit())
+                            .status()
+                        {
+                            Ok(s) => s,
+                            Err(e) => {
+                                eprintln!("Error executing '{}': {}", program, e);
+                                std::process::exit(1);
+                            }
+                        };
+                        std::process::exit(output.code().unwrap_or(0));
+                    }
+                }
+            }
+        }
+    }
+
+    // V60: inherit stdin so interactive commands (`git rebase -i`,
+    // `npm init`) don't get EOF from a nulled stdin.
     let output = match std::process::Command::new(program)
         .args(args)
+        .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
         .output()
@@ -1112,9 +1194,12 @@ fn build_read_footer(path: &str) -> String {
         Some(d) => d,
         None => return String::new(),
     };
+    // V61: file_map stores ABSOLUTE paths (canonicalized at ingest); the arg
+    // here is usually relative (e.g. "src/main.rs"), so an exact match never
+    // hits and the footer was always empty. Match on the path suffix instead.
     let file_id = match db.query_row(
-        "SELECT id FROM file_map WHERE file_path = ?1",
-        rusqlite::params![path],
+        "SELECT id FROM file_map WHERE file_path = ?1 OR file_path LIKE '%/' || ?1 LIMIT 1",
+        rusqlite::params![path, path],
         |row| row.get::<_, i64>(0),
     ) {
         Ok(id) => id,
@@ -1449,10 +1534,22 @@ fn do_update(check_only: bool) {
                                 // FIX: was /tmp/reliary-agent (wrong). Tarball extracts into a subdirectory
                                 let extracted_bin = format!("{}/reliary-agent", extract_dir);
                                 let binary = std::env::current_exe().unwrap_or_default();
-                                let install = std::process::Command::new("cp")
-                                    .args([&extracted_bin, binary.to_string_lossy().as_ref()])
+                                // V60: cp over a running binary fails with ETXTBSY on Linux —
+                                // copy to a temp name then rename over the target.
+                                let tmp_bin = format!("{}.new", binary.display());
+                                let copy = std::process::Command::new("cp")
+                                    .args([&extracted_bin, &tmp_bin])
                                     .status();
-                                if install.is_ok_and(|s| s.success()) {
+                                let copy_ok = copy.as_ref().is_ok_and(|s| s.success());
+                                let install = if copy_ok {
+                                    std::process::Command::new("mv")
+                                        .args([&tmp_bin, binary.to_string_lossy().as_ref()])
+                                        .status()
+                                } else {
+                                    copy
+                                };
+                                let install_ok = install.is_ok_and(|s| s.success());
+                                if install_ok {
                                     println!("{} Updated to v{}", color::green("✓"), latest);
                                 } else {
                                     eprintln!("{} Install failed — try manually: cp {} {}", color::red("✗"), extracted_bin, binary.display());
@@ -1837,6 +1934,48 @@ fn main() {
         Commands::Update { check } => {
             do_update(*check);
         }
+        Commands::Fix { task, path, max_iters, verify, dry_run, json } => {
+            // trailing_var_arg can swallow --path/--max-iters if passed after
+            // the task. Extract them manually and strip from the task.
+            let mut eff_path = path.clone();
+            let mut task_parts: Vec<String> = Vec::new();
+            let mut it = task.iter();
+            while let Some(t) = it.next() {
+                if t == "--path" || t == "-p" {
+                    if let Some(v) = it.next() { eff_path = v.clone(); }
+                } else if t == "--max-iters" {
+                    if let Some(_v) = it.next() {}
+                } else if !t.starts_with("--") {
+                    task_parts.push(t.clone());
+                }
+            }
+            let task_str = task_parts.join(" ");
+            // Deterministic mode: try recipes first (no LLM needed). If the
+            // task isn't recipe-able, report instead of spawning an LLM.
+            match deterministic_fix::run_deterministic(&eff_path, &task_str) {
+                Ok(code) => {
+                    if *json {
+                        println!("{{\"deterministic\":true,\"exit\":{}}}", code);
+                    }
+                    std::process::exit(code);
+                }
+                Err(msg) if msg.starts_with("no deterministic recipe") => {
+                    // Fall back to the LLM agent for unknown tasks.
+                    eprintln!("[fix] {} — falling back to LLM agent", msg);
+                    match fix_agent::run(&eff_path, &task_str, *max_iters, *dry_run, *json, verify.as_deref()) {
+                        Ok(_code) => {}
+                        Err(e) => {
+                            eprintln!("reliary fix failed: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("reliary fix failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
         Commands::Completions { shell, outdir } => {
             let mut cmd = build_cli();
             let sh = match shell {
@@ -1876,8 +2015,17 @@ fn main() {
                 let path = std::path::Path::new(dir);
                 std::fs::create_dir_all(path).ok();  // GUARDED: intentional
                 let file_path = path.join("reliary-agent.1");
-                let mut file = std::fs::File::create(&file_path).expect("Failed to create man page");
-                man.render(&mut file).expect("Failed to render man page");
+                let mut file = match std::fs::File::create(&file_path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("{} Failed to create man page at {}: {}", color::red("✗"), file_path.display(), e);
+                        std::process::exit(1);
+                    }
+                };
+                if let Err(e) = man.render(&mut file) {
+                    eprintln!("{} Failed to render man page: {}", color::red("✗"), e);
+                    std::process::exit(1);
+                }
                 println!("{} Generated man page → {}", color::green("✓"), file_path.display());
             } else {
                 let mut buf = Vec::new();

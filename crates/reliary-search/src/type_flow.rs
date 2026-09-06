@@ -731,13 +731,17 @@ pub fn find_best_anchor(db: &Connection, raw_name: &str) -> rusqlite::Result<(Op
         let phrase_id = match phrase_id_for(db, cand)? { Some(id) => id, None => continue };
         if crate::lazy_occurrence::ensure_occurrence_for_phrase(db, phrase_id).is_err() { continue; }
         // Score each file by: IS_DEF count (best), then total count, then prefer type_hint path, then prefer non-tests path.
-        // ORDER BY clause uses data from the occurrence table — no hardcoded path patterns.
-        let sql = "SELECT f.file_path, o.line,
-                          (SELECT COUNT(*) FROM occurrence o2 WHERE o2.file_id = f.id AND o2.phrase_id = ?1 AND o2.is_def != 0) AS def_count
+        // V61: pre-aggregate def_count ONCE with a JOIN instead of a
+        // correlated subquery per candidate row (the subquery re-ran
+        // COUNT(*) for every row before ORDER BY).
+        let sql = "SELECT f.file_path, o.line, dc.def_count
                    FROM occurrence o
                    JOIN file_map f ON f.id = o.file_id
-                   WHERE o.phrase_id = ?1 AND o.is_def != 0
-                   ORDER BY def_count DESC,
+                   JOIN (SELECT file_id, COUNT(*) AS def_count FROM occurrence
+                         WHERE phrase_id = ?1 AND is_def != 0 GROUP BY file_id) dc
+                     ON dc.file_id = f.id
+                   WHERE o.phrase_id = ?1 AND o.is_def != 0 AND f.is_source = 1
+                   ORDER BY dc.def_count DESC,
                             (f.file_path LIKE '%' || ?2 || '%') DESC,
                             (f.file_path NOT LIKE '%/tests/%') DESC,
                             (f.file_path NOT LIKE '%/examples/%') DESC,
@@ -837,7 +841,7 @@ pub fn find_references_auto(
                          AND o2.file_id = o.file_id
                          AND o2.is_def = 0) as caller_count
                  FROM occurrence o JOIN file_map f ON f.id = o.file_id
-                 WHERE o.phrase_id = ?1 AND o.is_def != 0
+                 WHERE o.phrase_id = ?1 AND o.is_def != 0 AND f.is_source = 1
                  ORDER BY (f.file_path NOT LIKE '%/' || ?2 || '.%') ASC,
                            (f.file_path LIKE '%/tests/%') ASC,
                            caller_count DESC,
@@ -852,7 +856,7 @@ pub fn find_references_auto(
                          AND o2.file_id = o.file_id
                          AND o2.is_def = 0) as caller_count
                  FROM occurrence o JOIN file_map f ON f.id = o.file_id
-                 WHERE o.phrase_id = ?1 AND o.is_def != 0
+                 WHERE o.phrase_id = ?1 AND o.is_def != 0 AND f.is_source = 1
                  ORDER BY (f.file_path LIKE '%/tests/%') ASC,
                            caller_count DESC,
                            LENGTH(f.file_path) ASC,
@@ -963,6 +967,22 @@ pub fn top_candidate_definitions(
                     candidates.push(r);
                 }
             }
+            // V60: PascalCase query with tag=2 filter that found nothing —
+            // re-run with all kinds (type aliases, generics, mis-tagged
+            // structs) before giving up.
+            if candidates.is_empty() && looks_like_type {
+                let cand_sql_all = cand_sql.replace("AND o.tag = 2", "");
+                if let Ok(mut stmt) = db.prepare_cached(&cand_sql_all) {
+                    let rows = stmt.query_map(params![phrase_id], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, i32>(1)?, r.get::<_, i64>(2)?))
+                    });
+                    if let Ok(rows) = rows {
+                        for r in rows.flatten() {
+                            candidates.push(r);
+                        }
+                    }
+                }
+            }
         }
     }
     candidates
@@ -1007,7 +1027,7 @@ fn try_fallback(
     let mut stmt = db.prepare_cached(
         "SELECT o.occ_id, o.file_id, f.file_path, o.line, o.col, o.is_def, o.block_id
          FROM occurrence o JOIN file_map f ON f.id = o.file_id
-         WHERE o.phrase_id = ?1 AND o.is_def != 0
+         WHERE o.phrase_id = ?1 AND o.is_def != 0 AND f.is_source = 1
          ORDER BY o.occ_id LIMIT ?2",
     )?;
     let cap_defs = limit / 2;

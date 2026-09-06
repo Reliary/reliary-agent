@@ -167,6 +167,40 @@ pub fn build_brace_graph(file_lines: &[String]) -> BraceNode {
                 continue;
             }
             if !in_string && b == b'"' {
+                // V61: raw string prefix `r#"..."#` / `r##"..."##` — the inner
+                // `"` must NOT close the string early (embedded quotes would
+                // corrupt the brace count). Count the hashes, skip to the
+                // matching `"#` terminator.
+                if i >= 1 && bytes[i - 1] == b'r' {
+                    let mut hashes = 0usize;
+                    let mut j = i + 1;
+                    while j < bytes.len() && bytes[j] == b'#' {
+                        hashes += 1;
+                        j += 1;
+                    }
+                    // Find `"` + hashes×`#` terminator.
+                    let mut k = j;
+                    while k < bytes.len() {
+                        if bytes[k] == b'"' {
+                            let mut m = k + 1;
+                            let mut matched = 0usize;
+                            while m < bytes.len() && bytes[m] == b'#' && matched < hashes {
+                                matched += 1;
+                                m += 1;
+                            }
+                            if matched == hashes {
+                                i = m;
+                                break;
+                            }
+                        }
+                        k += 1;
+                    }
+                    if k >= bytes.len() {
+                        // Unterminated raw string — treat rest as string.
+                        i = bytes.len();
+                    }
+                    continue;
+                }
                 in_string = true;
                 quote = b;
                 i += 1;
@@ -203,7 +237,11 @@ pub fn build_brace_graph(file_lines: &[String]) -> BraceNode {
                         all_nodes[parent_idx].children.push(node);
                     }
                 }
-                depth -= 1;
+                // V65: never let depth go negative — an unmatched `}` (e.g. a
+                // brace inside a string that the state machine missed) would
+                // desync every subsequent `{`/`}` and silently truncate the
+                // graph (nodes created but never attached to the root).
+                if depth > 0 { depth -= 1; }
             }
             i += 1;
         }

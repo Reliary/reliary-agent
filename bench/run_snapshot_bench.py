@@ -6,6 +6,7 @@ Usage: python3 bench/run_snapshot_bench.py --bin /path/to/reliary --corpus /path
 import sys
 import os
 import argparse
+import json
 
 p = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, p)
@@ -64,6 +65,15 @@ def main():
     from reliary_bench import SESSION_QUERIES
     long_session_bench.SESSION_QUERIES = SESSION_QUERIES
 
+    # Public bench: RELIARY_QUESTIONS=/path/questions.json overrides the
+    # hardcoded corpus questions with auto-generated, repo-agnostic ones.
+    # JSON format: [{"id": "q1_def", "question": "...", "rubric": {...}}, ...]
+    qs_override = os.environ.get("RELIARY_QUESTIONS")
+    if qs_override and os.path.exists(qs_override):
+        with open(qs_override) as _f:
+            long_session_bench.SESSION_QUERIES = json.load(_f)
+        print(f"[run_snapshot_bench] using questions from {qs_override}", file=sys.stderr)
+
     # V58d: RELIARY_GT=1 also swaps QUESTION TEXT for corpus-matched versions
     # (same IDs, answerable on this corpus). Keyword rubrics stay as smoke
     # tests; the LLM judge (RELIARY_GT=1) does real quality scoring.
@@ -81,6 +91,10 @@ def main():
                 "--seeds"] + [str(s) for s in args.seeds]
     if args.out:
         sys.argv += ["--out", args.out]
+    # V66: default timeout is 1800s per session but each seed×cond takes
+    # ~40-60 min of LLM turns; pass a much larger budget so the harness
+    # doesn't die mid-session (it dies with no traceback, losing all results).
+    sys.argv += ["--timeout", "14400"]
     long_session_bench.main()
 
 if __name__ == "__main__":

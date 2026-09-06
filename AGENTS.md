@@ -10,17 +10,17 @@ Use `reliary_*` tools for code intelligence questions instead of grep/read cycle
 
 | Question | Tool | Why |
 |----------|------|-----|
-| "find references to X" | `reliary_find_references_with_source` | Returns file:line + actual source text per hit. Type-aware — separates BufWriter::consume from Take::consume. |
-| "where is X defined?" | `reliary_goto_def` | Jumps from a usage line to the definition site. |
-| "who calls X?" / "what does X call?" | `reliary_callgraph` | Bidirectional call graph rooted at the anchor. |
-| "find files about topic Y" | `reliary_search` | BM25 full-text search. Use when you don't know the exact symbol name. |
-| "find unused code" | `reliary_dead_symbols` or `reliary_dead` | Two variants: ranked summary (dead) vs structured list (dead_symbols). |
-| "show structure of file F" | `reliary_brace_graph` | Tree of fn/method/block nesting with role tags. |
-| "match expression patterns" | `reliary_query_ast` | REFAL-like patterns: `Call(_, _)`, `BinaryOp(?op, ?a, ?b)`. |
-| "before editing file F, what's affected?" | `reliary_risk` | Risk score + dependent symbols. |
-| "edit a specific function/block" | `reliary_fix` | Pattern-based edit, survives formatting changes. |
-| "what did we do last time on this repo?" | `reliary_prior` | Cross-session memory. |
-| "compress my reasoning text" | `reliary_compress` | Strips filler, merges redundant thinking. |
+| "find references to X" | `reliary_find_references(name="X")` | One-line answer with raw code evidence. Copy it verbatim. |
+| "where is X defined?" | `reliary_find_references(name="X", def_only=true)` | Returns the top definition with source code. |
+| "who calls X?" / "callers of X" | `reliary_find_references(name="X", usage_only=true)` | Returns call sites only. For the graph view, use `reliary_call_graph(direction="inbound")`. |
+| "what does X call?" | `reliary_call_graph(name="X", direction="outbound")` | Callees with source. |
+| "find files about topic Y" | `reliary_search` | BM25 file search. Use when you don't know the exact symbol name. |
+| "find unused code" | `reliary_find_dead_code(path="...")` or `reliary_find_references(dead_only=true, path="...")` | Path-scoped dead-code list. |
+| "what methods does Type X have?" | `reliary_list_methods(name="X")` or `reliary_find_references(name="X", methods=true)` | Method names with file:line. |
+| "explain X" | `reliary_describe(name="X")` | Purpose, signature, callers, methods. |
+| "find code like X" | `reliary_similar(name="X")` | Near-clone detection. |
+
+**Do not call tools that are not in the tool list above.** The menu exposes 8 tools (`search`, `find_references`, `goto_def` [deprecated], `call_graph`, `list_methods`, `find_dead_code`, `describe`, `similar`). Specialist research variants exist as dispatch targets but are not listed — do not guess their names.
 
 ## When NOT to use reliary
 
@@ -34,15 +34,13 @@ Before any `reliary_*` query, the repo must be indexed. Run `reliary trust <path
 
 ## Performance vs altbackend vs grep
 
-Apples-to-apples benchmark on tokio (5 questions, deepseek-chat):
+Deterministic claim verification (F1 = how many model claims `symbol at file:line` verify against the index; 4 seeds 42/17/123/456 on a reliary corpus snapshot; repro in README):
 
-| Backend | Jaccard (median) | Notes |
-|---------|------------------|-------|
-| reliary8 | **0.299** | type-flow + inline source |
-| altbackend | 0.000 | LLM doesn't know to call get_code_snippet without hints |
-| grep | 0.154 | lowest prompt cost, no type awareness |
-
-altbackend's "99.2% reduction" claim depends on giving the LLM a per-question playbook hint. Without that, altbackend's tools alone don't help the LLM find references.
+| Backend | F1 | Precision | Billed | Dead-ends | Wall |
+|---------|----|-----------|--------|-----------|------|
+| reliary8 | **0.642** | **0.986** | **9,574** | **0.0** | fastest |
+| altbackend | 0.299 | 0.539 | 39,938 | 5.0 | — |
+| grep | 0.686 | 0.904 | 61,322 | 2.2 | — |
 
 ## Single-call vs multi-call
 
@@ -66,76 +64,30 @@ One call vs two. One round-trip vs two. Half the latency.
 
 ## Examples
 
-### Find references to a method
+### Find where ClassifyStructral is defined
 ```
-reliary_find_references_with_source(
-  name="consume",
-  anchor_file="io/util/take.rs",
-  anchor_line=121,
-  path="/tmp/tokio-corpus/tokio/src"
-)
+reliary_find_references(name="classify_structural", def_only=true)
 ```
-Returns hits with `(file, line, similarity, source)`. Each hit shows the actual line of code, so you can verify the role match without follow-up calls.
+Returns the top definition with source code. Copy the `file:line` into your response.
 
-### Get definition of a symbol
+### Get callers of a symbol
 ```
-reliary_goto_def(
-  name="Waker",
-  anchor_file="runtime/task/waker.rs",
-  anchor_line=42,
-  path="/tmp/tokio-corpus/tokio/src"
-)
+reliary_find_references(name="classify_structural", usage_only=true)
 ```
 
-### Call graph
-```
-reliary_callgraph(
-  name="spawn",
-  anchor_file="runtime/handle.rs",
-  anchor_line=15,
-  path="/tmp/tokio-corpus/tokio/src"
-)
-```
+## Available tool surface (8 tools in primary menu)
 
-### Match expression patterns
-```
-reliary_query_ast(
-  pattern="BinaryOp(?op, ?a, ?b)",
-  file="io/util/buffer.rs",
-  max_results=20
-)
-```
-
-## Available tool surface (19 tools in primary menu)
-
-**Symbol queries**:
-- `reliary_find_references_with_source` — find-references with inline source
-- `reliary_find_references` — find-references (file:line only)
-- `reliary_find_references_type_flow` — type-flow variant
-- `reliary_find_references_boltzmann` — with probability scores
-- `reliary_goto_def` — definition lookup
-- `reliary_callgraph` — call graph
-- `reliary_scope` — symbol scope
-- `reliary_dead_symbols` — unused symbols
+**Symbol queries** (`reliary_find_references` is the entry point for all of these; the others are aliases kept for convenience):
+- `reliary_find_references` — def_only / usage_only / methods / dead_only / path_filter modes
+- `reliary_goto_def` — deprecated; use `def_only=true` instead
+- `reliary_call_graph` — callers/callees, direction in/out/both, depth
+- `reliary_list_methods` — methods on a type
+- `reliary_find_dead_code` — unused code, path-scoped
+- `reliary_describe` — symbol overview; `methods`/`dead_only` route to the same handlers
+- `reliary_similar` — near-clone detection
 
 **File queries**:
-- `reliary_search` — BM25 file search
-- `reliary_brace_graph` — structural tree
-- `reliary_call_graph` — file-local call graph
-- `reliary_query_ast` — expression pattern matching
-
-**Editing**:
-- `reliary_risk` — pre-edit risk
-- `reliary_fix` — pattern-based edit
-
-**Memory / compression**:
-- `reliary_compress` — text compression
-- `reliary_prior` — cross-session memory
-- `reliary_retrieve` — content cache lookup
-- `reliary_stats` — statistics
-- `reliary_dead` — dead code summary
-
-To see all 62 specialist tools (research variants), set `RELIARY_FULL_MENU=1` before starting the MCP server.
+- `reliary_search` — BM25 file search (never returns empty)
 
 ## Compressing tool output
 
@@ -148,8 +100,9 @@ reliary wrap grep "pattern" .
 ```
 
 This pipes output through reliary's universal compressor before it reaches context.
-Saves 30-60% of tokens on tool output. Works on ANY command in ANY language.
+46.3% average compression across the 6 fixtures in the V14 benchmark (see `~/src/sift/scripts/bench_vs_rtk.py`). Works on ANY command in ANY language.
 No cache bust — the LLM builds reasoning on compressed text from the start (rtk pattern).
+Content readers on source files (`cat`/`head`/`tail`/`less`/`bat <source.rs>`) pass through uncompressed.
 
 For automatic interception (no manual prefix needed), set `RELIARY_SIFT_BASH=1` and install the appropriate hook:
 - **Pi**: gate.js handles it automatically when `RELIARY_SIFT_BASH=1`

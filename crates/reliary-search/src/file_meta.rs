@@ -26,13 +26,21 @@ fn cache() -> &'static Mutex<(AHashMap<String, Arc<FileMeta>>, std::collections:
 }
 
 pub fn get(path: &str) -> Option<Arc<FileMeta>> {
-    {
-        let c = cache().lock();
-        if let Some(m) = c.0.get(path) {
-            return Some(Arc::clone(m));
+    let cached = {
+        let mut c = cache().lock();
+        let hit: Option<Arc<FileMeta>> = c.0.get(path).map(Arc::clone);
+        if hit.is_some() {
+            // V61: true LRU — refresh position on hit so hot entries aren't
+            // evicted while cold ones linger (FIFO was evicting the working set).
+            c.1.retain(|p| p != path);
+            c.1.push_back(path.to_string());
         }
+        hit
+    };
+    match cached {
+        Some(m) => Some(m),
+        None => compute(path),
     }
-    compute(path)
 }
 
 pub fn compute(path: &str) -> Option<Arc<FileMeta>> {
@@ -90,6 +98,14 @@ pub fn compute_from_content(path: &str, content: &str) -> Option<Arc<FileMeta>> 
     // (push back on insert, pop front on evict) — approximates LRU for the
     // hot working set.
     let mut c = cache().lock();
+    let already_cached = c.0.contains_key(path);
+    if already_cached {
+        // V61: already computed — refresh position, don't double-insert
+        // (a duplicate deque entry would evict a still-hot entry later).
+        c.1.retain(|p| p != path);
+        c.1.push_back(path.to_string());
+        return c.0.get(path).cloned();
+    }
     if c.0.len() >= 200 {
         while c.0.len() >= 100 && !c.1.is_empty() {
             if let Some(oldest) = c.1.pop_front() {

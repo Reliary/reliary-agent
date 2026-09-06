@@ -56,7 +56,14 @@ pub fn compress(text: &str) -> String {
     }
 
     // Stage 5: MaxwellGate — if information-dense, don't force compression
-    let gate = reliary_sift::MaxwellGate::default();
+    // V61: wire RELIARY_SIFT_AGGRESSIVE — the CLI sets it (main.rs Sift
+    // command) but nothing ever read it; compression always used the
+    // default gate.
+    let gate = if std::env::var("RELIARY_SIFT_AGGRESSIVE").map(|v| v == "1").unwrap_or(false) {
+        reliary_sift::MaxwellGate::aggressive()
+    } else {
+        reliary_sift::MaxwellGate::default()
+    };
     if gate.score(text).is_none() {
         return text.to_string();
     }

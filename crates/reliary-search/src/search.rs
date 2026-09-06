@@ -18,15 +18,14 @@ pub fn search_fts5(db: &Connection, query: &str, top_n: usize) -> Vec<SearchResu
     // identifiers, so "pub struct Foo" (multi-word) can never AND-match).
     // Fallback 2: rarest term only (the most selective token).
     // Silent: the caller sees plain results either way.
+    // V61: split on non-alphanumeric/underscore instead of keeping `-` in the
+    // term — `foo-bar` never matched because scan_identifiers splits on `-`,
+    // so no phrase contains it (AND/OR/rarest all returned empty despite
+    // `foo` and `bar` being indexed).
     let terms: Vec<String> = query
-        .split_whitespace()
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|t| t.len() >= 2)
-        .map(|t| {
-            t.chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                .collect::<String>()
-                .to_lowercase()
-        })
+        .map(|t| t.to_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
     if terms.is_empty() { return vec![]; }
@@ -256,84 +255,16 @@ pub fn who_calls(db: &Connection, identifier: &str, exclude_file: &str) -> Vec<(
 /// A file that defines "block_on" (is_def=1) ranks above one that merely
 /// mentions it in comments (is_def=0). Ported from stria's quale_rerank().
 /// Grammar-free: pure math on the existing phrase index.
+///
+/// V61: the def-count boost queried `po.flags` — a column that does NOT
+/// exist in schema v4 (phrase_occ = phrase_id, file_blob only). Every
+/// prepare failed silently, so the boost was dead AND the score-crushing
+/// below (bm25_norm * 0.01) ran anyway. Only the proximity bonus at the
+/// end was live. Stripped to the live part.
 pub fn quale_rerank(db: &Connection, terms: &[String], results: &mut [SearchResult]) {
     if results.is_empty() || terms.is_empty() {
         return;
     }
-    // Filter qualifying terms (length >= 3 per stria convention).
-    let qualifying: Vec<String> = terms.iter().filter(|t| t.len() >= 3).cloned().collect();
-    if qualifying.is_empty() {
-        return;
-    }
-    let n_docs: f64 = db.query_row("SELECT COUNT(*) FROM file_map", [], |r| r.get(0)).unwrap_or(1.0);
-
-    // Compute prefix IDF for each term (rarer terms get higher weight).
-    let mut prefix_idf: FxHashMap<String, f64> = FxHashMap::default();
-    for t in &qualifying {
-        let df: f64 = db.query_row(
-            "SELECT COUNT(*) FROM phrase_occ po JOIN phrases p ON p.id = po.phrase_id WHERE p.phrase LIKE ?1 || '%'",
-            [t],
-            |r| r.get(0),
-        ).unwrap_or(1.0_f64).max(1.0_f64);
-        let idf = crate::bm25_idf(n_docs as f32, df as f32) as f64;
-        prefix_idf.insert(t.clone(), idf);
-    }
-
-    // Batch query: for all candidate files, get is_def count per query term.
-    let mut def_count_map: FxHashMap<String, FxHashMap<String, f64>> = FxHashMap::default();
-    for term in &qualifying {
-        let pattern = format!("%{}%", term);
-        let sql = "SELECT fm.file_path, po.flags
-             FROM phrase_occ po
-             JOIN phrases p ON p.id = po.phrase_id
-             JOIN file_map fm ON fm.id = po.file_id
-             WHERE p.phrase LIKE ?1";
-        if let Ok(mut stmt) = db.prepare(sql) {
-            if let Ok(rows) = stmt.query_map(params![&pattern], |r| {
-                let fp: String = r.get(0)?;
-                let flags: Vec<u8> = r.get(1)?;
-                let f = if !flags.is_empty() { flags[0] } else { 0 };
-                let is_def = crate::schema::unpack_is_def(f);
-                Ok((fp, is_def))
-            }) {
-                for row in rows.flatten() {
-                    let (fp, is_def) = row;
-                    if is_def > 0 {
-                        *def_count_map.entry(fp).or_default()
-                            .entry(term.clone()).or_insert(0.0) += 1.0;
-                    }
-                }
-            }
-        }
-    }
-
-    let max_idf = qualifying.iter()
-        .filter_map(|t| prefix_idf.get(t))
-        .copied().fold(0.0f64, f64::max);
-    let max_bm25 = results.iter().map(|r| r.score as f64)
-        .fold(0.0f64, f64::max);
-
-    // Apply quale boost: add IDF-weighted definition count to BM25 score.
-    // BM25 keeps tiebreaker role via small 1e-6 multiplier.
-    for r in results.iter_mut() {
-        let mut def_count = 0.0f64;
-        if let Some(terms_map) = def_count_map.get(&r.file) {
-            for term in &qualifying {
-                let idf_norm = if max_idf > 0.0 {
-                    prefix_idf.get(term).copied().unwrap_or(0.0) / max_idf
-                } else { 0.0 };
-                let cnt = terms_map.get(term).copied().unwrap_or(0.0);
-                if cnt > 0.0 {
-                    def_count += (1.0 + cnt).ln() * idf_norm;
-                }
-            }
-        }
-        let bm25_norm = if max_bm25 > 0.0 { r.score as f64 / max_bm25 } else { 0.0 };
-        // Quale boost is primary; BM25 keeps ties deterministic.
-        let quale_boost = def_count * 10.0; // Scale up so definitions clearly dominate.
-        r.score = (quale_boost + bm25_norm * 0.01) as f32;
-    }
-
     // V23: Proximity bonus — boost files where query terms cluster together.
     apply_proximity_bonus(db, terms, results);
 }

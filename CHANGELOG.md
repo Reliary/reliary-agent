@@ -5,6 +5,20 @@ All notable changes to Reliary Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **MCP tool surface: 19 tools → 8** — `reliary_find_references` is now the single entry point for all symbol questions (`def_only` / `usage_only` / `methods` / `dead_only` / `path_filter` modes). `goto_def` is deprecated. `call_graph`, `list_methods`, `find_dead_code`, `describe` are aliases over the same handlers. New: `reliary_similar` (near-clone detection).
+- **One-line tool answers with raw code evidence** — every symbol answer returns `file:line` plus the actual source line, copy-verbatim by the model.
+- **Bash compression edit-safety** — `reliary wrap` passes content readers (`cat`/`head`/`tail`/`less`/`bat`) on source-like files through uncompressed.
+- **Old bench plans and reports** moved to `docs/archive/`.
+
+### Benchmarks
+
+- Deterministic claim verification, 4 seeds on `bench/results/v64_final_3way.jsonl`: F1=A 0.642 / B 0.299 / C 0.686; precision=A 0.986; billed=A 9,574 vs B 39,938 vs C 61,322; dead-ends=A 0.0.
+- Bash compression: 46.3% average on the 6 V14 fixtures.
+
 ## [0.8.0] - 2025-XX-XX
 
 ### Changed - BREAKING
