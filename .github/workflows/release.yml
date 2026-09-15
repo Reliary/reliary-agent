@@ -31,7 +31,7 @@ jobs:
           cd dist && tar -czf reliary-agent-v${VERSION}-linux-x86_64.tar.gz reliary-agent-v${VERSION}-linux-x86_64
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@de70a01444b27311eeb55c0c6fad2af5887f777b
+        uses: softprops/action-gh-release@7b4da11513bf3f43f9999e90eabced41ab8bb048
         with:
           files: |
             dist/*.tar.gz
