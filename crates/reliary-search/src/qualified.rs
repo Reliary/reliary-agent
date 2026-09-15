@@ -110,11 +110,7 @@ pub fn enclosing_type_from_brace_graph(root: &BraceNode, line: i32) -> Option<St
             return Some(name);
         }
         // Use existing API to find parent.
-        if let Some(parent) = crate::brace_graph::find_parent(root, current) {
-            current = parent;
-        } else {
-            return None;
-        }
+        current = crate::brace_graph::find_parent(root, current)?;
     }
 }
 
@@ -128,10 +124,9 @@ fn fn_name_from_line(line: &str) -> Option<String> {
         &trimmed[pos + 3..]
     } else if let Some(pos) = trimmed.find("def ") {
         &trimmed[pos + 4..]
-    } else if let Some(pos) = trimmed.find("func ") {
-        &trimmed[pos + 5..]
     } else {
-        return None;
+        let pos = trimmed.find("func ")?;
+        &trimmed[pos + 5..]
     };
     // Strip `pub`, `pub(crate)`, `pub(super)`, `async`, `unsafe`, `const`, `static` qualifiers.
     let after_kw = after_kw.trim_start();

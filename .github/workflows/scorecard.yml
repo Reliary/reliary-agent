@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '30 7 * * 1'
   push:
-    branches: [main, master, master-rebuild]
+    branches: [main, master]
 
 permissions:
   security-events: write
