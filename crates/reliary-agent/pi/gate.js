@@ -1,4 +1,4 @@
-// reliary gate.js v0.8.0 — THIN Pi adapter.
+// reliary gate.js v0.8.1 — THIN Pi adapter.
 //
 // What this shim does:
 //   - Discover the reliary binary.
@@ -14,7 +14,7 @@ const { existsSync, writeFileSync, unlinkSync } = require("fs");
 const { tmpdir } = require("os");
 const { join } = require("path");
 
-const GATE_VERSION = "0.8.0";
+const GATE_VERSION = "0.8.1";
 
 const SIFT_BASH = process.env.RELIARY_SIFT_BASH !== "0"; // default ON
 const GATE_ENABLED = process.env.RELIARY_GATE !== "0";   // default ON
