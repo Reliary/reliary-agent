@@ -19,4 +19,4 @@ smallvec = "1"
 parking_lot = "0.12"
 ahash = "0.8"
 
-reliary-memory = { path = "../reliary-memory" }
+reliary-memory = { version = "0.8", path = "../reliary-memory" }

@@ -10,4 +10,4 @@ homepage = "https://github.com/Reliary/reliary-agent"
 
 [dependencies]
 regex = "1.12.4"
-reliary-sift = { path = "../reliary-sift" }
+reliary-sift = { version = "0.8", path = "../reliary-sift" }
