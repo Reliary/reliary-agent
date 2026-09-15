@@ -89,18 +89,29 @@ The default menu exposes 8 curated tools (`search`, `find_references`, `goto_def
 
 ```
 reliary trust [PATH]          Index a project directory
+reliary index [PATH]          Build/refresh the index
+reliary search QUERY          BM25 search
 reliary mcp                   Start MCP server on stdio
 reliary wrap [CMD]            Run CMD and compress its output
 reliary sift [--stdin]        Pipe text through compressor
+reliary compress [PATH]       Compress a file or directory
 reliary dead [PATH]           Find dead code (cross-file, carrion-style)
-reliary search QUERY          BM25 search
-reliary who-calls FILE IDENT  Find callers and callees
 reliary risk FILE             Pre-edit risk analysis
 reliary fix FILE [OLD] [NEW]  Apply pattern-based fix
 reliary init                  Auto-install agent integrations
+reliary uninstall             Remove agent integrations + daemon state
 reliary doctor                Health check
+reliary status                Show index + integration status
+reliary update                Self-update from GitHub releases
 reliary clean                 Clean caches and state
+reliary logs                  Show recent log output
+reliary config                Show resolved configuration
+reliary completions SHELL     Emit shell completion script
+reliary man                   Emit the man page
+reliary full                  Full-menu MCP server (all specialist tools)
 ```
+
+Run `reliary --help` for the complete, always-current command list.
 
 ## Key properties
 
