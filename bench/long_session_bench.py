@@ -172,6 +172,7 @@ def run_long_session(cond, model, seed, timeout_total=1800):
             "score": 0,
             "answer": "",
             "timed_out": False,
+            "turns_detail": [],
         }
         
         last_message = ""
@@ -188,13 +189,15 @@ def run_long_session(cond, model, seed, timeout_total=1800):
             if turn == MAX_TURNS_PER_QUERY - 1:
                 messages.append({"role": "user", "content": "Give your FINAL answer now. ONE LINE: {\"final\": true, \"answer\": \"...\"}. Use whatever you have gathered so far — a partial answer with evidence beats no answer."})
             
+            _t0 = time.perf_counter()
             resp = deepseek_chat(messages, model=model, max_tokens=1500,
                                   timeout=120, disable_thinking=True)
+            _api_ms = (time.perf_counter() - _t0) * 1000.0
             
             if "error" in resp:
                 q_metrics["answer"] = f"(error: {str(resp['error'])[:200]})"
+                q_metrics["turns_detail"].append({"turn": turn + 1, "api_ms": round(_api_ms, 1), "tool_ms": 0.0, "tool": None})
                 break
-            
             msg = resp.get("choices", [{}])[0].get("message", {})
             content = msg.get("content", "") or msg.get("reasoning_content", "")
             usage = resp.get("usage", {})
@@ -214,6 +217,7 @@ def run_long_session(cond, model, seed, timeout_total=1800):
             if action_type == "final":
                 q_metrics["answer"] = action.get("answer", content[:2000])
                 q_metrics["weighted_cost"] = q_metrics["tokens_in"] + 4 * q_metrics["tokens_out"]
+                q_metrics["turns_detail"].append({"turn": turn + 1, "api_ms": round(_api_ms, 1), "tool_ms": 0.0, "tool": None})
                 break
             elif action_type == "tool":
                 tool_name = action.get("tool", action.get("name", ""))
@@ -227,6 +231,8 @@ def run_long_session(cond, model, seed, timeout_total=1800):
                 output, tool_elapsed = execute_tool(cond, tool_name, tool_args)
                 q_metrics["tool_calls"] += 1
                 q_metrics["tool_bytes"] += len(output.encode())
+                q_metrics["turns_detail"].append({"turn": turn + 1, "api_ms": round(_api_ms, 1),
+                                                   "tool_ms": round(tool_elapsed * 1000.0, 1), "tool": tool_name})
                 
                 print(f"    [tool] {tool_name}({tool_args}) -> {repr(output[:100])}", file=sys.stderr)
                 
@@ -239,6 +245,7 @@ def run_long_session(cond, model, seed, timeout_total=1800):
             else:
                 q_metrics["answer"] = content[:2000]
                 q_metrics["weighted_cost"] = q_metrics["tokens_in"] + 4 * q_metrics["tokens_out"]
+                q_metrics["turns_detail"].append({"turn": turn + 1, "api_ms": round(_api_ms, 1), "tool_ms": 0.0, "tool": None})
                 break
         
         # Score the answer
@@ -275,8 +282,14 @@ def run_long_session(cond, model, seed, timeout_total=1800):
         if q_metrics["timed_out"]:
             break
     
-    session_metrics["total_wall_time"] = time.time() - t_start
-    session_metrics["history_bytes_at_end"] = sum(len(json.dumps(m).encode()) for m in messages)
+        session_metrics["total_wall_time"] = time.time() - t_start
+        session_metrics["history_bytes_at_end"] = sum(len(json.dumps(m).encode()) for m in messages)
+        # W1: per-session latency breakdown from turns_detail.
+        _api = sum(d.get("api_ms", 0) for q in session_metrics["queries"] for d in q.get("turns_detail", []))
+        _tool = sum(d.get("tool_ms", 0) for q in session_metrics["queries"] for d in q.get("turns_detail", []))
+        session_metrics["total_api_ms"] = round(_api, 1)
+        session_metrics["total_tool_ms"] = round(_tool, 1)
+        session_metrics["total_overhead_ms"] = round(session_metrics["total_wall_time"] * 1000.0 - _api - _tool, 1)
     
     _close_sessions()
     return session_metrics
@@ -368,6 +381,11 @@ def main():
         print(f"  History:    median={statistics.median(hbs):.0f} bytes")
         print(f"  Dead-ends:  median={statistics.median(deads):.0f}")
         print(f"  Wall time:  median={statistics.median(walls):.0f}s")
+        apis = [r.get("total_api_ms", 0) for r in runs]
+        tools = [r.get("total_tool_ms", 0) for r in runs]
+        if any(apis):
+            print(f"  Latency:    api={statistics.median(apis):.0f}ms tool={statistics.median(tools):.0f}ms "
+                  f"overhead={statistics.median([r.get('total_overhead_ms', 0) for r in runs]):.0f}ms")
     
     if len(conditions) >= 2:
         a_wcs = [r["total_weighted_cost"] for r in all_runs if r.get("cond") == "A" and "error" not in r]

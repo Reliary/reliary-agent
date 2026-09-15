@@ -37,15 +37,42 @@ pub fn open_existing_db(db: &Connection) -> rusqlite::Result<()> {
 /// Read-only open with crash-safe PRAGMAs (Bug 61).
 /// Use this for daemon startup and search queries where crash safety matters.
 /// Trade-off: slightly slower than open_existing_db() but protected against corruption.
+///
+/// M2: adds a 256 MiB mmap window so large indexes are paged by the OS
+/// instead of copied through SQLite's page cache. At kernel-scale this is the
+/// difference between instant and thrashing. `mmap_size` is advisory — small
+/// indexes ignore it, and the value is capped at build time by SQLite.
 pub fn open_existing_db_safe(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          PRAGMA cache_size = -200000;
+         PRAGMA mmap_size = 268435456;
          PRAGMA temp_store = MEMORY;
          PRAGMA lock_timeout = 5000;",
     )?;
     run_migrations(db)
+}
+
+/// M4: persisted index generation. Bumped on every reindex so MCP clients
+/// see a changed freshness stamp. Stored in the existing meta table — no
+/// schema change. Read is a single indexed primary-key lookup.
+/// Note: meta.value is REAL, so the read casts.
+pub fn bump_index_gen(db: &Connection) -> rusqlite::Result<i64> {
+    db.execute(
+        "INSERT INTO meta (key, value) VALUES ('index_gen', 1)
+         ON CONFLICT(key) DO UPDATE SET value = value + 1",
+        [],
+    )?;
+    Ok(db.query_row("SELECT value FROM meta WHERE key='index_gen'", [], |r| r.get::<_, f64>(0))
+        .map(|v| v as i64)
+        .unwrap_or(0))
+}
+
+pub fn index_gen(db: &Connection) -> i64 {
+    db.query_row("SELECT value FROM meta WHERE key='index_gen'", [], |r| r.get::<_, f64>(0))
+        .map(|v| v as i64)
+        .unwrap_or(0)
 }
 
 fn run_migrations(db: &Connection) -> rusqlite::Result<()> {
@@ -281,6 +308,24 @@ pub fn unpack_file_blob<'a>(bytes: &'a [u8]) -> impl Iterator<Item = (i64, u8)> 
         i += 1;
         Some((fid, flags))
     })
+}
+
+/// V74: true iff `bytes` decodes into complete (file_id, flags) entries with
+/// no trailing partial entry. Used by reindex to detect legacy corruption
+/// before rewriting a blob (a truncated tail would silently drop entries).
+pub fn blob_is_well_formed(bytes: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match decode_varint(&bytes[i..]) {
+            Some((_, consumed)) => {
+                i += consumed;
+                if i >= bytes.len() { return false; } // missing flags byte
+                i += 1;
+            }
+            None => return false,
+        }
+    }
+    true
 }
 
 /// Encode a `file_id` (i64) as a LEB128 varint.

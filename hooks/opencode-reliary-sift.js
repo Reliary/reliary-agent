@@ -94,10 +94,14 @@ module.exports = function (opencode) {
     return;
   }
 
-  opencode.on("tool.execute.before", (event) => {
+  // V74: current OpenCode plugin API is (input, output) with the tool args on
+  // `output.args` — the old code read `event.tool`/`event.input.command`, which
+  // are undefined in current versions, so the hook never rewrote anything.
+  opencode.on("tool.execute.before", (input, output) => {
     if (!SIFT_BASH) return;
-    if (event.tool !== "bash") return;
-    const cmd = event.input?.command || "";
+    if (input?.tool !== "bash" && input?.tool !== "shell") return;
+    const args = output?.args || {};
+    const cmd = args.command || "";
     if (!cmd || cmd.length < 4) return;
     if (cmd.includes("\n")) return;
     // Skip if user opted out at command level
@@ -111,6 +115,7 @@ module.exports = function (opencode) {
     if (!REWRITE_PROGRAMS.has(first)) return;
 
     const escaped_cmd = cmd.includes("'") ? cmd.replace(/'/g, "'\\''") : cmd;
-    event.input.command = `${RELIARY_BIN} wrap bash -c '${escaped_cmd}'`;
+    args.command = `${RELIARY_BIN} wrap bash -c '${escaped_cmd}'`;
+    output.args = args;
   });
 };

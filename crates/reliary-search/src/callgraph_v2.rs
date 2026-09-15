@@ -233,7 +233,7 @@ fn find_definition(db: &Connection, name: &str) -> Option<(String, i32)> {
             return Some(result);
         }
 
-        if ensure_occurrence_for_phrase(db, phrase_id).is_err() { eprintln!("[callgraph_v2] JIT occurrence build failed for phrase_id={}", phrase_id); }
+        if let Err(e) = ensure_occurrence_for_phrase(db, phrase_id) { eprintln!("[callgraph_v2] JIT occurrence build failed for phrase_id={}: {}", phrase_id, e); }
         let mut stmt = if let Some(ref hint) = type_hint {
             match db.prepare_cached(
                 "SELECT f.file_path, o.line, o.tag FROM occurrence o
@@ -406,7 +406,7 @@ pub fn find_definition_near(db: &Connection, name: &str, context_file: &str) -> 
             Some(id) => id,
             None => continue,
         };
-        if ensure_occurrence_for_phrase(db, phrase_id).is_err() { eprintln!("[callgraph_v2] JIT occurrence build failed for phrase_id={}", phrase_id); }
+        if let Err(e) = ensure_occurrence_for_phrase(db, phrase_id) { eprintln!("[callgraph_v2] JIT occurrence build failed for phrase_id={}: {}", phrase_id, e); }
         // Prefer same-directory definitions.
         let mut stmt = match db.prepare_cached(
             "SELECT f.file_path, o.line, o.tag FROM occurrence o
@@ -516,6 +516,19 @@ pub fn build_call_graph(
     db: &Connection, raw_name: &str, _path: &str,
     anchor: Option<(String, i32)>,
     max_depth: usize,
+) -> rusqlite::Result<CallGraph> {
+    // V74: default excludes test/bench files from callers (production view).
+    build_call_graph_ext(db, raw_name, _path, anchor, max_depth, false)
+}
+
+/// V74: `include_tests=true` keeps test/bench files in the caller set.
+/// impact() and test-plan() need them — they were silently empty because the
+/// production filter dropped every test caller.
+pub fn build_call_graph_ext(
+    db: &Connection, raw_name: &str, _path: &str,
+    anchor: Option<(String, i32)>,
+    max_depth: usize,
+    include_tests: bool,
 ) -> rusqlite::Result<CallGraph> {
     // V28 Fix 4: Type-aware resolution. If the query is `Type::method`, find
     // the type's file via file-path heuristic, then look for the method in
@@ -684,7 +697,7 @@ pub fn build_call_graph(
     callees.retain(|c| !noise_set.contains(&c.name.as_str()));
 
     // Step 6: Callers — reuse type-flow find_references.
-    let callers = build_callers(db, raw_name, &anchor_file, anchor_line)?;
+    let callers = build_callers(db, raw_name, &anchor_file, anchor_line, include_tests)?;
 
     Ok(CallGraph {
         anchor_name: raw_name.to_string(),
@@ -757,6 +770,7 @@ fn find_method_in_file(db: &Connection, file_path: &str, type_name: &str, method
 /// pattern_hybrid is broader and finds all call sites containing the name.
 fn build_callers(
     db: &Connection, raw_name: &str, anchor_file: &str, anchor_line: i32,
+    include_tests: bool,
 ) -> rusqlite::Result<Vec<Caller>> {
     // V29: Cap pattern_hybrid at 30 hits (was 100) to reduce token bloat.
     // V28 fix: pattern_hybrid returns absolute paths. anchor_file may be
@@ -812,11 +826,13 @@ fn build_callers(
         // V29 Phase 2: Skip test/example/bench files — not production callers.
         // V66c: match "bench/" with or without leading slash (relative corpus
         // paths like "bench/reliary_bench.py" have no leading separator).
+        // V74: impact/test-plan pass include_tests=true to keep them.
         let fp = &h.file_path;
-        if fp.contains("/tests/") || fp.contains("/test/") || fp.contains("/examples/")
-            || fp.contains("/benches/") || fp.contains("/bench/") || fp.starts_with("bench/")
-            || fp.starts_with("/bench/") || fp.ends_with("_test.rs")
-            || fp.ends_with("_tests.rs")
+        if !include_tests
+            && (fp.contains("/tests/") || fp.contains("/test/") || fp.contains("/examples/")
+                || fp.contains("/benches/") || fp.contains("/bench/") || fp.starts_with("bench/")
+                || fp.starts_with("/bench/") || fp.ends_with("_test.rs")
+                || fp.ends_with("_tests.rs"))
         {
             continue;
         }
@@ -846,12 +862,36 @@ fn build_callers(
             continue; // Skip definitions
         }
         // Check if the line contains the search name followed by `(` or `::` (call pattern).
-        // Also check for `name_` (delegate pattern: name followed by underscore).
-        let has_call_pattern = line_text.contains(&format!("{}(", search_name))
-            || line_text.contains(&format!("{}::", search_name))
-            || line_text.contains(&format!(".{}", search_name))
-            || line_text.contains(&format!("{}_", search_name));
+        // V74: strip trailing comments first — `// foo(x)` is not a call site.
+        let code_only = crate::structural::strip_line_comment(&line_text);
+        let has_call_pattern = code_only.contains(&format!("{}(", search_name))
+            || code_only.contains(&format!("{}::", search_name))
+            || code_only.contains(&format!(".{}", search_name));
         if !has_call_pattern { continue; }
+        // Reject prefix matches (`contains` would accept `foo_extra(` for
+        // `foo`): the char after each candidate position must be a boundary.
+        let boundary_ok = {
+            let bytes = code_only.as_bytes();
+            let mut ok = false;
+            let mut from = 0usize;
+            while let Some(pos) = code_only[from..].find(search_name) {
+                let i = from + pos;
+                let after = i + search_name.len();
+                let next = bytes.get(after).copied().unwrap_or(b' ');
+                let next_ok = matches!(next, b'(' | b':' | b'.' | b' ' | b'\t' | b'<' | b'>' | b'!' | b'?' | b')' | b',' | b';' | b'[' | b']' | b'&' | b'*' | b'=' | b'{' | b'}');
+                let prev = if i == 0 { b' ' } else { bytes[i - 1] };
+                // V74b: `.` is ALLOWED — `self.foo(` and `Type::foo(` are real
+                // call sites (the previous version rejected them, dropping
+                // every method-call caller). Only reject when the preceding
+                // char makes the match part of a longer identifier.
+                let prev_ok = !(prev.is_ascii_alphanumeric() || prev == b'_');
+                if next_ok && prev_ok { ok = true; break; }
+                from = i + 1;
+                if from >= code_only.len() { break; }
+            }
+            ok
+        };
+        if !boundary_ok { continue; }
         // V59 C2: include the enclosing function name — "file.rs:123 in fn
         // foo()" is far more actionable for the model than a bare line ref.
         let enclosing = crate::file_meta::get(&h.file_path)

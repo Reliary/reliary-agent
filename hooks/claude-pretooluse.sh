@@ -22,10 +22,12 @@ input=$(cat)
 tool_name=$(echo "$input" | jq -r '.tool_name // empty')
 cmd=$(echo "$input" | jq -r '.tool_input.command // empty')
 
-# Only intercept bash commands
-if [ "$tool_name" != "bash" ]; then
-  exit 0
-fi
+# Only intercept bash commands. Claude Code currently sends "Bash"; older
+# versions and other agents send "bash" — accept both.
+case "$tool_name" in
+  Bash|bash) ;;
+  *) exit 0 ;;
+esac
 
 # Opt-in toggle. Default ON (RTK parity) — unset or "0" disables.
 if [ "${RELIARY_SIFT_BASH:-1}" != "1" ]; then
@@ -57,16 +59,31 @@ case "$cmd" in
   *'`'*) exit 0 ;;
 esac
 
-# Find reliary binary (cached via marker file per session).
-_CACHE_FILE="/tmp/reliary-bin-path-${PPID:-$$}"
+# Find reliary binary. V74: use a private per-user cache dir instead of a
+# predictable /tmp name (a planted file could redirect the hook to an
+# attacker-controlled binary in a shared /tmp). 0700 dir, 0600 file, and the
+# cached path must still be an executable regular file owned by us.
+_CACHE_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache}/reliary-hook"
+mkdir -p -m 700 "$_CACHE_DIR" 2>/dev/null
+_CACHE_FILE="$_CACHE_DIR/bin-path-${PPID:-$$}"
 RELIARY_BIN=""
 if [ -f "$_CACHE_FILE" ]; then
-  RELIARY_BIN=$(cat "$_CACHE_FILE" 2>/dev/null)
+  cached=$(cat "$_CACHE_FILE" 2>/dev/null)
+  # Accept only an executable regular file (ownership check where stat exists).
+  if [ -n "$cached" ] && [ -x "$cached" ] && [ -f "$cached" ]; then
+    owner_ok=1
+    if command -v stat >/dev/null 2>&1; then
+      file_uid=$(stat -c %u "$cached" 2>/dev/null || stat -f %u "$cached" 2>/dev/null)
+      [ -n "$file_uid" ] && [ "$file_uid" != "$(id -u)" ] && owner_ok=0
+    fi
+    [ "$owner_ok" = "1" ] && RELIARY_BIN="$cached"
+  fi
 fi
 if [ -z "$RELIARY_BIN" ]; then
   RELIARY_BIN="${RELIARY_BIN_PATH:-$(which reliary 2>/dev/null || which reliary-agent 2>/dev/null)}"
   if [ -n "$RELIARY_BIN" ]; then
-    (set -C; echo "$RELIARY_BIN" > "$_CACHE_FILE") 2>/dev/null || true
+    umask 077
+    echo "$RELIARY_BIN" > "$_CACHE_FILE" 2>/dev/null || true
   fi
 fi
 if ! [[ "$RELIARY_BIN" =~ ^[A-Za-z0-9_./-]+$ ]]; then
@@ -126,4 +143,6 @@ fi
 
 escaped_cmd=$(printf '%s' "$cmd" | sed "s/'/'\\\\''/g")
 new_cmd="'$RELIARY_BIN' wrap bash -c '$escaped_cmd'"
-echo "{\"tool_input\":{\"command\":$(echo "$new_cmd" | jq -Rs .)}}"
+# Current Claude Code PreToolUse contract: permissionDecision + updatedInput.
+# (The legacy {"tool_input":...} shape is ignored by current versions.)
+jq -n --arg cmd "$new_cmd" '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":$cmd}}}' 

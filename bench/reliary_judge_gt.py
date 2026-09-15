@@ -73,8 +73,10 @@ GROUND_TRUTH = {
     "q10_dead_code":
         "Any genuinely uncalled pub fn in reliary-search/src qualifies. Audited "
         "candidates (re-run bench/gt_audit.py after each reindex — the dead set "
-        "shifts with index changes): test_detect_language (architecture.rs:403), "
-        "default_temperature (boltzmann.rs:84), and other zero-caller functions "
-        "in architecture.rs/boltzmann.rs. The key is demonstrating zero cross-file "
-        "references with evidence, not an exhaustive list.",
+        "shifts with index changes): default_temperature (boltzmann.rs:84), "
+        "compress_weighted (ft_weight.rs:107), stem_line_text_score "
+        "(signature.rs:386), and other zero-caller functions in the crate. "
+        "#[test] functions do not count (the tool excludes them by design). "
+        "The key is demonstrating zero cross-file references with evidence, "
+        "not an exhaustive list.",
 }

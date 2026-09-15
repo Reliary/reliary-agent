@@ -24,6 +24,9 @@ pub enum FixTask {
 
 /// Map task text to a FixTask by pattern match (deterministic).
 pub fn parse_task(task: &str) -> FixTask {
+    // V74: match on the lowercased form but extract identifiers from the
+    // ORIGINAL text — lowercasing the whole task corrupted targets
+    // (`rename foo to newName` produced `newname`).
     let t = task.to_lowercase();
     if t.contains("compiler") || t.contains("build error") || t.contains("cargo check") {
         return FixTask::CompilerErrors;
@@ -39,12 +42,18 @@ pub fn parse_task(task: &str) -> FixTask {
             }
         }
     }
-    if let Some(rest) = t.split("rename ").nth(1) {
-        if let Some(to) = rest.split(" to ").nth(1) {
-            let from = rest.split(" to ").next().unwrap_or("").trim().to_string();
-            let to = to.trim().trim_matches('"').trim_matches('`').to_string();
-            if !from.is_empty() && !to.is_empty() {
-                return FixTask::Rename { from, to };
+    if t.contains("rename ") {
+        // Extract from the original-case task using the same split positions.
+        let orig_lower = task.to_lowercase();
+        if let Some(pos) = orig_lower.find("rename ") {
+            let rest_orig = &task[pos + "rename ".len()..];
+            let rest_low = &orig_lower[pos + "rename ".len()..];
+            if let Some(to_pos) = rest_low.find(" to ") {
+                let from = rest_orig[..to_pos].trim().to_string();
+                let to = rest_orig[to_pos + 4..].trim().trim_matches('"').trim_matches('`').to_string();
+                if !from.is_empty() && !to.is_empty() {
+                    return FixTask::Rename { from, to };
+                }
             }
         }
     }
@@ -155,12 +164,18 @@ fn recipe_add_doc(path: &str, symbol: &str, text: &str) -> Result<i32, String> {
     };
     let full = PathBuf::from(path).join(&fp);
     let content = std::fs::read_to_string(&full).map_err(|e| format!("read: {}", e))?;
+    // V74: preserve the line ending style and write atomically (temp + rename)
+    // — the old write was non-atomic and converted CRLF files to LF wholesale.
+    let crlf = content.contains("\r\n");
     let mut lines: Vec<&str> = content.lines().collect();
     let idx = (ln as usize).min(lines.len().saturating_sub(1));
     let doc_line = format!("/// {}", text);
     lines.insert(idx, &doc_line);
-    let out = lines.join("\n") + "\n";
-    std::fs::write(&full, &out).map_err(|e| format!("write: {}", e))?;
+    let sep = if crlf { "\r\n" } else { "\n" };
+    let out = lines.join(sep) + sep;
+    let tmp = full.with_extension("reliary.tmp");
+    std::fs::write(&tmp, &out).map_err(|e| format!("write: {}", e))?;
+    std::fs::rename(&tmp, &full).map_err(|e| format!("rename: {}", e))?;
     Ok(0)
 }
 
@@ -177,17 +192,58 @@ fn recipe_rename(path: &str, from: &str, to: &str) -> Result<i32, String> {
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
         .collect::<Vec<_>>();
-    let mut n = 0;
+    // V74: two-phase rename — read and compute ALL replacements first, then
+    // write. The old loop wrote files one by one and returned Err mid-way on a
+    // read failure, leaving a PARTIAL rename on disk. Replacement is also
+    // token-boundary aware: `foo`→`bar` must not turn `foobar` into `barbar`.
+    let mut writes: Vec<(PathBuf, String)> = Vec::new();
     for fp in rows {
         let full = PathBuf::from(path).join(&fp);
         let content = std::fs::read_to_string(&full).map_err(|e| e.to_string())?;
-        if content.contains(from) {
-            let out = content.replace(from, to);
-            std::fs::write(&full, &out).map_err(|e| e.to_string())?;
-            n += 1;
+        let out = replace_token(&content, from, to);
+        if out != content {
+            writes.push((full, out));
         }
     }
-    Ok(if n > 0 { 0 } else { 2 })
+    for (full, out) in &writes {
+        std::fs::write(full, out).map_err(|e| e.to_string())?;
+    }
+    Ok(if writes.is_empty() { 2 } else { 0 })
+}
+
+/// Replace `from` with `to` only at identifier boundaries. Grammar-free:
+/// an occurrence counts only when neither neighbour is [A-Za-z0-9_].
+fn replace_token(content: &str, from: &str, to: &str) -> String {
+    if from.is_empty() { return content.to_string(); }
+    let bytes = content.as_bytes();
+    let mut out = String::with_capacity(content.len());
+    let mut last = 0usize;
+    let mut i = 0usize;
+    while i + from.len() <= bytes.len() {
+        if &content[i..i + from.len()] == from {
+            let before_ok = i == 0 || {
+                let b = bytes[i - 1];
+                !(b.is_ascii_alphanumeric() || b == b'_')
+            };
+            let after_ok = {
+                let j = i + from.len();
+                j >= bytes.len() || {
+                    let b = bytes[j];
+                    !(b.is_ascii_alphanumeric() || b == b'_')
+                }
+            };
+            if before_ok && after_ok {
+                out.push_str(&content[last..i]);
+                out.push_str(to);
+                last = i + from.len();
+                i = last;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&content[last..]);
+    out
 }
 
 fn recipe_remove_unused(path: &str, symbol: &str) -> Result<i32, String> {
@@ -215,11 +271,26 @@ fn recipe_remove_unused(path: &str, symbol: &str) -> Result<i32, String> {
     let mut end = start;
     let mut depth = 0i32;
     let mut started = false;
+    // V74: the opening brace must appear on the definition line or within the
+    // next 2 lines. The old code set `started` on ANY later line containing
+    // `{`, so a braceless def (trait method `fn f();`, `const X: u8 = 1;`,
+    // Python `def f():`) deleted through the next unrelated brace block.
+    let open_window = start + 2;
     for (i, l) in lines.iter().enumerate().skip(start) {
         // V60: count braces outside strings and line comments so
         // `let s = "}";` or `// {` don't corrupt the depth.
         let (o, c) = count_braces_outside_strings(l);
-        if o > 0 { started = true; }
+        if !started {
+            if o > 0 && i <= open_window {
+                started = true;
+            } else if i > open_window {
+                return Err(format!(
+                    "no brace block begins at {}:{} — refusing to delete a braceless definition",
+                    fp, ln + 1));
+            } else {
+                continue;
+            }
+        }
         if started { depth += o - c; }
         // Single-line def (`fn foo() { ... }` on one line) closes on itself.
         if started && depth <= 0 && (i > start || (i == start && o > 0 && c >= o)) {
@@ -314,12 +385,49 @@ fn fix_e0435(_line: &str) -> (Option<String>, Option<String>) {
 }
 
 /// E0252 (duplicate import): drop the second duplicate `use` — safe.
-fn fix_e0252(line: &str, _msg: &str) -> (Option<String>, Option<String>) {
-    if line.trim_start().starts_with("use ") {
-        (Some(line.to_string()), Some(String::new()))
-    } else {
-        (None, None)
+fn fix_e0252(line: &str, msg: &str) -> (Option<String>, Option<String>) {
+    // V74: only delete the line when the duplicate is the WHOLE use statement.
+    // A grouped import (`use foo::{a, b, c};`) repeated for one name must not
+    // lose the other imports — rustc's E0252 message names the duplicated
+    // item, so refuse when the line imports more than that item.
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("use ") {
+        return (None, None);
     }
+    // Extract the duplicated identifier from the message if present.
+    let dup_item = msg
+        .split("the name `")
+        .nth(1)
+        .and_then(|r| r.split('`').next())
+        .unwrap_or("");
+    let is_grouped = trimmed.contains('{');
+    if is_grouped {
+        // Grouped import: delete only the duplicated segment.
+        if !dup_item.is_empty() && trimmed.contains(dup_item) {
+            let (prefix, rest) = match trimmed.split_once('{') {
+                Some(x) => x,
+                None => return (None, None),
+            };
+            let (inner, suffix) = match rest.rsplit_once('}') {
+                Some(x) => x,
+                None => return (None, None),
+            };
+            let kept: Vec<&str> = inner
+                .split(',')
+                .map(|x| x.trim())
+                .filter(|x| !x.is_empty() && !x.ends_with(dup_item))
+                .collect();
+            if kept.is_empty() {
+                return (Some(line.to_string()), Some(String::new()));
+            }
+            let new_line = format!("{}use {}{{{}}}{}", 
+                &line[..line.len() - trimmed.len()], prefix, kept.join(", "), suffix);
+            return (Some(line.to_string()), Some(new_line));
+        }
+        // Couldn't isolate the item — leave the grouped import alone.
+        return (None, None);
+    }
+    (Some(line.to_string()), Some(String::new()))
 }
 
 /// E0255 (use of undeclared type/module): no generic fix.

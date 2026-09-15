@@ -6,6 +6,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod mcp;
 mod fix_agent;
 mod deterministic_fix;
+mod verify;
+mod bench;
 
 mod log;
 mod reindex;
@@ -413,6 +415,9 @@ pub fn run_index(path: &str) {
             match result {
                 Ok(count) => {
                     let _ = std::fs::remove_file(&bak_path);
+                    // M4/V73: seed the persisted generation so the first stamp
+                    // is non-zero and distinct from "no index".
+                    let _ = reliary_search::schema::bump_index_gen(&db);
                     eprintln!("{} {} files indexed", color::green("✓"), count);
                 }
                 Err(e) => {
@@ -610,8 +615,15 @@ pub fn run_who_calls(file: &str, identifier: &str) {
         let results = reliary_search::search::search_fts5(&db, identifier, 10);
         let file_name = std::path::Path::new(file).file_name()
             .and_then(|n| n.to_str()).unwrap_or("");
+        // V74: exclude the queried file itself. The old predicate used `||`
+        // so it kept the file whenever the suffix check failed — i.e. almost
+        // always. `&&` is the correct exclusion.
         let refs: Vec<String> = results.iter()
-            .filter(|r| r.file != file || !r.file.ends_with(file_name))
+            .filter(|r| {
+                let is_same = r.file == file
+                    || (!file_name.is_empty() && r.file.ends_with(&format!("/{}", file_name)));
+                !is_same
+            })
             .map(|r| r.file.clone())
             .collect();
         println!("{}", serde_json::to_string(&refs).unwrap_or_else(|_| "[]".to_string()));
@@ -707,6 +719,12 @@ pub const CLI_COMMANDS: &[&str] = &[
     "dead", "sift",
     "completions", "man", "update", "trust",
 ];
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BenchAction {
+    Gen,
+    Verify,
+}
 
 #[derive(Subcommand)]
 enum Commands {
@@ -863,6 +881,108 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Verify a claim about the codebase against the index.
+    /// Example: reliary verify "classify_structural at structural.rs:31"
+    Verify {
+        /// The claim text (quote it)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        claim: Vec<String>,
+        /// Project directory (default: current)
+        #[arg(long, default_value = ".")]
+        path: String,
+        /// Line tolerance (default 1)
+        #[arg(long, default_value = "1")]
+        tol: i32,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pre-edit blast radius: callers, test files, risk verdict.
+    /// Example: reliary impact classify_structural
+    Impact {
+        /// Symbol name
+        name: String,
+        /// Project directory (default: current)
+        #[arg(long, default_value = ".")]
+        path: String,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Which tests exercise the changed files/symbols.
+    /// Example: reliary test-plan --files crates/reliary-search/src/symbol.rs
+    TestPlan {
+        /// Comma-separated changed files
+        #[arg(long, value_delimiter = ',')]
+        files: Vec<String>,
+        /// Comma-separated changed symbols
+        #[arg(long, value_delimiter = ',')]
+        symbols: Vec<String>,
+        /// Git revision range (e.g. HEAD~1..HEAD) — changed files are read from git
+        #[arg(long)]
+        diff: Option<String>,
+        /// Project directory (default: current)
+        #[arg(long, default_value = ".")]
+        path: String,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Structural diff between two revisions or directories.
+    /// Example: reliary diff HEAD~1 HEAD
+    Diff {
+        /// First revision (git rev or directory)
+        rev1: String,
+        /// Second revision (git rev or directory)
+        rev2: String,
+        /// Project directory (default: current)
+        #[arg(long, default_value = ".")]
+        path: String,
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render a self-contained SVG map of the codebase (modules, hot symbols, dead code).
+    /// Example: reliary map --out codebase.svg
+    Map {
+        /// Project directory (default: current)
+        #[arg(long, default_value = ".")]
+        path: String,
+        /// Output file (default: stdout)
+        #[arg(short, long)]
+        out: Option<String>,
+        /// Max files on the map (default 24)
+        #[arg(long, default_value = "24")]
+        max_files: usize,
+        /// Max symbols per file (default 10)
+        #[arg(long, default_value = "10")]
+        max_symbols: usize,
+    },
+    /// Deterministic benchmark: generate questions+GT from any index, score results.
+    /// Example: reliary bench gen --out bench/questions.json
+    Bench {
+        /// Subcommand: gen | verify
+        #[arg(value_enum)]
+        action: BenchAction,
+        /// Index path (default: <path>/.reliary/index.sqlite)
+        #[arg(long)]
+        index: Option<String>,
+        /// Results JSONL to score (verify) / output file (gen)
+        #[arg(long)]
+        out: Option<String>,
+        /// GT JSON file (verify)
+        #[arg(long)]
+        gt: Option<String>,
+        /// Seed for question selection (gen)
+        #[arg(long, default_value = "42")]
+        seed: u64,
+        /// Line tolerance (verify)
+        #[arg(long, default_value = "1")]
+        tol: i32,
+        /// Project directory (default: current)
+        #[arg(long, default_value = ".")]
+        path: String,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate for
@@ -923,6 +1043,24 @@ fn format_config(fmt: &str) -> reliary_core::OutputFormat {
 
 /// Run a command, pipe output through compression, store original in content cache.
 /// Compressed output goes to stdout with `[reliary-compressed ... retrieve ...]` suffix.
+/// V74: read at most `n` bytes from `path` (for content sniffing).
+fn read_prefix(path: &std::path::Path, n: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; n];
+    let mut filled = 0usize;
+    while filled < n {
+        match f.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(k) => filled += k,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    buf.truncate(filled);
+    Ok(buf)
+}
+
 fn exec_wrap(cmd: &[String]) {
     if cmd.is_empty() {
         eprintln!("Usage: reliary-agent wrap <command> [args...]");
@@ -946,7 +1084,10 @@ fn exec_wrap(cmd: &[String]) {
         if file_args.len() == 1 {
             let path = std::path::Path::new(file_args[0].as_str());
             if path.is_file() {
-                if let Ok(sample) = std::fs::read(path) {
+                // V74: sample the first 64KB rather than reading the whole
+                // file — a huge source file could OOM the wrapper before the
+                // real command even runs.
+                if let Ok(sample) = read_prefix(path, 65536) {
                     let text = String::from_utf8_lossy(&sample);
                     if reliary_search::lazy_occurrence::is_source_like(&text) {
                         // Passthrough: run the command directly, no compression.
@@ -963,7 +1104,12 @@ fn exec_wrap(cmd: &[String]) {
                                 std::process::exit(1);
                             }
                         };
-                        std::process::exit(output.code().unwrap_or(0));
+                        // V74: a signal-killed child (None) is NOT success — use 128+signal if we
+    // can get the signal number, else 1.
+    std::process::exit(match output.code() {
+        Some(c) => c,
+        None => 1,
+    });
                     }
                 }
             }
@@ -972,9 +1118,18 @@ fn exec_wrap(cmd: &[String]) {
 
     // V60: inherit stdin so interactive commands (`git rebase -i`,
     // `npm init`) don't get EOF from a nulled stdin.
+    // V74: when OUR stdin is not a terminal (hook subprocess with a pipe that
+    // never closes), inheriting it makes the child block forever waiting on
+    // input. Null it in that case; a TTY parent still gets inherit.
+    use std::io::IsTerminal;
+    let stdin_cfg = if std::io::stdin().is_terminal() {
+        std::process::Stdio::inherit()
+    } else {
+        std::process::Stdio::null()
+    };
     let output = match std::process::Command::new(program)
         .args(args)
-        .stdin(std::process::Stdio::inherit())
+        .stdin(stdin_cfg)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
         .output()
@@ -987,7 +1142,13 @@ fn exec_wrap(cmd: &[String]) {
     };
 
     let raw = String::from_utf8_lossy(&output.stdout);
-    let exit_code = output.status.code().unwrap_or(0);
+    let exit_code = output.status.code().unwrap_or_else(|| {
+        // V74: signal-killed (OOM/SIGKILL/SIGPIPE) must not read as success.
+        #[cfg(unix)]
+        { use std::os::unix::process::ExitStatusExt; output.status.signal().map(|s| 128 + s).unwrap_or(1) }
+        #[cfg(not(unix))]
+        { 1 }
+    });
     if raw.is_empty() {
         std::process::exit(exit_code);
     }
@@ -1109,7 +1270,13 @@ fn exec_sift(cmd: &[String], stdin_mode: bool) {
     };
 
     let raw = String::from_utf8_lossy(&output.stdout);
-    let exit_code = output.status.code().unwrap_or(0);
+    let exit_code = output.status.code().unwrap_or_else(|| {
+        // V74: signal-killed (OOM/SIGKILL/SIGPIPE) must not read as success.
+        #[cfg(unix)]
+        { use std::os::unix::process::ExitStatusExt; output.status.signal().map(|s| 128 + s).unwrap_or(1) }
+        #[cfg(not(unix))]
+        { 1 }
+    });
 
     if expand {
         print!("{}", raw);
@@ -1208,7 +1375,7 @@ fn build_read_footer(path: &str) -> String {
     // Get function-like identifiers defined in this file (heuristic: ≥5 chars, no digits)
     let mut identifiers: Vec<String> = Vec::new();
     if let Ok(mut stmt) = db.prepare(
-        "SELECT p.phrase FROM phrase_occ o JOIN phrases p ON o.phrase_id = p.id WHERE o.file_id = ?1 LIMIT 30"
+        "SELECT p.phrase FROM file_phrases fp JOIN phrases p ON fp.phrase_id = p.id WHERE fp.file_id = ?1 LIMIT 30"
     ) {
         if let Ok(rows) = stmt.query_map([file_id], |row| row.get::<_, String>(0)) {
             for r in rows.flatten() {
@@ -1230,7 +1397,7 @@ fn build_read_footer(path: &str) -> String {
     // Pick the longest identifier (likely the function name) and count its callers
     let first_id = identifiers.iter().max_by_key(|s| s.len()).unwrap();
     let caller_count: usize = db.query_row(
-        "SELECT COUNT(DISTINCT o.file_id) FROM phrase_occ o JOIN phrases p ON o.phrase_id = p.id WHERE p.phrase = ?1",
+        "SELECT COUNT(DISTINCT fp.file_id) FROM file_phrases fp JOIN phrases p ON fp.phrase_id = p.id WHERE p.phrase = ?1",
         rusqlite::params![first_id],
         |row| row.get::<_, i64>(0),
     ).map(|c: i64| c.saturating_sub(1).max(0) as usize).unwrap_or(0);
@@ -1292,7 +1459,7 @@ fn diagnose_failure(raw: &str, _program: &str) -> String {
         // Look up the missing identifier in the index
         let mut locations: Vec<String> = Vec::new();
         if let Ok(mut stmt) = db.prepare(
-            "SELECT DISTINCT f.file_path FROM phrase_occ o JOIN phrases p ON o.phrase_id = p.id JOIN file_map f ON o.file_id = f.id WHERE p.phrase = ?1 LIMIT 5"
+            "SELECT DISTINCT f.file_path FROM file_phrases fp JOIN phrases p ON fp.phrase_id = p.id JOIN file_map f ON fp.file_id = f.id WHERE p.phrase = ?1 LIMIT 5"
         ) {
             if let Ok(rows) = stmt.query_map([&name], |row| row.get::<_, String>(0)) {
                 for r in rows.flatten() {
@@ -1305,7 +1472,7 @@ fn diagnose_failure(raw: &str, _program: &str) -> String {
             // (longest common prefix + similar length)
             let mut rename_hint = String::new();
             if let Ok(mut rename_stmt) = db.prepare(
-                "SELECT DISTINCT p.phrase FROM phrase_occ o JOIN phrases p ON o.phrase_id = p.id JOIN file_map f ON o.file_id = f.id WHERE f.file_path = ?1 AND length(p.phrase) >= ?2 AND length(p.phrase) <= ?3 AND p.phrase != ?4 LIMIT 10"
+                "SELECT DISTINCT p.phrase FROM file_phrases fp JOIN phrases p ON fp.phrase_id = p.id JOIN file_map f ON fp.file_id = f.id WHERE f.file_path = ?1 AND length(p.phrase) >= ?2 AND length(p.phrase) <= ?3 AND p.phrase != ?4 LIMIT 10"
             ) {
                 for file in locations.iter().take(2) {
                     let nlen = name.len() as i64;
@@ -1337,7 +1504,7 @@ fn diagnose_failure(raw: &str, _program: &str) -> String {
     // Look for FAILED test patterns + reference errors: "NameError: name 'X' is not defined"
     if let Some(name) = extract_name_error(raw) {
         let file: Option<String> = db.query_row(
-            "SELECT file_path FROM phrases p JOIN phrase_occ o ON p.id = o.phrase_id JOIN file_map f ON o.file_id = f.id WHERE p.phrase = ?1 LIMIT 1",
+            "SELECT f.file_path FROM phrases p JOIN file_phrases fp ON p.id = fp.phrase_id JOIN file_map f ON fp.file_id = f.id WHERE p.phrase = ?1 LIMIT 1",
             rusqlite::params![&name],
             |row| row.get::<_, String>(0),
         ).ok();  // GUARDED: intentional
@@ -1897,7 +2064,25 @@ fn main() {
                 let path_buf = std::path::PathBuf::from(path);
                 let cwd = std::env::current_dir().unwrap_or_default();
                 if path_buf.is_dir() {
-                    for entry in walkdir::WalkDir::new(&path_buf).into_iter().filter_map(|e| e.ok()) {
+                    // V74: skip build/vendor/hidden dirs — run_dead previously
+                    // walked everything (node_modules, target) and accumulated
+                    // every file's content in memory.
+                    const SKIP_DIRS: &[&str] = &[
+                        "target", "node_modules", "dist", "build", "vendor", ".next",
+                        ".cache", "out", "__pycache__", ".venv", "venv", ".gradle",
+                    ];
+                    for entry in walkdir::WalkDir::new(&path_buf)
+                        .into_iter()
+                        .filter_entry(|e| {
+                            let name = e.file_name().to_string_lossy();
+                            if e.file_type().is_dir() {
+                                if name.starts_with('.') { return false; }
+                                if SKIP_DIRS.contains(&name.as_ref()) { return false; }
+                            }
+                            true
+                        })
+                        .filter_map(|e| e.ok())
+                    {
                         let p = entry.path();
                         if p.is_file() {
                             // Arc 39: grammar-free content-based binary detection.
@@ -1933,6 +2118,400 @@ fn main() {
         }
         Commands::Update { check } => {
             do_update(*check);
+        }
+        Commands::Bench { action, index, out, gt, seed, tol, path } => {
+            let index_path = index.clone().unwrap_or_else(|| {
+                format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
+            });
+            match action {
+                BenchAction::Gen => {
+                    if !std::path::Path::new(&index_path).exists() {
+                        eprintln!("cannot open index at {} → run `reliary trust {}` to build it", index_path, path);
+                        std::process::exit(2);
+                    }
+                    let doc = bench::generate(&index_path, *seed);
+                    let text = serde_json::to_string_pretty(&doc).unwrap_or_default();
+                    match out {
+                        Some(o) => {
+                            if let Err(e) = std::fs::write(o, &text) {
+                                eprintln!("cannot write {}: {}", o, e);
+                                std::process::exit(1);
+                            }
+                            let n = doc.get("questions").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                            eprintln!("wrote {} ({} questions)", o, n);
+                        }
+                        None => println!("{}", text),
+                    }
+                }
+                BenchAction::Verify => {
+                    let Some(results) = out else {
+                        eprintln!("bench verify requires --out <results.jsonl>");
+                        std::process::exit(2);
+                    };
+                    let Some(gt_file) = gt else {
+                        eprintln!("bench verify requires --gt <questions.json>");
+                        std::process::exit(2);
+                    };
+                    let doc = bench::score_results(results, gt_file, *tol);
+                    println!("{}", serde_json::to_string_pretty(&doc).unwrap_or_default());
+                }
+            }
+        }
+        Commands::Map { path, out, max_files, max_symbols } => {
+            let db_path = format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'));
+            if !std::path::Path::new(&db_path).exists() {
+                eprintln!("cannot open index at {} → run `reliary trust {}` to build it", db_path, path);
+                std::process::exit(2);
+            }
+            let db = match rusqlite::Connection::open(&db_path) {
+                Ok(d) => d,
+                Err(e) => { eprintln!("cannot open index: {}", e); std::process::exit(2); }
+            };
+            if let Err(e) = reliary_search::schema::open_existing_db_safe(&db) {
+                eprintln!("index at {} is not usable: {}", db_path, e);
+                std::process::exit(2);
+            }
+            let files = reliary_search::map::collect_map(&db, *max_files, *max_symbols);
+            let title = std::path::Path::new(path)
+                .canonicalize()
+                .ok()
+                .and_then(|p| p.file_name().map(|x| x.to_string_lossy().to_string()))
+                .unwrap_or_else(|| path.clone());
+            let svg = reliary_search::map::render_svg(&files, &title);
+            match out {
+                Some(o) => {
+                    if let Err(e) = std::fs::write(o, &svg) {
+                        eprintln!("cannot write {}: {}", o, e);
+                        std::process::exit(1);
+                    }
+                    eprintln!("wrote {} ({} files, {} bytes)", o, files.len(), svg.len());
+                }
+                None => print!("{}", svg),
+            }
+        }
+        Commands::Diff { rev1, rev2, path, json } => {
+            // Resolve each rev to a directory: a git rev is exported to a temp
+            // worktree; a plain directory is used as-is. Then index each and
+            // compute the structural delta.
+            let base = path.trim_end_matches('/').to_string();
+            let tmp = std::env::temp_dir().join(format!("reliary-diff-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&tmp);
+            // V74: process::exit inside this arm skipped cleanup and leaked
+            // worktrees + sqlite files. The body now breaks out of a labeled
+            // block with an exit code; cleanup runs unconditionally after.
+            let mut diff_exit: i32 = 0;
+            let db_a_path = tmp.join("a.sqlite");
+            let db_b_path = tmp.join("b.sqlite");
+            'diff: {
+            let resolve = |rev: &str, slot: &str| -> Result<String, String> {
+                let candidate = if std::path::Path::new(rev).is_absolute() {
+                    rev.to_string()
+                } else {
+                    format!("{}/{}", base, rev)
+                };
+                if std::path::Path::new(&candidate).is_dir() {
+                    return Ok(candidate);
+                }
+                // Treat as a git rev: `git worktree add --detach <slot> <rev>`
+                let slot_path = tmp.join(slot);
+                let out = std::process::Command::new("git")
+                    .arg("-C").arg(&base)
+                    .arg("worktree").arg("add").arg("--detach")
+                    .arg("--")
+                    .arg(&slot_path).arg(rev)
+                    .output()
+                    .map_err(|e| format!("git: {}", e))?;
+                if !out.status.success() {
+                    return Err(format!(
+                        "cannot resolve rev '{}': {}",
+                        rev,
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ));
+                }
+                Ok(slot_path.to_string_lossy().to_string())
+            };
+            let dir_a = match resolve(&rev1, "a") {
+                Ok(d) => d,
+                Err(e) => { eprintln!("{}", e); diff_exit = 2; break 'diff; }
+            };
+            let dir_b = match resolve(&rev2, "b") {
+                Ok(d) => d,
+                Err(e) => { eprintln!("{}", e); diff_exit = 2; break 'diff; }
+            };
+            let db_a = match reliary_search::struct_diff::index_revision(
+                &dir_a, db_a_path.to_string_lossy().as_ref()) {
+                Ok(d) => d,
+                Err(e) => { eprintln!("index {}: {}", rev1, e); diff_exit = 1; break 'diff; }
+            };
+            let db_b = match reliary_search::struct_diff::index_revision(
+                &dir_b, db_b_path.to_string_lossy().as_ref()) {
+                Ok(d) => d,
+                Err(e) => { eprintln!("index {}: {}", rev2, e); diff_exit = 1; break 'diff; }
+            };
+            let diff = reliary_search::struct_diff::compute_diff(&db_a, &db_b);
+            if *json {
+                let sym = |v: &Vec<(String, String, i32)>| -> Vec<serde_json::Value> {
+                    v.iter().map(|(n, f, l)| serde_json::json!({"name": n, "file": f, "line": l})).collect()
+                };
+                let edge = |v: &Vec<(String, String)>| -> Vec<serde_json::Value> {
+                    v.iter().map(|(a, b)| serde_json::json!({"caller": a, "callee": b})).collect()
+                };
+                println!("{}", serde_json::json!({
+                    "symbols_added": sym(&diff.symbols_added),
+                    "symbols_removed": sym(&diff.symbols_removed),
+                    "edges_added": edge(&diff.edges_added),
+                    "edges_removed": edge(&diff.edges_removed),
+                }));
+            } else {
+                println!("structural diff {}..{}", rev1, rev2);
+                println!("  symbols added:   {}", diff.symbols_added.len());
+                for (n, f, l) in diff.symbols_added.iter().take(20) {
+                    println!("    + {} ({}:{})", n, f, l);
+                }
+                println!("  symbols removed: {}", diff.symbols_removed.len());
+                for (n, f, l) in diff.symbols_removed.iter().take(20) {
+                    println!("    - {} ({}:{})", n, f, l);
+                }
+                println!("  call edges added:   {}", diff.edges_added.len());
+                for (a, b) in diff.edges_added.iter().take(10) {
+                    println!("    + {} -> {}", a, b);
+                }
+                println!("  call edges removed: {}", diff.edges_removed.len());
+                for (a, b) in diff.edges_removed.iter().take(10) {
+                    println!("    - {} -> {}", a, b);
+                }
+            }
+            }
+            // Clean up temp worktrees + databases on every path.
+            for slot in ["a", "b"] {
+                let _ = std::process::Command::new("git")
+                    .arg("-C").arg(&base)
+                    .arg("worktree").arg("remove").arg("--force")
+                    .arg(tmp.join(slot))
+                    .output();
+            }
+            let _ = std::fs::remove_file(&db_a_path);
+            let _ = std::fs::remove_file(&db_b_path);
+            let _ = std::fs::remove_dir(&tmp);
+            if diff_exit != 0 { std::process::exit(diff_exit); }
+        }
+        Commands::TestPlan { files, symbols, path, diff, json } => {
+            let db_path = format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'));
+            if !std::path::Path::new(&db_path).exists() {
+                eprintln!("cannot open index at {} → run `reliary trust {}` to build it", db_path, path);
+                std::process::exit(2);
+            }
+            let db = match rusqlite::Connection::open(&db_path) {
+                Ok(d) => d,
+                Err(e) => { eprintln!("cannot open index: {}", e); std::process::exit(2); }
+            };
+            if let Err(e) = reliary_search::schema::open_existing_db_safe(&db) {
+                eprintln!("index at {} is not usable: {}", db_path, e);
+                std::process::exit(2);
+            }
+            // --diff: read changed files from git (name-only), paths made
+            // relative to the project dir.
+            let mut eff_files: Vec<String> = files.clone();
+            if let Some(range) = diff {
+                let out = std::process::Command::new("git")
+                    .arg("-C").arg(path)
+                    .arg("diff").arg("--name-only").arg(range)
+                    .output();
+                match out {
+                    Ok(o) if o.status.success() => {
+                        for line in String::from_utf8_lossy(&o.stdout).lines() {
+                            let l = line.trim();
+                            if !l.is_empty() {
+                                eff_files.push(l.to_string());
+                            }
+                        }
+                    }
+                    Ok(o) => {
+                        eprintln!("git diff failed: {}", String::from_utf8_lossy(&o.stderr).trim());
+                        std::process::exit(2);
+                    }
+                    Err(e) => {
+                        eprintln!("cannot run git: {}", e);
+                        std::process::exit(2);
+                    }
+                }
+            }
+            match reliary_search::test_plan::compute_plan(&db, &eff_files, symbols, path) {
+                Ok(plan) => {
+                    if *json {
+                        let tests: Vec<serde_json::Value> = plan.tests.iter()
+                            .map(|(f, r)| serde_json::json!({"file": f, "reasons": r}))
+                            .collect();
+                        println!("{}", serde_json::json!({
+                            "tests": tests,
+                            "commands": plan.commands,
+                        }));
+                    } else if plan.tests.is_empty() {
+                        println!("no tests found that exercise the given files/symbols");
+                    } else {
+                        println!("test plan ({} file(s)):", plan.tests.len());
+                        for (f, reasons) in &plan.tests {
+                            println!("  {}  [{}]", f, reasons.join(", "));
+                        }
+                        if !plan.commands.is_empty() {
+                            println!("\nrun:");
+                            for c in &plan.commands {
+                                println!("  {}", c);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("test-plan failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Impact { name, path, json } => {
+            let db_path = format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'));
+            if !std::path::Path::new(&db_path).exists() {
+                eprintln!("cannot open index at {} → run `reliary trust {}` to build it", db_path, path);
+                std::process::exit(2);
+            }
+            let db = match rusqlite::Connection::open(&db_path) {
+                Ok(d) => d,
+                Err(e) => { eprintln!("cannot open index: {}", e); std::process::exit(2); }
+            };
+            if let Err(e) = reliary_search::schema::open_existing_db_safe(&db) {
+                eprintln!("index at {} is not usable: {}", db_path, e);
+                std::process::exit(2);
+            }
+            match reliary_search::impact::compute_impact(&db, name, path) {
+                Ok(imp) => {
+                    if imp.def_file.is_empty() {
+                        eprintln!("no definition found for \"{}\"", name);
+                        std::process::exit(1);
+                    }
+                    if *json {
+                        let callers: Vec<serde_json::Value> = imp.callers.iter()
+                            .map(|(f, l)| serde_json::json!({"file": f, "line": l}))
+                            .collect();
+                        println!("{}", serde_json::json!({
+                            "symbol": imp.symbol,
+                            "def_file": imp.def_file,
+                            "def_line": imp.def_line,
+                            "callers": callers,
+                            "caller_files": imp.caller_files,
+                            "test_files": imp.test_files,
+                            "risk": imp.risk.label(),
+                        }));
+                    } else {
+                        let def_base = std::path::Path::new(&imp.def_file)
+                            .file_name().map(|x| x.to_string_lossy().to_string())
+                            .unwrap_or_else(|| imp.def_file.clone());
+                        println!("{} is defined at {}:{}", imp.symbol, def_base, imp.def_line);
+                        if imp.callers.is_empty() {
+                            println!("callers: none (dead code?)");
+                        } else {
+                            let caller_list: Vec<String> = imp.callers.iter().take(12)
+                                .map(|(f, l)| {
+                                    let b = std::path::Path::new(f).file_name()
+                                        .map(|x| x.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| f.clone());
+                                    format!("{}:{}", b, l)
+                                })
+                                .collect();
+                            println!("callers ({}): {}", imp.callers.len(), caller_list.join(", "));
+                        }
+                        if !imp.test_files.is_empty() {
+                            let tests: Vec<String> = imp.test_files.iter()
+                                .map(|f| std::path::Path::new(f).file_name()
+                                    .map(|x| x.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| f.clone()))
+                                .collect();
+                            println!("tests touching it: {}", tests.join(", "));
+                        }
+                        println!("risk: {}", imp.risk.label());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("impact failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Verify { claim, path, tol, json } => {
+            // trailing_var_arg swallows flags that follow the claim text.
+            // Extract them manually (same pattern as Fix).
+            let mut eff_path = path.clone();
+            let mut eff_tol = *tol;
+            let mut eff_json = *json;
+            let mut claim_parts: Vec<String> = Vec::new();
+            let mut it = claim.iter();
+            while let Some(t) = it.next() {
+                match t.as_str() {
+                    "--path" | "-p" => { if let Some(v) = it.next() { eff_path = v.clone(); } }
+                    "--tol" => { if let Some(v) = it.next() { eff_tol = v.parse().unwrap_or(1); } }
+                    "--json" => { eff_json = true; }
+                    _ => claim_parts.push(t.clone()),
+                }
+            }
+            let claim_str = claim_parts.join(" ");
+            let path = &eff_path;
+            let tol = &eff_tol;
+            let json = &eff_json;
+            let db_path = format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'));
+            if !std::path::Path::new(&db_path).exists() {
+                eprintln!("cannot open index at {} → run `reliary trust {}` to build it", db_path, path);
+                std::process::exit(2);
+            }
+            let db = match rusqlite::Connection::open(&db_path) {
+                Ok(d) => d,
+                Err(e) => { eprintln!("cannot open index: {}", e); std::process::exit(2); }
+            };
+            if let Err(e) = reliary_search::schema::open_existing_db_safe(&db) {
+                eprintln!("index at {} is not usable: {}", db_path, e);
+                std::process::exit(2);
+            }
+            let summary = verify::verify_text(&db, &claim_str, *tol);
+            if *json {
+                let claims: Vec<serde_json::Value> = summary.claims.iter().map(|(c, v)| {
+                    match v {
+                        verify::Verdict::Verified { actual } => serde_json::json!({
+                            "symbol": c.symbol, "file": c.file, "line": c.line,
+                            "verdict": "verified",
+                            "actual": actual.as_ref().map(|(f, l)| format!("{}:{}", f, l)),
+                        }),
+                        verify::Verdict::False { actual } => serde_json::json!({
+                            "symbol": c.symbol, "file": c.file, "line": c.line,
+                            "verdict": "false",
+                            "actual": actual.as_ref().map(|(f, l)| format!("{}:{}", f, l)),
+                        }),
+                    }
+                }).collect();
+                println!("{}", serde_json::json!({
+                    "verified": summary.verified,
+                    "falsified": summary.falsified,
+                    "claims": claims,
+                }));
+            } else if summary.claims.is_empty() {
+                println!("NO CLAIMS — nothing verifiable found in the input.");
+            } else {
+                for (c, v) in &summary.claims {
+                    let subject = if c.symbol.is_empty() {
+                        format!("{}:{}", c.file, c.line)
+                    } else {
+                        format!("{} at {}:{}", c.symbol, c.file, c.line)
+                    };
+                    match v {
+                        verify::Verdict::Verified { .. } => println!("VERIFIED  {}", subject),
+                        verify::Verdict::False { actual } => {
+                            let actual_str = actual.as_ref()
+                                .map(|(f, l)| format!(" → actual: {}:{}", f, l))
+                                .unwrap_or_else(|| " → not found in index".to_string());
+                            println!("FALSE     {}{}", subject, actual_str);
+                        }
+                    }
+                }
+                println!("\n{} verified, {} false", summary.verified, summary.falsified);
+            }
+            let exit = if summary.falsified > 0 { 1 } else { 0 };
+            std::process::exit(exit);
         }
         Commands::Fix { task, path, max_iters, verify, dry_run, json } => {
             // trailing_var_arg can swallow --path/--max-iters if passed after

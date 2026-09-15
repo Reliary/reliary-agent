@@ -66,6 +66,42 @@ fn rarest_term(db: &Connection, terms: &[String]) -> Option<String> {
     best.map(|(_, t)| t)
 }
 
+/// M1: Path-based rank multiplier. Definitions in production source must
+/// outrank the same identifier appearing in tests, bench scripts, docs and
+/// fixtures. Demote (not exclude) so those files still appear when relevant.
+///
+/// V73: only the LAST 4 path segments are considered. Paths are absolute, so
+/// an ancestor directory named `results`/`docs`/`tests` (e.g. a checkout under
+/// `/tmp/results/…`) previously demoted every file beneath it.
+fn path_rank(path: &str) -> f32 {
+    let lower = path.to_ascii_lowercase();
+    let all: Vec<&str> = lower.split('/').filter(|s| !s.is_empty()).collect();
+    let tail_start = all.len().saturating_sub(4);
+    let segs = &all[tail_start..];
+    let tail: String = segs.join("/");
+    // Tests (path segments or filename conventions) within the tail.
+    if crate::impact::is_test_path(&tail) {
+        return 0.35;
+    }
+    // Bench harnesses, examples, fixtures, archived plans.
+    if segs.iter().any(|s| {
+        *s == "bench" || *s == "benches" || *s == "examples" || *s == "fixtures"
+            || *s == "archive" || *s == "results"
+    }) {
+        return 0.30;
+    }
+    // Docs and config trees (markdown plans, etc.).
+    if segs.iter().any(|s| *s == "docs" || *s == "doc") {
+        return 0.40;
+    }
+    1.0
+}
+
+/// M1: Definition boost. A file containing at least one definition of the
+/// phrase ranks above files that merely use it. This is what makes
+/// "where is X" resolve to the definition instead of the busiest caller.
+const DEF_BOOST: f32 = 3.0;
+
 fn run_terms_query(db: &Connection, terms: &[String], mode: JoinMode, top_n: usize) -> Vec<SearchResult> {
     if terms.is_empty() { return vec![]; }
     // Escape `_` so it's a literal in LIKE (not a single-char wildcard).
@@ -155,13 +191,21 @@ fn run_terms_query(db: &Connection, terms: &[String], mode: JoinMode, top_n: usi
             let tf = (crate::schema::unpack_count(flags) as f64).max(1.0);
             let zone = Some(crate::schema::unpack_zone_int(flags) as u8);
             let idf = crate::bm25_idf(total_files as f32, doc_freq as f32);
-            let score = crate::bm25_score(idf as f32, tf as f32, token_len as f32, avg_tokens as f32);
+            let base = crate::bm25_score(idf as f32, tf as f32, token_len as f32, avg_tokens as f32);
+            // M1: definition-first ranking. Files where the phrase is defined
+            // outrank files that merely reference it; production paths outrank
+            // tests/bench/docs.
+            let is_def = crate::schema::unpack_is_def(flags) > 0;
+            let rank = path_rank(&file_path);
+            let def_mult = if is_def { DEF_BOOST } else { 1.0 };
+            let score = base * rank * def_mult;
             if let Some(&idx) = file_index.get(&file_path) {
                 results[idx].score += score;
-                results[idx].zone = zone;
+                if is_def { results[idx].zone = Some(1); }
+                else { results[idx].zone = zone; }
             } else {
                 file_index.insert(file_path.clone(), results.len());
-                results.push(SearchResult { file: file_path, score, line: None, zone });
+                results.push(SearchResult { file: file_path, score, line: None, zone: if is_def { Some(1) } else { zone } });
             }
         }
     }

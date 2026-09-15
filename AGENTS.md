@@ -14,13 +14,23 @@ Use `reliary_*` tools for code intelligence questions instead of grep/read cycle
 | "where is X defined?" | `reliary_find_references(name="X", def_only=true)` | Returns the top definition with source code. |
 | "who calls X?" / "callers of X" | `reliary_find_references(name="X", usage_only=true)` | Returns call sites only. For the graph view, use `reliary_call_graph(direction="inbound")`. |
 | "what does X call?" | `reliary_call_graph(name="X", direction="outbound")` | Callees with source. |
-| "find files about topic Y" | `reliary_search` | BM25 file search. Use when you don't know the exact symbol name. |
+| "find files about topic Y" | `reliary_search` | BM25 file search with definition-first ranking (the file where the symbol is defined ranks above files that merely reference it; tests/bench/docs are demoted). Use when you don't know the exact symbol name. |
 | "find unused code" | `reliary_find_dead_code(path="...")` or `reliary_find_references(dead_only=true, path="...")` | Path-scoped dead-code list. |
 | "what methods does Type X have?" | `reliary_list_methods(name="X")` or `reliary_find_references(name="X", methods=true)` | Method names with file:line. |
-| "explain X" | `reliary_describe(name="X")` | Purpose, signature, callers, methods. |
+| "which types implement trait T?" / "what derives T?" | `reliary_find_references(name="T")` | Trait implementors: `T is implemented by N types: ...` with file:line. |
+| "explain X" | `reliary_describe(name="X")` | Purpose, signature, callers, methods — plus an `at a glance` block (definition, top callers, tests, risk). |
 | "find code like X" | `reliary_similar(name="X")` | Near-clone detection. |
 
+Every tool response ends with a freshness stamp `[idx:xxxxxxxx]`. The stamp changes only when the index is rebuilt or a file is reindexed — it is stable across reads and JIT builds. If you see the same symbol with two different stamps, the second read is fresher; if you edited a file and the stamp did not change, the index may be stale (run `reliary reindex-file <path>` or `reliary trust .`).
+
 **Do not call tools that are not in the tool list above.** The menu exposes 8 tools (`search`, `find_references`, `goto_def` [deprecated], `call_graph`, `list_methods`, `find_dead_code`, `describe`, `similar`). Specialist research variants exist as dispatch targets but are not listed — do not guess their names.
+
+## Efficiency
+
+- **Stop when answered.** If a tool result already answers the question, answer immediately. Do not call another tool to confirm what you were just told.
+- **Prefer one call over several.** `find_references` alone answers most questions via its modes (`def_only`, `usage_only`, `methods`, `dead_only`). Reach for `describe`/`call_graph` only when the question needs their specific output.
+- **Cite items, skip prose.** When the question asks for a list (callers, methods, fields, dead code), answer with `name at file:line` per item. Add descriptions only if the question asks what something does.
+- **Do not re-query with a different spelling.** If a symbol lookup returns "no matches", use the closest-symbols suggestion from the result instead of searching again.
 
 ## When NOT to use reliary
 
@@ -36,11 +46,13 @@ Before any `reliary_*` query, the repo must be indexed. Run `reliary trust <path
 
 Deterministic claim verification (F1 = how many model claims `symbol at file:line` verify against the index; 4 seeds 42/17/123/456 on a reliary corpus snapshot; repro in README):
 
-| Backend | F1 | Precision | Billed | Dead-ends | Wall |
+| Backend | F1 | Precision | Billed | Dead-ends | Wall (median) |
 |---------|----|-----------|--------|-----------|------|
-| reliary8 | **0.642** | **0.986** | **9,574** | **0.0** | fastest |
-| altbackend | 0.299 | 0.539 | 39,938 | 5.0 | — |
-| grep | 0.686 | 0.904 | 61,322 | 2.2 | — |
+| reliary8 | **0.809** | **0.835** | **24,143** | **0.0** | 43s |
+| altbackend | 0.346 | 0.397 | 24,657 | 4.2 | 41s |
+| grep | 0.414 | 0.511 | 35,180 | 0.0 | 43s |
+
+Wall is provider-latency bound (~90% cache hit on all three conditions); the spread is within noise. reliary's edge is F1 (2× grep, 2.3× altbackend) at the lowest billed cost and zero dead-ends. A prompt-parity ablation (condition `M`, ~120-word minimal prompt vs A's ~300-word shipped prompt) scored F1 0.605 — the tool contributes the majority of the gap.
 
 ## Single-call vs multi-call
 
@@ -87,7 +99,7 @@ reliary_find_references(name="classify_structural", usage_only=true)
 - `reliary_similar` — near-clone detection
 
 **File queries**:
-- `reliary_search` — BM25 file search (never returns empty)
+- `reliary_search` — BM25 file search, definition-first ranking (never returns empty)
 
 ## Compressing tool output
 

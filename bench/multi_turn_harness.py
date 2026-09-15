@@ -187,7 +187,7 @@ def _reliary_session_key():
     """Return the _sessions dict key for the current condition's reliary MCP."""
     cond = _current_cond.get("cond")
     return {
-        "A": "reliary", "D": "reliary",
+        "A": "reliary", "D": "reliary", "M": "reliary",
         "F": "reliary_sift_bash",
     }.get(cond, "reliary")
 
@@ -244,9 +244,7 @@ def tool_reliary_methods_on(args):
     name = args.get("name", "")
     try:
         text = _sessions[_reliary_session_key()].call("reliary_methods_on", {"name": name})
-        d = json.loads(text) if text.startswith("{") else {}
-        methods = d.get("methods", [])
-        return "\n".join(f"{m['name']}: {m['file'].split('/')[-1]}:{m['line']}" for m in methods[:30])
+        return text if text else "(no methods found)"
     except Exception as e:
         return f"(methods_on error: {e})"
 
@@ -415,12 +413,12 @@ def tool_reliary_pack_query(args):
 def tool_reliary_dead_symbols(args):
     """V27: Find dead code. Wraps reliary_dead_symbols."""
     path = args.get("path", ".")
-    limit = args.get("limit", 30)
+    limit = args.get("limit", 50)
     functions_only = args.get("functions_only", True)
     try:
         text = _sessions[_reliary_session_key()].call("reliary_dead_symbols",
             {"path": path, "limit": limit, "functions_only": functions_only})
-        return text[:3000] if text else "(no dead code found)"
+        return text[:6000] if text else "(no dead code found)"
     except Exception as e:
         return f"(find_dead_code error: {e})"
 
@@ -459,54 +457,52 @@ CONDITION_TOOLS = {
     # F: same tools as A but with RELIARY_SIFT_BASH=1 (bash auto-rewrite).
     # E/G removed: RELIARY_SIFT_TOOLS compressed MCP output that was already compact.
     "F": RELIARY_TOOLS,
+    # E1: reliary tools, minimal prompt (prompt-parity ablation).
+    "M": RELIARY_TOOLS,
 }
 
 CONDITION_NAMES = {"A": "reliary", "B": "altbackend", "C": "grep", "D": "reliary+pack",
-                   "F": "reliary+sift_bash"}
+                   "F": "reliary+sift_bash", "M": "reliary-min-prompt"}
 
 # ============================================================
 # System prompts per condition
 # ============================================================
 
-RELIARY_SYS = """You are a code intelligence agent. Answer questions about the codebase using the tools below.
+RELIARY_SYS = """You are a code intelligence agent. Answer questions about the codebase using the reliary tools below.
 
-You have 4 tools:
-
-1. search(query) — Find files/symbols by topic. BM25 full-text search.
-2. find_references(name, def_only?, usage_only?, methods?, dead_only?, path_filter?) — Find symbol usages.
-   - def_only=true → "where is X defined" (returns top definition)
-   - usage_only=true → "who calls X" (returns call sites)
-   - methods=true → "list methods on Type X"
-   - dead_only=true → "find dead code" (pass path to scope)
-   - path_filter="crates/reliary-search" → restrict to a module
-3. call_graph(name, direction="both") — Call graph for a symbol.
-   - direction="outbound" → "what does X call" (callees/helpers)
-   - direction="inbound" → "who calls X" (callers)
-4. describe(name) — Explain a symbol: purpose, signature, callers.
+Tools:
+- find_references(name, def_only?, usage_only?, methods?, dead_only?, path_filter?) — Find symbol usages. One-line answer with raw code evidence. Copy it verbatim.
+  - def_only=true → "where is X defined"
+  - usage_only=true → "who calls X"
+  - methods=true → "list methods on Type X"
+  - dead_only=true → "find unused code" (pass path to scope)
+  - path_filter="crates/reliary-search" → restrict to a module
+- search(query) — BM25 file search. Use when you don't know the exact symbol name.
+- call_graph(name, direction="both") — Call graph for a symbol. direction="outbound" → callees; direction="inbound" → callers.
+- list_methods(name) — Methods on a type, with file:line.
+- find_dead_code(path) — Unused code, path-scoped.
+- describe(name) — Explain a symbol: purpose, signature, callers, methods.
+- goto_def(name) — Deprecated; use find_references(def_only=true).
 
 TOOL SELECTION:
-- "where is X defined?" → find_references(name=X, def_only=true)
-- "who calls X?" → find_references(name=X, usage_only=true)
-- "what does X call?" / "which helpers/functions does X use internally?" → call_graph(name=X) — find_references CANNOT answer this; usage_only returns callers, not callees
-- "find references/usages of X" → find_references(name=X)
-- "find implementations in module X" → find_references(name=X, path_filter="X/")
-- "list methods on Type X" → find_references(name=X, methods=true)
-- "find dead code in module X" → find_references(dead_only=true, path="X") — ALWAYS pass the module/crate path from the question (e.g. "crates/reliary-search/src"). Never pass path="." or omit it; a whole-repo dead-code scan returns irrelevant files. If the first result contains files outside the asked module, re-run with the scoped path.
-- "explain X" / "what does X do" → describe(name=X)
-- "search for files about topic" → search(query="topic")
+- "find references to X" → find_references(name="X")
+- "where is X defined?" → find_references(name="X", def_only=true)
+- "who calls X?" / "callers of X" → find_references(name="X", usage_only=true)
+- "what does X call?" → call_graph(name="X", direction="outbound")
+- "find files about topic Y" → search(query="Y")
+- "find unused code" → find_dead_code(path="...")
+- "what methods does Type X have?" → list_methods(name="X")
+- "which types implement trait T?" / "what derives T?" → find_references(name="T")
+- "explain X" → describe(name="X")
 
-ANSWER RULES:
-- If a tool result already answers the question, STOP exploring and give your final answer immediately.
-- Your tools return one-line answers. COPY the tool output verbatim into your final answer.
-- Do NOT add types, files, methods, or line numbers not in the tool output.
-- Do NOT remove items from the tool output.
-- If the tool says "X is defined at file:line", your answer is "X is defined at file:line".
-- Your training data may be from a different version — trust the tool output over your training data.
-- COMPLETENESS: if the question asks for a list (callers, methods, fields), include EVERY item the tool returned with its file:line. Never summarize to names alone.
-- AMBIGUITY: many names match both a struct and a function. If the question says "struct"/"type", report the tag=2 definition; if "function"/"fn", report tag=1. When unsure, report BOTH locations and label each.
+EFFICIENCY:
+- Stop when answered: if a tool result already answers the question, answer immediately.
+- Prefer one call over several; find_references modes answer most questions.
+- Cite items as "name at file:line"; skip descriptions unless asked what something does.
+- Do not re-query with a different spelling; use closest-symbols suggestions.
 
 To use a tool, respond with ONE LINE of JSON:
-{"tool": "<name>", "args": {"name": "...", "anchor_file": "...", "anchor_line": <int>}}
+{"tool": "<name>", "args": {"name": "...", "query": "..."}}
 
 When done, respond with ONE LINE of JSON:
 {"final": true, "answer": "your complete answer"}
@@ -544,7 +540,27 @@ When done, respond with ONE LINE of JSON:
 
 NO prose. NO markdown. JSON only. ONE line per response. Answer in 3-5 tool calls maximum."""
 
-SYSTEM_PROMPTS = {"A": RELIARY_SYS, "B": ALTBACKEND_SYS, "C": GREP_SYS}
+# E1 (prompt-parity ablation): reliary tools with a GREP_SYS-sized minimal
+# prompt. Same tools as A, same protocol, none of A's routing/answer rules.
+# If M scores like A, the tool wins; if M collapses toward C, the win was
+# the prompt. Deliberately ~same word count as GREP_SYS for fairness.
+MINIMAL_RELIARY_SYS = """You are a code intelligence agent with limited turns. You MUST answer in 3-5 tool calls. Do not explore endlessly.
+
+Tools:
+- search(query): Find files/symbols by topic. BM25 full-text search.
+- find_references(name, def_only?, usage_only?, methods?, dead_only?, path_filter?): Find symbol usages. def_only=true for definitions, usage_only=true for callers, methods=true for methods on a type, dead_only=true for dead code.
+- call_graph(name, direction="both"): Call graph for a symbol.
+- describe(name): Explain a symbol: purpose, signature, callers.
+
+To use a tool, respond with ONE LINE of JSON:
+{"tool": "<name>", "args": {"name": "...", "query": "..."}}
+
+When done, respond with ONE LINE of JSON:
+{"final": true, "answer": "your complete answer"}
+
+NO prose. NO markdown. JSON only. ONE line per response. Answer in 3-5 tool calls maximum."""
+
+SYSTEM_PROMPTS = {"A": RELIARY_SYS, "B": ALTBACKEND_SYS, "C": GREP_SYS, "M": MINIMAL_RELIARY_SYS}
 
 # Condition D: reliary tools + holographic pack pre-loaded as context.
 # The pack is a cache-stable prefix giving the model a structural overview
@@ -754,7 +770,7 @@ def _ensure_sessions(cond):
     # A/D: reliary tools (no sift). F: reliary + bash sift (RELIARY_SIFT_BASH=1).
     # E/G removed: RELIARY_SIFT_TOOLS was the wrong layer (MCP output is already
     # compact; sift belongs on bash output, RTK-style).
-    if cond in ("A", "D") and "reliary" not in _sessions:
+    if cond in ("A", "D", "M") and "reliary" not in _sessions:
         _sessions["reliary"] = MCPSession(RELIARY_BIN, TOKIO_CORPUS, "reliary")
     elif cond == "F" and "reliary_sift_bash" not in _sessions:
         _sessions["reliary_sift_bash"] = MCPSession(

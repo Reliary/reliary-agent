@@ -4,8 +4,8 @@
 
 import { spawn } from "child_process";
 
-const ALTBACKEND_BIN = "/home/user/.local/bin/altbackend-mcp";
-const PROJECT = "tmp-tokio-corpus-tokio-src";
+const ALTBACKEND_BIN = process.env.ALTBACKEND_BIN || `${process.env.HOME}/.local/bin/codebase-memory-mcp`;
+const PROJECT = process.env.ALTBACKEND_PROJECT || "tmp-rel8-corpus";
 
 let proc = null;
 let nextId = 1;

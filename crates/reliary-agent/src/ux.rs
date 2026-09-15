@@ -388,6 +388,10 @@ struct StatusData {
     index_files: i64,
     chronicle_events: i64,
     index_exists: bool,
+    /// V70 P7: age of the index in seconds (None if no index).
+    index_age_secs: Option<u64>,
+    /// V70 P7: watcher availability (env-gated at spawn in the MCP server).
+    watcher_enabled: bool,
 }
 
 fn status_data() -> StatusData {
@@ -412,18 +416,32 @@ fn status_data() -> StatusData {
         }
     }
 
+    let index_age_secs = std::fs::metadata(&index_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs());
+    let watcher_enabled = std::env::var("NO_RELIARY_WATCHER").is_err();
+
     StatusData {
         mode: crate::config::resolve_mode(Some(".")).as_str().to_string(),
         index_files,
         chronicle_events,
         index_exists,
+        index_age_secs,
+        watcher_enabled,
     }
 }
 
 fn status_json(d: &StatusData) -> Value {
     json!({
         "mode": d.mode,
-        "index": { "exists": d.index_exists, "files": d.index_files },
+        "index": {
+            "exists": d.index_exists,
+            "files": d.index_files,
+            "age_secs": d.index_age_secs,
+        },
+        "watcher": { "enabled": d.watcher_enabled },
         "chronicle": { "events": d.chronicle_events },
     })
 }
@@ -440,7 +458,16 @@ pub fn status(format: &str) {
     println!("  {}•{} Mode: {}", blue(), reset(), d.mode);
 
     if d.index_exists {
-        println!("  {}•{} Index: {} files indexed", blue(), reset(), d.index_files);
+        let age = match d.index_age_secs {
+            Some(s) if s < 60 => format!("{}s ago", s),
+            Some(s) if s < 3600 => format!("{}m ago", s / 60),
+            Some(s) if s < 86400 => format!("{}h ago", s / 3600),
+            Some(s) => format!("{}d ago", s / 86400),
+            None => "unknown".to_string(),
+        };
+        println!("  {}•{} Index: {} files indexed (updated {})", blue(), reset(), d.index_files, age);
+        println!("  {}•{} Watcher: {}", blue(), reset(),
+            if d.watcher_enabled { "enabled (auto-reindex on save)" } else { "disabled (NO_RELIARY_WATCHER=1)" });
         println!("  {}•{} Memory: {} chronicle events", blue(), reset(), d.chronicle_events);
     } else {
         println!("  {}•{} Index: {}-{} No index found", blue(), reset(), yellow(), reset());
@@ -546,7 +573,8 @@ pub fn format_risk(path: &str, risk: &str, format: &str) {
         } else {
             format!("{}✓{}", color(), reset())
         };
-        println!("  {} {} {}", icon, path, &risk[..60.min(risk.len())]);
+        // V74: floor_char_boundary — slicing at byte 60 panicked on multibyte text.
+        println!("  {} {} {}", icon, path, &risk[..risk.floor_char_boundary(60.min(risk.len()))]);
     }
 }
 

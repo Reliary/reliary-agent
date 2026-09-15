@@ -127,6 +127,16 @@ function handleToolCall(event) {
   if (SIFT_BASH && name === "bash" && RELIARY_BIN) {
     const cmd = input.command || "";
     if (!cmd || cmd.length < 20) return; // skip trivial commands
+    // V74: only wrap commands the compressor knows how to handle. Wrapping
+    // everything (vim, ssh, top, watch) broke interactive commands: their TTY
+    // is replaced by a pipe. Same program list as the Claude hook.
+    const prog = cmd.trim().split(/\s+/)[0].replace(/^.*\//, "");
+    const REWRITE = new Set(["git","cargo","pytest","npm","yarn","pnpm","ls","grep","rg",
+      "docker","kubectl","make","go","mvn","gradle","pip","ruff","mypy","tsc","eslint",
+      "jest","vitest","dotnet","composer","bundle"]);
+    if (!REWRITE.has(prog)) return;
+    // Shell chaining would break the single -c wrapping — leave as-is.
+    if (/[|&;<>()`$]/.test(cmd)) return;
     // V61: spawnSync (not execFileSync) — execFileSync THROWS on non-zero
     // exit and LOSES stdout (grep -q no-match = exit 1 with useful stdout),
     // and the catch let Pi re-execute the command (double execution of
@@ -137,6 +147,13 @@ function handleToolCall(event) {
     });
     if (result.error) {
       gateLog("debug", `sift spawn error: ${result.error.message ? result.error.message.slice(0, 60) : "error"}`);
+      // V74: a timeout means the command already RAN (spawnSync killed it
+      // mid-flight). Blocking prevents Pi from re-executing a side-effecting
+      // command. Only a genuinely-missing binary falls through to Pi.
+      if (result.error.code === "ETIMEDOUT") {
+        const partial = (result.stdout || "") + (result.stderr || "");
+        return { block: true, reason: partial.trim() || "(command timed out after 120s)" };
+      }
       return; // binary missing — let Pi run normally
     }
     if (result.status === 0) {

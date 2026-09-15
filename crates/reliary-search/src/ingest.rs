@@ -112,7 +112,6 @@ pub(crate) struct BlockRow {
     pub(crate) end_line: i32,
     pub(crate) indent: i32,
 }
-
 /// Output of detect_blocks: the list of blocks and the per-line block index.
 pub(crate) struct DetectBlocksOut {
     pub(crate) blocks: Vec<BlockRow>,
@@ -132,6 +131,78 @@ struct FileResult {
     #[allow(dead_code)]
     /// block_local_id for each line (indexed by line number).
     line_block: Vec<usize>,
+}
+
+/// V73: shared per-file phrase extraction, used by both trust-time ingest and
+/// reindex. Must stay identical to the trust pipeline (stem_identifier, keyword
+/// skip, is_def detection, block mapping) so a reindexed file produces the same
+/// phrase_occ entries as a full trust — the old reindex used `porter_stem`
+/// (stripping `-er`/`-al` from identifiers) and a flags=0 stub, silently
+/// degrading search and losing the definition boost until a full re-trust.
+///
+/// Returns (phrase -> locations, line_count). line_count is the file_stats
+/// token_len proxy used by BM25.
+pub fn extract_file_phrases(
+    content: &str,
+) -> (FxHashMap<String, Vec<(usize, u8, usize, bool, usize, u8)>>, i64) {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut phrase_locations: FxHashMap<String, Vec<(usize, u8, usize, bool, usize, u8)>> =
+        FxHashMap::default();
+
+    let mut line_tags: Vec<u8> = Vec::with_capacity(lines.len());
+    let mut lines_is_def: Vec<bool> = Vec::with_capacity(lines.len());
+    let mut defined_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
+    let mut brace_depth: i32 = 0;
+    for line in lines.iter() {
+        let (open_count, close_count) = count_braces(line);
+        let prev_depth = brace_depth;
+        brace_depth += open_count as i32 - close_count as i32;
+        if brace_depth < 0 { brace_depth = 0; }
+        let result = crate::structural::classify_structural(line, prev_depth, open_count > 0, false);
+        line_tags.push(result.tag);
+        // V74: carry the classifier's is_def BOOL verbatim (as the original
+        // inline ingest did). Inferring it from the tag is equivalent today
+        // (tags 1-2 are the only is_def returns) but silently diverges if a
+        // future tag gains is_def — the pipeline must not guess.
+        lines_is_def.push(result.is_def);
+        defined_names.push(result.defined_name.map(|s| s.to_string()));
+    }
+
+    let DetectBlocksOut { blocks: _, line_block } = detect_blocks(&lines);
+
+    for (li, line) in lines.iter().enumerate() {
+        let zone = crate::schema::classify_line(line);
+        let block_local = line_block[li];
+        let line_tag = line_tags[li];
+        let line_is_def = lines_is_def.get(li).copied().unwrap_or(false);
+        let line_def_name: Option<&str> = defined_names.get(li).and_then(|n| n.as_deref());
+        let code = crate::structural::strip_line_comment(line);
+        for (col, token) in scan_identifiers(code).into_iter().enumerate() {
+            let stemmed = stem_identifier(&token);
+            if crate::keywords::is_keyword(&stemmed) {
+                continue;
+            }
+            let id_tag = if col == 0 && line_tag >= 5 {
+                line_tag
+            } else if matches!(line_tag, 1 | 2 | 3 | 4) && line_def_name == Some(token.as_str()) {
+                line_tag
+            } else if line_tag >= 5 && line_def_name == Some(token.as_str()) {
+                line_tag
+            } else {
+                0
+            };
+            phrase_locations.entry(stemmed).or_default().push((
+                li,
+                zone,
+                col,
+                line_is_def,
+                block_local,
+                id_tag,
+            ));
+        }
+    }
+
+    (phrase_locations, lines.len() as i64)
 }
 
 /// Detect indentation-anchored block boundaries in a sequence of lines.

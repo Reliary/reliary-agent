@@ -84,13 +84,11 @@ impl Hypervector {
         let mut acc: Vec<i32> = Vec::with_capacity(64);
         for w in 0..words {
             // Count +1s in self word and other word
-            let self_pos = self.bits[w].count_ones() as i32;
-            let other_pos = other.bits[w].count_ones() as i32;
             // For each bit: self contributes +1 (set) or -1 (clear), same for other.
             // Sum per bit = (self_val + other_val). We need sign of sum.
-            // Total sum for word = (self_pos - (64-self_pos)) + (other_pos - (64-other_pos))
-            //                     = 2*(self_pos + other_pos) - 128
-            // But we need per-BIT sign, not per-word. Use accumulator array.
+            // Use a per-bit accumulator array (the per-word popcount sums
+            // below are only informative; the per-bit loop computes the real
+            // majority).
             acc.clear();
             acc.resize(64, 0i32);
             for b in 0..64 {

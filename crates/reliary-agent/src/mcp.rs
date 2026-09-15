@@ -80,6 +80,10 @@ fn result_cache_key(name: &str, args: &serde_json::Map<String, serde_json::Value
     use std::hash::{Hash, Hasher};
     name.hash(&mut hasher);
     serde_json::to_string(args).unwrap_or_default().hash(&mut hasher);
+    // M4: the index stamp is part of the key, so an external reindex
+    // (gate.js -> `reliary reindex-file`) changes every key and stale
+    // cached results can never be served after an edit.
+    index_stamp(db).hash(&mut hasher);
     if let Some(db) = db {
         if let Some(sym) = args.get("name").and_then(|v| v.as_str()) {
             if let Ok(Some(pid)) = reliary_search::symbol::phrase_id_for(db, sym) {
@@ -95,6 +99,32 @@ fn result_cache_get(key: u64) -> Option<String> {
     RESULT_CACHE.with(|c| c.borrow().as_ref().and_then(|m| m.get(&key).cloned()))
 }
 
+/// M4: deterministic index freshness stamp — the persisted reindex generation
+/// from the meta table, as 8 hex chars. Bumped by `reindex-file` (and thus by
+/// gate.js after every edit); stable across JIT builds and reads. Appended to
+/// every tool response so an agent can tell whether the data is current.
+/// V73: takes the caller's connection — the previous version called
+/// get_cached_db() while the caller held it checked out, opening a SECOND
+/// connection on every call and defeating the V54 warm-connection cache.
+fn index_stamp(db: Option<&rusqlite::Connection>) -> String {
+    let gen = db.map(|d| reliary_search::schema::index_gen(d)).unwrap_or(0);
+    format!("{:08x}", (gen as u64 & 0xffff_ffff) as u32)
+}
+
+/// M4: append the freshness stamp to the first text content item.
+/// V73: takes the caller's connection so it reuses the warm one.
+fn stamp_result(result: &mut DispatchResult, db: Option<&rusqlite::Connection>) {
+    if let DispatchResult::Success(ref mut json) = result {
+        if let Some(arr) = json.get_mut("content").and_then(|c| c.as_array_mut()) {
+            if let Some(item) = arr.first_mut() {
+                if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
+                    let stamped = format!("{}\n[idx:{}]", t, index_stamp(db));
+                    item["text"] = serde_json::Value::String(stamped);
+                }
+            }
+        }
+    }
+}
 /// Store a result text in the cache (clear-all at cap — simple and fine at
 /// this scale; sessions rarely exceed a few hundred distinct calls).
 fn result_cache_put(key: u64, text: String) {
@@ -149,6 +179,33 @@ pub fn get_cached_db() -> Option<rusqlite::Connection> {
 /// connection (and its prepare_cached statement cache).
 pub fn return_cached_db(conn: rusqlite::Connection) {
     CACHED_CONN.with(|c| *c.borrow_mut() = Some(conn));
+}
+
+/// V73: RAII guard that returns a checked-out cached connection to the
+/// thread-local slot on drop. Every `open_symbol_index` call site used to
+/// drop the connection (closing it), silently defeating the V54 warm cache.
+/// With this guard, early returns and `?` can't leak it either.
+pub struct CachedDbGuard(Option<rusqlite::Connection>);
+
+impl CachedDbGuard {
+    pub fn conn(&self) -> &rusqlite::Connection {
+        self.0.as_ref().expect("guard holds a connection")
+    }
+}
+
+impl std::ops::Deref for CachedDbGuard {
+    type Target = rusqlite::Connection;
+    fn deref(&self) -> &rusqlite::Connection {
+        self.conn()
+    }
+}
+
+impl Drop for CachedDbGuard {
+    fn drop(&mut self) {
+        if let Some(c) = self.0.take() {
+            return_cached_db(c);
+        }
+    }
 }
 
 /// Bug 76-78: canonicalize an agent-provided path relative to a workdir.
@@ -373,6 +430,8 @@ pub fn tool_definitions() -> &'static Vec<serde_json::Value> {
             // 7. DESCRIBE: Explain a symbol — purpose, signature, callers, methods, surprise facts. Absorbs pack, pack_query, plan, risk.
             serde_json::json!({ "name": "reliary_describe", "description": "Explain a symbol: its purpose, signature, location, callers, and methods. V37: methods=true → 'list methods on Type X' (replaces list_methods). dead_only=true → 'find dead code in module X' (replaces find_dead_code). Use for 'explain X', 'what does X do', 'list methods on X', 'find dead code in X'.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol to describe (e.g. 'block_on', 'Sleep', 'BufWriter')"}, "file": {"type": "string", "description": "File path to show structure of (alternative to name)"}, "context": {"type": "string", "description": "Optional filter: 'callers', 'signature', 'behavior'"}, "path": {"type": "string"}, "methods": {"type": "boolean", "default": false, "description": "V37: List methods on a type. Replaces list_methods."}, "dead_only": {"type": "boolean", "default": false, "description": "V37: Find dead code in a module. Replaces find_dead_code. Pass path to scope to a module."}, "limit": {"type": "integer", "default": 30, "description": "Max dead code items to return"}, "functions_only": {"type": "boolean", "default": true} } } }),
             serde_json::json!({ "name": "reliary_similar", "description": "Find functions structurally similar to the named function (near-clone detection via hypervector token-set similarity). Use for 'find duplicate code', 'similar functions to X', 'is this copied elsewhere'.", "inputSchema": { "type": "object", "properties": { "name": { "type": "string", "description": "Function name" }, "path": { "type": "string" }, "limit": { "type": "integer", "default": 8 } }, "required": ["name"] } }),
+            // 9. VERIFY: mechanically verify claims (symbol at file:line) against the index.
+            serde_json::json!({ "name": "reliary_verify", "description": "Mechanically verify claims about the codebase against the index. Pass text containing 'symbol at file.rs:line' claims; returns VERIFIED or FALSE with the actual location. Use before asserting a location, or to check a statement from another source.", "inputSchema": { "type": "object", "properties": { "text": { "type": "string", "description": "Claim text, e.g. 'classify_structural at structural.rs:31'" }, "path": { "type": "string" }, "tol": { "type": "integer", "default": 1, "description": "Line tolerance" } }, "required": ["text"] } }),
         ]
     })
 }
@@ -380,16 +439,27 @@ pub fn tool_definitions() -> &'static Vec<serde_json::Value> {
 pub fn tool_definitions_filtered() -> &'static Vec<serde_json::Value> {
     static FILTERED: OnceLock<Vec<serde_json::Value>> = OnceLock::new();
     FILTERED.get_or_init(|| {
+        // W7: default menu is 6 tools. `goto_def` is deprecated (superseded by
+        // find_references def_only) and `similar` is a niche near-clone tool —
+        // both stay dispatchable for backward compat but are hidden unless
+        // RELIARY_FULL_MENU=1 is set.
+        let full_menu = std::env::var("RELIARY_FULL_MENU").map(|v| v == "1").unwrap_or(false);
         let primary = PRIMARY_TOOLS.get_or_init(|| {
             // V27: 7-tool surface — see FIX_PLAN_V27_TOOL_CONSOLIDATION.md
             // V58: + reliary_similar (HDC near-clone detection) → 8 tools.
+            // W7: goto_def + similar hidden by default → 6 shown.
             ["reliary_search", "reliary_find_references", "reliary_goto_def",
              "reliary_call_graph", "reliary_list_methods", "reliary_find_dead_code",
-             "reliary_describe", "reliary_similar"].iter().copied().collect()
+             "reliary_describe", "reliary_similar", "reliary_verify"].iter().copied().collect()
         });
+        let hidden: std::collections::HashSet<&'static str> =
+            ["reliary_goto_def", "reliary_similar"].iter().copied().collect();
         tool_definitions()
             .iter()
-            .filter(|t| primary.contains(t.get("name").and_then(|n| n.as_str()).unwrap_or("")))
+            .filter(|t| {
+                let name = t.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                primary.contains(name) && (full_menu || !hidden.contains(name))
+            })
             .cloned()
             .collect()
     })
@@ -430,8 +500,8 @@ fn truncate_result(result: &mut DispatchResult, args: &serde_json::Map<String, s
     if is_no_truncate() { return; }
     let limit = truncate_limit();
     // V58 P6c: describe() gets a tighter budget — the model reads the answer
-    // line first; evidence beyond ~1500 chars is re-billed, rarely used.
-    let limit = if name == "reliary_describe" { limit.min(1500) } else { limit };
+    // line first; evidence beyond ~1200 chars is re-billed, rarely used.
+    let limit = if name == "reliary_describe" { limit.min(1200) } else { limit };
     // Per-tool override: if args.verbose=true, skip.
     if args.get("verbose").and_then(|v| v.as_bool()) == Some(true) { return; }
 
@@ -503,6 +573,33 @@ fn corpus_rel_path(path: &str) -> String {
     }
     path.rsplit('/').next().unwrap_or(path).to_string()
 }
+
+/// W4: one-line signature for a callee at (file, line). Reads from the
+/// file_meta cache; truncates to 100 chars; empty when unavailable.
+/// 1-indexed line (matches Callee.def_line display convention).
+fn callee_signature(file: &str, line1: i32) -> String {
+    let idx = line1.saturating_sub(1) as usize;
+    let raw = match reliary_search::file_meta::get(file) {
+        Some(meta) => match meta.lines.get(idx) {
+            Some(s) => s.trim().to_string(),
+            None => return String::new(),
+        },
+        None => return String::new(),
+    };
+    if raw.is_empty() || raw.starts_with("//") {
+        return String::new();
+    }
+    // Only emit signature-looking lines (def or opening brace line).
+    if !(raw.contains("fn ") || raw.contains("struct ") || raw.contains("enum ")
+        || raw.contains("trait ") || raw.contains("type ") || raw.contains("impl ")) {
+        return String::new();
+    }
+    if raw.len() > 100 {
+        let end = raw.floor_char_boundary(100);
+        return format!("{}...", &raw[..end]);
+    }
+    raw
+}
 /// M7: Require a non-empty 'name' parameter. Returns it or an error.
 pub fn require_name(args: &serde_json::Map<String, serde_json::Value>) -> Result<String, DispatchResult> {
     args.get("name").and_then(|v| v.as_str())
@@ -549,8 +646,7 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
             match get_cached_db() {
                 Some(db) => {
                     let results = reliary_search::search::search_fts5(&db, query, 10);
-                    return_cached_db(db);
-                    DispatchResult::Success(serde_json::json!({
+                        DispatchResult::Success(serde_json::json!({
                         "content": [{ "type": "text", "text": serde_json::to_string(&results.iter().map(|r| serde_json::json!({"file": r.file, "score": r.score})).collect::<Vec<_>>()).unwrap_or_default() }]
                     }))
                 }
@@ -575,8 +671,7 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
             match get_cached_db() {
                 Some(db) => {
                     let plan = reliary_search::plan::hologram_plan(&db, task);
-                    return_cached_db(db);
-                    DispatchResult::Success(serde_json::json!({
+                        DispatchResult::Success(serde_json::json!({
                         "content": [{ "type": "text", "text": serde_json::to_string(&plan).unwrap_or_default() }]
                     }))
                 }
@@ -639,7 +734,6 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                     }
                     Err(e) => err_db(format!("methods_on: {}", e)),
                 };
-                return_cached_db(db);
                 return result;
             }
             if dead_only {
@@ -695,11 +789,46 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                     }
                     Err(e) => err_db(format!("dead_symbols: {}", e)),
                 };
-                return_cached_db(db);
                 return result;
             }
             return dispatch_tool_call("reliary_pack_query", args);
-        }        "reliary_similar" => {
+        }        "reliary_verify" => {
+            // V70 P1: mechanical claim verification against the index.
+            let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            if text.is_empty() { return err_missing_param("text"); }
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+            let tol = args.get("tol").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
+            let (_db, _dir) = match open_symbol_index(path) {
+                Ok(t) => t,
+                Err(r) => return r,
+            };
+            let summary = crate::verify::verify_text(&_db, text, tol);
+            let text_out = if summary.claims.is_empty() {
+                "NO CLAIMS — nothing verifiable found in the input.\n".to_string()
+            } else {
+                let mut out = String::new();
+                for (c, v) in &summary.claims {
+                    let subject = if c.symbol.is_empty() {
+                        format!("{}:{}", c.file, c.line)
+                    } else {
+                        format!("{} at {}:{}", c.symbol, c.file, c.line)
+                    };
+                    match v {
+                        crate::verify::Verdict::Verified { .. } => out.push_str(&format!("VERIFIED {}\n", subject)),
+                        crate::verify::Verdict::False { actual } => {
+                            let actual_str = actual.as_ref()
+                                .map(|(f, l)| format!(" -> actual: {}:{}", f, l))
+                                .unwrap_or_else(|| " -> not found in index".to_string());
+                            out.push_str(&format!("FALSE {}{}\n", subject, actual_str));
+                        }
+                    }
+                }
+                out.push_str(&format!("\n{} verified, {} false\n", summary.verified, summary.falsified));
+                out
+            };
+            DispatchResult::Success(serde_json::json!({ "content": [{ "type": "text", "text": text_out }] }))
+        }
+        "reliary_similar" => {
             // V58 P2a: HDC near-clone detection.
             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
             if name.is_empty() { return err_missing_param("name"); }
@@ -718,7 +847,6 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                     .collect();
                 format!("Functions similar to {}: {}\n", name, items.join(", "))
             };
-            return_cached_db(db);
             DispatchResult::Success(serde_json::json!({
                 "content": [{ "type": "text", "text": text }]
             }))
@@ -782,7 +910,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 }
                 Err(e) => err_db(format!("boltzmann: {}", e)),
             };
-            return_cached_db(db);
+            let _ = &db;
             result
         }
         "reliary_risk" => {
@@ -978,14 +1106,12 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 Some(db) => {
                     match reliary_search::architecture::get_architecture(&db, &pp_str, limit) {
                         Ok(summary) => {
-                            return_cached_db(db);
-                            DispatchResult::Success(serde_json::json!({
+                                        DispatchResult::Success(serde_json::json!({
                                 "content": [{ "type": "text", "text": serde_json::to_string(&summary).unwrap_or_default() }]
                             }))
                         }
                         Err(e) => {
-                            return_cached_db(db);
-                            err_db(format!("architecture: {}", e))
+                                        err_db(format!("architecture: {}", e))
                         }
                     }
                 }
@@ -1014,8 +1140,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     let result = reliary_search::trace_path::trace_path(
                         &db, name, &af, al, direction, depth, &pp_str,
                     );
-                    return_cached_db(db);
-                    match result {
+                        match result {
                         Ok(r) => DispatchResult::Success(serde_json::json!({
                             "content": [{ "type": "text", "text": serde_json::to_string(&r).unwrap_or_default() }]
                         })),
@@ -1144,11 +1269,12 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             }
 
             if entry_lines.is_empty() {
-                return DispatchResult::Success(serde_json::json!({
-                    "content": [{ "type": "text", "text":
-                        format!("# Symbol not found\n\nNo pack entry matches '{}'. Try reliary_search first.\n", target_name)
-                    }]
-                }));
+                // V69: fall back to the index. A symbol with no pack entry may
+                // still be a real definition — re-dispatch as a definition
+                // lookup instead of dead-ending with "try search first".
+                let mut a = args.clone();
+                a.insert("def_only".into(), serde_json::Value::Bool(true));
+                return dispatch_tool_call("reliary_find_references", &a);
             }
 
             // Optional context filter
@@ -1171,10 +1297,51 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     callers_to_include.iter().take(5).cloned().collect::<Vec<_>>().join(", "))
             } else { String::new() };
 
+            // P2: append a one-line blast-radius summary when the symbol
+            // resolves in the index (describe is the pre-edit context tool).
+            // M5: also emit the composite "at a glance" block — definition,
+            // top callers with locations, and test files — collapsing the
+            // common 3-call workflow (find_references + call_graph + test-plan)
+            // into this single deterministic response. All facts already exist.
+            let (impact_line, glance_block) = match open_symbol_index(&sp_str) {
+                Ok((db2, _)) => match reliary_search::impact::compute_impact(&db2, target_name, &sp_str) {
+                    Ok(imp) if !imp.def_file.is_empty() => {
+                        let def_short = std::path::Path::new(&imp.def_file)
+                            .file_name()
+                            .map(|x| x.to_string_lossy().to_string())
+                            .unwrap_or_else(|| imp.def_file.clone());
+                        let mut g = format!("\n\nat a glance:\n- defined: {}:{}", def_short, imp.def_line);
+                        if !imp.callers.is_empty() {
+                            let cs: Vec<String> = imp.callers.iter().take(5).map(|(f, l)| {
+                                let b = std::path::Path::new(f).file_name()
+                                    .map(|x| x.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| f.clone());
+                                format!("{}:{}", b, l)
+                            }).collect();
+                            g.push_str(&format!("\n- callers ({}): {}", imp.callers.len(), cs.join(", ")));
+                        } else {
+                            g.push_str("\n- callers (0)");
+                        }
+                        if !imp.test_files.is_empty() {
+                            let ts: Vec<String> = imp.test_files.iter().take(4).map(|f| {
+                                std::path::Path::new(f).file_name()
+                                    .map(|x| x.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| f.clone())
+                            }).collect();
+                            g.push_str(&format!("\n- tests ({}): {}", imp.test_files.len(), ts.join(", ")));
+                        }
+                        g.push_str(&format!("\n- risk: {}", imp.risk.label()));
+                        (format!("\n{}", reliary_search::impact::summary_line(&imp)), g)
+                    }
+                    _ => (String::new(), String::new()),
+                },
+                Err(_) => (String::new(), String::new()),
+            };
+
             DispatchResult::Success(serde_json::json!({
                 "content": [{ "type": "text", "text":
-                    format!("# Pack Entry: {}{}\n\n```markdown\n{}\n```",
-                        target_name, header_note, rendered)
+                    format!("# Pack Entry: {}{}{}{}\n\n```markdown\n{}\n```",
+                        target_name, header_note, impact_line, glance_block, rendered)
                 }]
             }))
         }
@@ -1220,7 +1387,9 @@ fn disp_query_ast(name: &str, args: &serde_json::Map<String, serde_json::Value>)
 
 /// Helper: open the .reliary index at `path` and run a symbol query.
 /// Returns DispatchResult::Error if the path is unsafe or index missing.
-fn open_symbol_index(path: &str) -> Result<(rusqlite::Connection, String), DispatchResult> {
+/// V73: returns a CachedDbGuard — the connection auto-returns to the
+/// thread-local cache when the guard drops, so no call site can leak it.
+fn open_symbol_index(path: &str) -> Result<(CachedDbGuard, String), DispatchResult> {
     // V15: distinguish between a path-as-directory and a path-as-filter.
     // For dead_symbols/callgraph etc., path="io/util" is a module filter, NOT
     // a subdirectory to open a new index. We always use the CWD's .reliary/
@@ -1244,20 +1413,18 @@ fn open_symbol_index(path: &str) -> Result<(rusqlite::Connection, String), Dispa
     // Return dir as the SAFE-PATH result (for relative-path resolution)
     // but the DB is at CWD/.reliary/.
     let dir = sp.to_string_lossy().trim_end_matches('/').to_string();
-    Ok((db, dir))
+    Ok((CachedDbGuard(Some(db)), dir))
 }
 
 fn handle_symbol_tool(name: &str, args: &serde_json::Map<String, serde_json::Value>) -> DispatchResult {
     let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-    let (db, dir) = match open_symbol_index(path) {
+    let (db_guard, dir) = match open_symbol_index(path) {
         Ok(t) => t,
         Err(r) => return r,
     };
-    let result = handle_symbol_tool_with_db(name, args, &db, &dir);
-    // V54: hand the connection back to the thread-local cache so the next
-    // tool call reuses the warm connection (prepare_cached stays warm).
-    return_cached_db(db);
-    result
+    let db = db_guard.conn();
+    handle_symbol_tool_with_db(name, args, db, &dir)
+    // db_guard drops here -> connection returns to the thread-local cache.
 }
 
 fn handle_symbol_tool_with_db(
@@ -1897,9 +2064,15 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                             "none".to_string()
                         } else {
                             // V64: include callee def sites so answers can cite file:line.
+                            // W4: include a truncated one-line signature per callee so
+                            // "what do these helpers do" is answerable without N describe calls.
                             cg.callees.iter().take(10).map(|c| match (&c.def_file, &c.def_line) {
-                                (Some(f), Some(l)) => format!("{} ({}:{})", c.name,
-                                    std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.clone()), l + 1),
+                                (Some(f), Some(l)) => {
+                                    let f_short = std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.clone());
+                                    let sig = callee_signature(f, *l);
+                                    if sig.is_empty() { format!("{} ({}:{})", c.name, f_short, l + 1) }
+                                    else { format!("{} ({}:{}) {}", c.name, f_short, l + 1, sig) }
+                                }
                                 _ => c.name.clone(),
                             }).collect::<Vec<_>>().join(", ")
                         };
@@ -1907,8 +2080,12 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     } else {
                         // V40: One-line call_graph (non-summary)
                         let callees_str: Vec<String> = cg.callees.iter().take(10).map(|c| match (&c.def_file, &c.def_line) {
-                            (Some(f), Some(l)) => format!("{} ({}:{})", c.name,
-                                std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.clone()), l + 1),
+                            (Some(f), Some(l)) => {
+                                let f_short = std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.clone());
+                                let sig = callee_signature(f, *l);
+                                if sig.is_empty() { format!("{} ({}:{})", c.name, f_short, l + 1) }
+                                else { format!("{} ({}:{}) {}", c.name, f_short, l + 1, sig) }
+                            }
                             _ => c.name.clone(),
                         }).collect();
                         let callers_str: Vec<String> = cg.callers.iter().take(8).map(|c| format!("{}:{}", c.file.rsplit('/').next().unwrap_or("?"), c.line)).collect();
@@ -2047,7 +2224,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         let text = if items.is_empty() {
                             format!("No dead code found under {}.\n", dir_label)
                         } else {
-                            let lines: Vec<String> = items.iter().take(12)
+                            let lines: Vec<String> = items.iter().take(limit)
                                 .map(|(name, fp, line0, _col)| format!("{} at {}:{} (0 cross-file refs)", name,
                                     std::path::Path::new(fp).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| fp.clone()),
                                     line0 + 1))
@@ -2574,6 +2751,11 @@ let cacheable = std::env::var("RELIARY_RESULT_CACHE").map(|v| v != "0").unwrap_o
     // NOTE: sift compression is NOT applied here — MCP tool output is already compact.
     // Sift is for bash output only (via `reliary wrap` / RELIARY_SIFT_BASH=1).
     truncate_result(&mut result, args, name);
+    // M4: freshness stamp (after truncation so it always survives).
+    // V73: pass the connection we already have — never open a second one.
+    let stamp_db = get_cached_db();
+    stamp_result(&mut result, stamp_db.as_ref());
+    if let Some(conn) = stamp_db { return_cached_db(conn); }
     // V56: store the serialized text result for repeat calls.
     if cacheable {
         if let DispatchResult::Success(ref r) = result {
@@ -2590,7 +2772,15 @@ let cacheable = std::env::var("RELIARY_RESULT_CACHE").map(|v| v != "0").unwrap_o
     }
     match result {
         DispatchResult::Success(result) => respond(id, result),
-        DispatchResult::Error(code, message) => respond_error(id, code, &message),
+        DispatchResult::Error(code, message) => {
+            // M4: stamp errors too — AGENTS.md promises a stamp on every
+            // response, and agents use it to detect a stale index even when a
+            // lookup failed.
+            let stamp_db = get_cached_db();
+            let stamped = format!("{}\n[idx:{}]", message, index_stamp(stamp_db.as_ref()));
+            if let Some(conn) = stamp_db { return_cached_db(conn); }
+            respond_error(id, code, &stamped)
+        }
     }
 }
 
@@ -2844,8 +3034,9 @@ mod tests {
         assert!(tool_names.contains(&"reliary_list_methods"));
         assert!(tool_names.contains(&"reliary_find_dead_code"));
         assert!(tool_names.contains(&"reliary_describe"));
-        // V27: 7 tools; V58 adds reliary_similar → 8.
-        assert_eq!(tool_names.len(), 8, "expected 8 tools, got {}: {:?}", tool_names.len(), tool_names);
+        assert!(tool_names.contains(&"reliary_verify"));
+        // V27: 7 tools; V58 adds reliary_similar → 8; V70 P1 adds verify → 9.
+        assert_eq!(tool_names.len(), 9, "expected 9 tools, got {}: {:?}", tool_names.len(), tool_names);
         assert!(tool_names.contains(&"reliary_similar"));
     }
 

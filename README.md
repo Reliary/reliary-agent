@@ -47,7 +47,7 @@ For automatic interception (no manual prefix), set `RELIARY_SIFT_BASH=1` and ins
 | Tool | What it returns |
 |------|----------------|
 | `reliary_find_references` | Single entry point for all symbol questions. Modes: `def_only=true` → "where is X defined"; `usage_only=true` → "who calls X"; `methods=true` → "list methods on X"; `dead_only=true` (+`path`) → "find dead code"; `path_filter='io/util/'` → scope to a module; no params → general references. One-line answer with raw code evidence. |
-| `reliary_search` | BM25 file search with never-empty fallback (closest files by vocabulary similarity). |
+| `reliary_search` | BM25 file search: definition-first ranking, never-empty fallback (closest files by vocabulary similarity). |
 | `reliary_goto_def` | Deprecated — use `reliary_find_references(name=X, def_only=true)`. Still works. |
 | `reliary_call_graph` | Callers + callees with source. `direction=inbound/outbound/both`, `depth` (entry points auto-expand). |
 | `reliary_list_methods` | Methods on a type with file:line. Alias of the same handler. |
@@ -61,20 +61,23 @@ Universal text compressor that works on ANY command output. No per-command filte
 
 ## Benchmarks
 
-Deterministic claim-verification bench (10 questions on a reliary corpus snapshot, deepseek-v4-flash, 4 seeds 42/17/123/456, result file `bench/results/v64_final_3way.jsonl`):
+Deterministic claim-verification bench (10 questions on a reliary corpus snapshot, deepseek-v4-flash, 4 seeds 42/17/123/456, result file `bench/results/v70_3way.jsonl`):
 
 | Metric | Reliary (A) | Altbackend (B) | Grep (C) |
 |--------|-------------|----------------|----------|
-| F1 (claim-weighted) | **0.642** | 0.299 | 0.686 |
-| Precision | **0.986** | 0.539 | 0.904 |
-| Recall | 0.476 | 0.208 | **0.554** |
-| Keyword score /30 | **24.0** | 23.5 | 23.5 |
-| Billed cost | **9,574** | 39,938 | 61,322 |
-| Dead-ends | **0.0** | 5.0 | 2.2 |
-| Tool calls | **11.8** | 31.5 | 26.8 |
-| Tool bytes | **3,374** | 26,239 | 66,227 |
+| F1 (claim-weighted) | **0.809** | 0.346 | 0.414 |
+| Precision | **0.835** | 0.397 | 0.511 |
+| Recall | **0.785** | 0.308 | 0.355 |
+| Keyword score /30 | 26.8 | 25.5 | **27.2** |
+| Billed cost | **24,143** | 24,657 | 35,180 |
+| Dead-ends | **0.0** | 4.2 | 0.0 |
+| Tool calls | 18.2 | 19.8 | **15.5** |
+| Tool bytes | **8.1K** | 16.0K | 32.5K |
+| Wall (median) | 43s | 41s | 43s |
 
-Every model claim (`symbol at file:line`) is verified mechanically against the index — no LLM judge. Repro: `python3 bench/run_snapshot_bench.py --bin target/release/reliary --corpus /tmp/rel8-corpus --conds A,B,C --seeds 42 17 123 456` then `python3 bench/deterministic_verify.py --input bench/results/v64_final_3way.jsonl --corpus /tmp/rel8-corpus`.
+Every model claim (`symbol at file:line`) is verified mechanically against the index — no LLM judge. Wall is provider-latency bound (~90% cache hit on all three); the three conditions are within noise of each other. Repro: `python3 bench/run_snapshot_bench.py --bin target/release/reliary --corpus /tmp/rel8-corpus --conds A,B,C --seeds 42 17 123 456` then `python3 bench/deterministic_verify.py --input bench/results/v70_3way.jsonl --corpus /tmp/rel8-corpus`.
+
+Prompt-fairness disclosure: condition A receives the shipped routing prompt (~300 words); B/C receive ~100-word prompts. An ablation (`M`, minimal ~120-word prompt) scored F1 0.605 vs A's 0.795 — the tool contributes most of the gap, the routing prompt the remainder. See `docs/plans/V70_TELEPATHY.md`.
 
 Full reproduction: `python3 bench/long_session_bench.py --conditions A,C --seeds 42 17`
 

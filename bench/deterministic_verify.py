@@ -50,6 +50,10 @@ PAREN_FILE_LINE = re.compile(r"\(([A-Za-z0-9_./-]+\.rs):(\d+)\)")
 FILE_AT_LINES = re.compile(
     r"([A-Za-z0-9_./-]+\.rs)\s+(?:at\s+)?lines?\s+(\d+)(?:\s*,\s*(\d+))*"
 )
+# parenthesized line list: "file.rs (lines 8, 56 in fn ...)" / "file.rs (line 19)"
+FILE_PAREN_LINES = re.compile(
+    r"([A-Za-z0-9_./-]+\.rs)\s*\(\s*lines?\s+(\d+(?:\s*,\s*\d+)*)"
+)
 # "defined in src/index/search.rs at line 154" (symbol-at + in)
 SYM_IN_FILE_LINE = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)\s+(?:is\s+)?defined\s+in\s+"
@@ -87,6 +91,11 @@ def extract_facts(text):
         for extra in m.groups()[2:]:
             if extra:
                 facts.add(("", os.path.basename(path), int(extra)))
+    # "file.rs (lines 8, 56 in fn ...)" / "file.rs (line 19)"
+    for m in FILE_PAREN_LINES.finditer(text):
+        path = m.group(1)
+        for n in re.findall(r"\d+", m.group(2)):
+            facts.add(("", os.path.basename(path), int(n)))
     return facts
 
 

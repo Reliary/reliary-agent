@@ -354,6 +354,16 @@ pub fn ensure_occurrence_for_phrase(
 
             let lines: Vec<&str> = content.lines().collect();
 
+            // V73: ensure blocks exist for this file BEFORE reading block
+            // ranges. Previously the range query ran against a possibly-empty
+            // block table, so every JIT-built occurrence got block_id=0 —
+            // permanently breaking block-bag similarity for phrases first
+            // resolved via callgraph/type_flow. ensure_blocks_for_file_with_content
+            // is SAVEPOINT-aware, so it nests safely inside our BEGIN IMMEDIATE.
+            if let Err(e) = crate::lazy_tables::ensure_blocks_for_file_with_content(db, *file_id, &content) {
+                eprintln!("[lazy_occurrence] ensure_blocks failed for file_id={}: {}", file_id, e);
+            }
+
             // V54: batch-load block ranges for this file ONCE — binary search per
             // line instead of one SQL round-trip per matching token.
             let block_ranges: Vec<(i64, i32, i32)> = {
@@ -436,7 +446,10 @@ pub fn ensure_occurrence_for_phrase(
     // forever on this connection).
     match result {
         Ok(total) => {
-            db.execute_batch("COMMIT")?;
+            if let Err(e) = db.execute_batch("COMMIT") {
+                let _ = db.execute_batch("ROLLBACK");
+                return Err(e);
+            }
             if total > 0 { bump_phrase_gen(db, phrase_id); }
             Ok(total)
         }
@@ -558,9 +571,12 @@ fn ensure_occurrence_for_file_impl(
 
     let lines: Vec<&str> = content.lines().collect();
 
-    // Pre-compute line_tags and is_def flags (brace-depth tracking).
+    // Pre-compute line_tags and DEFINED NAMES (brace-depth tracking).
+    // V73: capture the defined name per line — marking every token on a def
+    // line as is_def=1 made return-type/parameter identifiers look like
+    // definitions (the V59 bug), and this path was missed by that fix.
     let mut line_tags: Vec<u8> = Vec::with_capacity(lines.len());
-    let mut lines_is_def: Vec<bool> = Vec::with_capacity(lines.len());
+    let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
     let mut brace_depth: i32 = 0;
     for line in &lines {
         let (open_count, close_count) = crate::ingest::count_braces(line);
@@ -569,7 +585,7 @@ fn ensure_occurrence_for_file_impl(
         if brace_depth < 0 { brace_depth = 0; }
         let result = crate::structural::classify_structural(line, prev_depth, open_count > 0, false);
         line_tags.push(result.tag);
-        lines_is_def.push(result.is_def);
+        line_def_names.push(result.defined_name.map(|s| s.to_string()));
     }
 
     // Single INSERT statement, reused for every token.
@@ -627,8 +643,7 @@ fn ensure_occurrence_for_file_impl(
 
         for (li, line) in lines.iter().enumerate() {
             let line_tag = line_tags.get(li).copied().unwrap_or(0);
-            let line_is_def = lines_is_def.get(li).copied().unwrap_or(false);
-            let is_def_int = if line_is_def { 1 } else { 0 };
+            let line_def_name = line_def_names.get(li).cloned().flatten();
 
             // Use pre-built block_id lookup (O(1) instead of per-line SQL).
             let block_id: i64 = *block_ids.get(li).unwrap_or(&0);
@@ -665,8 +680,20 @@ fn ensure_occurrence_for_file_impl(
                     }
                 };
 
-                // Add to batch instead of executing immediately.
-                batch.push((phrase_id, file_id, li as i32, col as i32, is_def_int, block_id, line_tag as i64));
+                // V73: per-token definition flag — only the token that IS the
+                // defined name gets is_def/tag; other identifiers on the same
+                // line stay usages.
+                let is_def_int = if matches!(line_tag, 1 | 2 | 3 | 4 | 5 | 6)
+                    && line_def_name.as_deref() == Some(token.as_str())
+                {
+                    1
+                } else if col == 0 && line_tag >= 5 {
+                    1
+                } else {
+                    0
+                };
+                let tag = if is_def_int == 1 { line_tag as i64 } else { 0 };
+                batch.push((phrase_id, file_id, li as i32, col as i32, is_def_int, block_id, tag));
                 total += 1;
 
                 // Flush batch every 500 rows.
@@ -689,6 +716,7 @@ fn ensure_occurrence_for_file_impl(
         Ok(total) => {
             if let Err(e) = db.execute_batch("COMMIT") {
                 eprintln!("[lazy_occurrence] COMMIT failed for file_id={}: {}", file_id, e);
+                let _ = db.execute_batch("ROLLBACK");
                 return Err(e);
             }
             if total > 0 { invalidate_all_phrase_gens(); }
@@ -784,7 +812,7 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
     let lines: Vec<&str> = content.lines().collect();
 
     let mut line_tags: Vec<u8> = Vec::with_capacity(lines.len());
-    let mut lines_is_def: Vec<bool> = Vec::with_capacity(lines.len());
+    let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
     let mut brace_depth: i32 = 0;
     for line in &lines {
         let (open_count, close_count) = crate::ingest::count_braces(line);
@@ -793,7 +821,7 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
         if brace_depth < 0 { brace_depth = 0; }
         let result = crate::structural::classify_structural(line, prev_depth, open_count > 0, false);
         line_tags.push(result.tag);
-        lines_is_def.push(result.is_def);
+        line_def_names.push(result.defined_name.map(|s| s.to_string()));
     }
 
     let mut stmt = db.prepare_cached(
@@ -843,8 +871,7 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
 
         for (li, line) in lines.iter().enumerate() {
             let line_tag = line_tags.get(li).copied().unwrap_or(0);
-            let line_is_def = lines_is_def.get(li).copied().unwrap_or(false);
-            let is_def_int = if line_is_def { 1 } else { 0 };
+            let line_def_name = line_def_names.get(li).cloned().flatten();
 
             // P4-3: use pre-built block_ids array (hoisted out of the loop).
             let block_id = block_ids.get(li).copied().unwrap_or(0);
@@ -880,7 +907,18 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
 
                 let col_idx = col as i32;
                 let line_no = li as i32;
-                stmt.execute(params![phrase_id, file_id, line_no, col_idx, is_def_int, block_id, line_tag as i64])?;
+                // V73: only the token that IS the defined name gets is_def/tag.
+                let is_def_int = if matches!(line_tag, 1 | 2 | 3 | 4 | 5 | 6)
+                    && line_def_name.as_deref() == Some(token.as_str())
+                {
+                    1
+                } else if col == 0 && line_tag >= 5 {
+                    1
+                } else {
+                    0
+                };
+                let tag = if is_def_int == 1 { line_tag as i64 } else { 0 };
+                stmt.execute(params![phrase_id, file_id, line_no, col_idx, is_def_int, block_id, tag])?;
                 total += 1;
             }
         }
@@ -891,7 +929,10 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
     // never left inside an open write transaction.
     match result {
         Ok(total) => {
-            db.execute_batch("COMMIT")?;
+            if let Err(e) = db.execute_batch("COMMIT") {
+                let _ = db.execute_batch("ROLLBACK");
+                return Err(e);
+            }
             if total > 0 { invalidate_all_phrase_gens(); }
             Ok(total)
         }

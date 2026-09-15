@@ -58,7 +58,7 @@ check_execute() {
         return
     fi
     local cmd
-    cmd=$(echo "$modified" | python3 -c "import sys, json; print(json.load(sys.stdin)['tool_input']['command'])" 2>/dev/null)
+    cmd=$(echo "$modified" | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',d).get('updatedInput',d.get('tool_input',{})).get('command',''))" 2>/dev/null)
     local out
     out=$(bash -c "$cmd" 2>&1)
     if [[ "$out" == *"$must_contain"* ]]; then
@@ -72,31 +72,31 @@ check_execute() {
 
 echo "=== Phase 1: Rewrite decisions ==="
 check_rewrite "git status -> wrap" \
-    '{"tool_name":"bash","tool_input":{"command":"git status"}}' \
+    '{"tool_name":"Bash","tool_input":{"command":"git status"}}' \
     "wrap bash -c 'git status'"
 check_rewrite "cargo test -> wrap" \
-    '{"tool_name":"bash","tool_input":{"command":"cargo test"}}' \
+    '{"tool_name":"Bash","tool_input":{"command":"cargo test"}}' \
     "wrap bash -c 'cargo test'"
 check_rewrite "pytest -v -> wrap" \
-    '{"tool_name":"bash","tool_input":{"command":"pytest -v tests/"}}' \
+    '{"tool_name":"Bash","tool_input":{"command":"pytest -v tests/"}}' \
     "wrap bash -c 'pytest -v tests/'"
 check_rewrite "ls -la -> wrap" \
-    '{"tool_name":"bash","tool_input":{"command":"ls -la"}}' \
+    '{"tool_name":"Bash","tool_input":{"command":"ls -la"}}' \
     "wrap bash -c 'ls -la'"
 check_rewrite "go test -> wrap" \
-    '{"tool_name":"bash","tool_input":{"command":"go test ./..."}}' \
+    '{"tool_name":"Bash","tool_input":{"command":"go test ./..."}}' \
     "wrap bash -c 'go test ./...'"
 
 echo ""
 echo "=== Phase 2: Pass-through decisions ==="
 check_passthrough "echo hello (not in REWRITE_PROGRAMS)" \
-    '{"tool_name":"bash","tool_input":{"command":"echo hello"}}'
+    '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}'
 check_passthrough "shell chain (&&)" \
-    '{"tool_name":"bash","tool_input":{"command":"git status && ls"}}'
+    '{"tool_name":"Bash","tool_input":{"command":"git status && ls"}}'
 check_passthrough "shell chain (pipe)" \
-    '{"tool_name":"bash","tool_input":{"command":"git status | grep branch"}}'
+    '{"tool_name":"Bash","tool_input":{"command":"git status | grep branch"}}'
 check_passthrough "--no-sift override" \
-    '{"tool_name":"bash","tool_input":{"command":"git status --no-sift"}}'
+    '{"tool_name":"Bash","tool_input":{"command":"git status --no-sift"}}'
 check_passthrough "Read tool (not bash)" \
     '{"tool_name":"Read","tool_input":{"file":"foo.rs"}}'
 check_passthrough "Edit tool (not bash)" \
@@ -105,10 +105,10 @@ check_passthrough "Edit tool (not bash)" \
 echo ""
 echo "=== Phase 3: End-to-end execution ==="
 check_execute "git status through wrap" \
-    '{"tool_name":"bash","tool_input":{"command":"git -C $HOME/src/reliary8 status"}}' \
+    '{"tool_name":"Bash","tool_input":{"command":"git -C $HOME/src/reliary8 status"}}' \
     "reliary-compressed"
 check_execute "ls through wrap" \
-    '{"tool_name":"bash","tool_input":{"command":"ls -la $HOME/src/reliary8/hooks/"}}' \
+    '{"tool_name":"Bash","tool_input":{"command":"ls -la $HOME/src/reliary8/hooks/"}}' \
     "reliary-compressed"
 
 echo ""

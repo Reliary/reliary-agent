@@ -51,13 +51,30 @@ impl DeepSeekClient {
             "temperature": 0.2,
             "max_tokens": 4096,
         });
-        let resp = self
-            .client
-            .post("https://api.deepseek.com/chat/completions")
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .map_err(|e| format!("reqwest: {}", e))?;
+        // V74: retry transient failures (connection reset, 429, 5xx) three
+        // times with backoff — a single blip previously aborted the whole run.
+        let mut attempt = 0u32;
+        let resp = loop {
+            attempt += 1;
+            match self
+                .client
+                .post("https://api.deepseek.com/chat/completions")
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+            {
+                Ok(r) if (r.status().is_server_error() || r.status().as_u16() == 429) && attempt < 3 => {
+                    std::thread::sleep(std::time::Duration::from_millis(500 * attempt as u64));
+                    continue;
+                }
+                Ok(r) => break r,
+                Err(e) if attempt < 3 => {
+                    let _ = e;
+                    std::thread::sleep(std::time::Duration::from_millis(500 * attempt as u64));
+                }
+                Err(e) => return Err(format!("reqwest: {}", e)),
+            }
+        };
         let status = resp.status();
         let text = resp.text().map_err(|e| format!("read body: {}", e))?;
         if !status.is_success() {
@@ -143,6 +160,9 @@ pub fn dispatch(path: &str, name: &str, args: &Value) -> String {
         "dead_code" => dead_code_output(path, args["path"].as_str().unwrap_or(".")),
         "describe" => describe_output(path, &sym),
         "similar" => similar_output(path, &sym),
+        // V74: the edit tool is handled by the caller; report success so the
+        // model isn't told "(unknown tool: edit)" after a successful edit.
+        "edit" => "(edit applied)".to_string(),
         other => format!("(unknown tool: {})", other),
     }
 }
@@ -416,6 +436,9 @@ pub fn parse_tool_call_json(reply: &str) -> Option<(String, Value)> {
     // Match `{...}` that contains a "name" and "arguments"/"args".
     let start = body.find('{')?;
     let end = body.rfind('}')?;
+    // V74: a stray '}' before the first '{' made start > end and the slice
+    // panicked. Guard the range; nothing to parse in that case.
+    if start > end { return None; }
     let json_part = &body[start..=end];
     if let Ok(v) = serde_json::from_str::<Value>(json_part) {
         let name = v["name"].as_str()
@@ -444,7 +467,12 @@ fn parse_tool_call_table(reply: &str) -> Option<(String, Value)> {
             name = line.split("name=\"").nth(1)?.split('"').next()?.to_string();
         } else if line.contains("parameter name=\"") {
             let key = line.split("name=\"").nth(1)?.split('"').next()?.to_string();
-            let val = line.split("param").nth(1).unwrap_or("").trim_matches('|').trim().to_string();
+            // V74: value is the text after the closing `>` of the opening tag
+            // (or the remainder of the line after name="..."). The old split on
+            // "param" yielded `eter name="query"｜…`.
+            let val = line.split('>').nth(1).unwrap_or("")
+                .split("</parameter>").next().unwrap_or("")
+                .trim_matches('|').trim().to_string();
             args.insert(key, Value::String(val));
         }
     }
