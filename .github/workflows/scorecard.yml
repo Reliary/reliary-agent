@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '30 7 * * 1'
   push:
-    branches: [main, master]
+    branches: [main, master, master-rebuild]
 
 permissions:
   security-events: write
@@ -18,13 +18,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ossf/scorecard-action@08695b2b8d36f7b1b5d3c8de6a5d2ad3f4b76dd5
+      - uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a
         with:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
 
-      - uses: github/codeql-action/upload-sarif@4dd16135b69a47b7c6ec10b1c9b8b8b8b8b8b8b
+      - uses: github/codeql-action/upload-sarif@48ab28a6f5dbc2a99bf1e0131198dd8f1df78169
         if: always()
         with:
           sarif_file: results.sarif

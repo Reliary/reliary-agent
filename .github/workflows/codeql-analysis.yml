@@ -2,9 +2,9 @@ name: CodeQL
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, master-rebuild]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, master-rebuild]
   schedule:
     - cron: '30 8 * * 1'
 
@@ -24,11 +24,11 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@4dd16135b69a47b7c6ec10b1c9b8b8b8b8b8b8b
+        uses: github/codeql-action/init@48ab28a6f5dbc2a99bf1e0131198dd8f1df78169
         with:
           languages: ${{ matrix.language }}
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@4dd16135b69a47b7c6ec10b1c9b8b8b8b8b8b8b
+        uses: github/codeql-action/analyze@48ab28a6f5dbc2a99bf1e0131198dd8f1df78169
         with:
           category: /language:${{ matrix.language }}

@@ -2,9 +2,9 @@ name: Binary size
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, master-rebuild]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, master-rebuild]
 
 permissions:
   contents: read

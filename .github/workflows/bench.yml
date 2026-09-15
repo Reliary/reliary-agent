@@ -3,7 +3,7 @@ name: Bench
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches: [main, master, master-rebuild]
     paths:
       - 'crates/**'
       - 'bench/**'
