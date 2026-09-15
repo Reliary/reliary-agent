@@ -16,7 +16,7 @@ pub struct Hypervector {
 
 impl Hypervector {
     pub fn new(dims: usize) -> Self {
-        let words = (dims + 63) / 64;
+        let words = dims.div_ceil(64);
         Self { bits: vec![0u64; words], dims }
     }
 
@@ -91,16 +91,16 @@ impl Hypervector {
             // majority).
             acc.clear();
             acc.resize(64, 0i32);
-            for b in 0..64 {
+            for (b, slot) in acc.iter_mut().enumerate() {
                 let s = if (self.bits[w] >> b) & 1 == 1 { 1 } else { -1 };
                 let o = if (other.bits[w] >> b) & 1 == 1 { 1 } else { -1 };
-                acc[b] = s + o;
+                *slot = s + o;
             }
             // V58: majority INCLUDES the current self vote — acc[b] is
             // (self + other) ∈ {-2,0,2}; tie (0) keeps self's bit.
             let mut new_word = 0u64;
-            for b in 0..64 {
-                if acc[b] > 0 || (acc[b] == 0 && (self.bits[w] >> b) & 1 == 1) {
+            for (b, slot) in acc.iter().enumerate() {
+                if *slot > 0 || (*slot == 0 && (self.bits[w] >> b) & 1 == 1) {
                     new_word |= 1u64 << b;
                 }
             }
@@ -322,14 +322,14 @@ impl MemoryStore {
         let ones: Vec<i32> = {
             let mut acc = vec![0i32; dims];
             for t in &hvs {
-                for i in 0..dims {
-                    if t.get(i) == 1 { acc[i] += 1; }
+                for (i, slot) in acc.iter_mut().enumerate() {
+                    if t.get(i) == 1 { *slot += 1; }
                 }
             }
             acc
         };
-        for i in 0..dims {
-            if ones[i] * 2 > k as i32 { hv.set(i, 1); }
+        for (i, o) in ones.iter().enumerate() {
+            if *o * 2 > k as i32 { hv.set(i, 1); }
         }
         hv
     }

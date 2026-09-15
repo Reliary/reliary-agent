@@ -9,9 +9,9 @@
 
 use crate::brace_graph::{get_brace_graph, BraceNode};
 use crate::symbol::phrase_id_for;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use ahash::AHashMap;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 use parking_lot::Mutex;
 
 /// Cache: file_path → function-level stem profiles keyed by phrase_id.
@@ -41,10 +41,7 @@ pub fn build_function_profiles(db: &Connection, file_path: &str) -> Vec<Function
         }
     }
 
-    let profiles = match compute_profiles(db, file_path) {
-        Some(p) => p,
-        None => Vec::new(),
-    };
+    let profiles = compute_profiles(db, file_path).unwrap_or_default();
 
     let mut cache = profile_cache().lock();
     if cache.len() > 512 {
@@ -76,17 +73,15 @@ fn compute_profiles(db: &Connection, file_path: &str) -> Option<Vec<FunctionProf
             Ok(s) => s,
             Err(_) => return None,
         };
-        let mut rows = match stmt.query_map(
+        let rows = match stmt.query_map(
             rusqlite::params![file_path],
             |r| Ok((r.get::<_, i32>(0)?, r.get::<_, i64>(1)?)),
         ) {
             Ok(r) => r,
             Err(_) => return None,
         };
-        while let Some(result) = rows.next() {
-            if let Ok((line, pid)) = result {
-                all_stems.push((line, pid));
-            }
+        for (line, pid) in rows.flatten() {
+            all_stems.push((line, pid));
         }
     }
 
@@ -116,6 +111,7 @@ fn compute_profiles(db: &Connection, file_path: &str) -> Option<Vec<FunctionProf
 }
 
 /// Collect all phrase_ids appearing in a function's body, given the file path.
+#[allow(dead_code)]
 fn collect_stems_in_function(db: &Connection, file_path: &str, node: &BraceNode) -> FxHashSet<i64> {
     let mut stems = FxHashSet::default();
 
@@ -133,9 +129,7 @@ fn collect_stems_in_function(db: &Connection, file_path: &str, node: &BraceNode)
         Ok(r) => r,
         Err(_) => return stems,
     };
-    for pid in rows {
-        if let Ok(p) = pid { stems.insert(p); }
-    }
+    for p in rows.flatten() { stems.insert(p); }
 
     stems
 }

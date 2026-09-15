@@ -70,20 +70,3 @@ pub fn compress(text: &str) -> String {
 
     text.to_string()
 }
-
-// Re-export from sift/lib.rs for convenience
-fn classify_lines(text: &str) -> Vec<reliary_sift::ContentLine> {
-    text.lines().enumerate().map(|(i, l)| reliary_sift::ContentLine {
-        text: l.to_string(),
-        line_type: reliary_sift::classify_line(l),
-        index: i,
-    }).collect()
-}
-
-fn looks_like_content(lines: &[reliary_sift::ContentLine]) -> bool {
-    reliary_sift::looks_like_content(lines)
-}
-
-fn compress_lines(lines: Vec<reliary_sift::ContentLine>, aggressive: bool) -> Vec<String> {
-    reliary_sift::compress_content(lines, aggressive)
-}

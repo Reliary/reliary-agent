@@ -425,7 +425,7 @@ pub fn generate(index_path: &str, seed: u64) -> Value {
                         .trim_start_matches("impl ")
                         .trim_start_matches("std::default::Default for ")
                         .trim_start_matches("Default for ")
-                        .split(|c: char| c == '<' || c == ' ' || c == '{')
+                        .split(['<', ' ', '{'])
                         .next()
                         .unwrap_or("")
                         .trim();
@@ -437,7 +437,7 @@ pub fn generate(index_path: &str, seed: u64) -> Value {
                     for t2 in lines.iter().skip(i + 1).take(3) {
                         let t2t = t2.trim();
                         if let Some(rest) = t2t.strip_prefix("pub struct ").or_else(|| t2t.strip_prefix("struct ")) {
-                            let name = rest.split(|c: char| c == '<' || c == ' ' || c == '{').next().unwrap_or("").trim();
+                            let name = rest.split(['<', ' ', '{']).next().unwrap_or("").trim();
                             if is_ident(name) && seen.insert(name.to_lowercase()) {
                                 impls.push((name.to_string(), fp.clone(), i as i32));
                             }

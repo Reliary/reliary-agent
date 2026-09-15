@@ -90,7 +90,7 @@ impl ClassifierWeights {
     pub fn load(path: &str) -> std::io::Result<Self> {
         let content = fs::read_to_string(path)?;
         let v: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         let parse_floats = |key: &str| -> Vec<f32> {
             v[key].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect()
         };
@@ -142,7 +142,7 @@ impl ClassifierWeights {
 
     /// Classify expression subtype (only if EXPRESSION).
     pub fn predict_expr(&self, features: &[f32; 12]) -> Option<ExprLabel> {
-        if self.weights_expr.is_none() { return None; }
+        self.weights_expr.as_ref()?;
         let weights = self.weights_expr.as_ref().unwrap();
         let bias = self.bias_expr.as_ref().unwrap();
         let mean = self.mean_expr.as_ref().unwrap();
@@ -183,8 +183,8 @@ pub fn extract_features(line: &str, all_lines: &[&str], line_idx: usize) -> [f32
             }
         }
     }
-    let brace_depth = brace_depth.max(0).min(10) as f32;
-    let paren_depth = paren_depth.max(0).min(10) as f32;
+    let brace_depth = brace_depth.clamp(0, 10) as f32;
+    let paren_depth = paren_depth.clamp(0, 10) as f32;
 
     // 3-5. Punctuation counts on line.
     let mut brace_count = 0i32;
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_extract_features_basic() {
-        let lines = vec!["fn main() {", "    let x = 1;", "}"];
+        let lines = ["fn main() {", "    let x = 1;", "}"];
         let feats = extract_features("    let x = 1;", &lines.iter().map(|s| s.as_ref()).collect::<Vec<_>>(), 1);
         // Should have depth=1, indent_bucket=1, has_eq=1, etc.
         assert_eq!(feats[0], 1.0); // brace_depth
@@ -357,14 +357,14 @@ mod tests {
 
     #[test]
     fn test_extract_features_call() {
-        let lines = vec!["fn main() {", "    foo.bar(x);", "}"];
+        let lines = ["fn main() {", "    foo.bar(x);", "}"];
         let feats = extract_features("    foo.bar(x);", &lines.iter().map(|s| s.as_ref()).collect::<Vec<_>>(), 1);
         assert_eq!(feats[0], 1.0); // brace_depth
     }
 
     #[test]
     fn test_extract_features_comment() {
-        let lines = vec!["fn main() {", "    // hello world", "}"];
+        let lines = ["fn main() {", "    // hello world", "}"];
         let feats = extract_features("    // hello world", &lines.iter().map(|s| s.as_ref()).collect::<Vec<_>>(), 1);
         assert_eq!(feats[10], 1.0); // starts_comment
     }

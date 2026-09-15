@@ -5,6 +5,7 @@ use std::path::Path;
 
 /// Find (root, index_path, cache_path) by walking up from `start` looking for `.reliary/`.
 /// Returns None if no `.reliary/` directory found.
+#[allow(dead_code)]
 pub fn find_reliary_root(start: &str) -> Option<(String, String, String)> {
     let p = Path::new(start);
     let mut current: Option<&Path> = if p.is_file() || p.is_symlink() {
@@ -26,11 +27,13 @@ pub fn find_reliary_root(start: &str) -> Option<(String, String, String)> {
 }
 
 /// Get the workdir from start, defaulting to "." if no .reliary found.
+#[allow(dead_code)]
 pub fn find_workdir(start: &str) -> String {
     find_reliary_root(start).map(|(r, _, _)| r).unwrap_or_else(|| ".".to_string())
 }
 
 /// Strip the root prefix from a path to get the index-stored relative path.
+#[allow(dead_code)]
 pub fn relativize(root: &str, file: &str) -> String {
     file.strip_prefix(&format!("{}/", root))
         .or_else(|| file.strip_prefix(root))
@@ -41,7 +44,7 @@ pub fn relativize(root: &str, file: &str) -> String {
 /// Open or create the cache database at the given path.
 pub fn open_or_create(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
+        std::fs::create_dir_all(parent).ok(); // GUARDED: intentional — open() reports failure
     }
     reliary_core::open(path)
 }

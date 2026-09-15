@@ -100,7 +100,7 @@ pub fn compute_complexity_score(path: &str) -> Result<f32, String> {
 /// - quali (medium, simpler bodies): score ≈ 5.4 → Minimal
 /// - tokio (famous, similar score to quali): score ≈ 5.4 → Minimal
 ///   (we can't distinguish famous from private via index alone —
-///    the model's training data exposure is external knowledge)
+///   the model's training data exposure is external knowledge)
 pub fn gate_decision(score: f32) -> GateDecision {
     const HIGH_THRESHOLD: f32 = 6.0;
     const LOW_THRESHOLD: f32 = 4.0;
@@ -442,12 +442,12 @@ pub fn generate_pack_auto(path: &str) -> Result<String, String> {
     // C1: Open DB once, pass through to gate + generate.
     let conn = open_index(path)?;
     let decision = gate_decision_for(&conn, path)?;
-    let result = match decision {
+    
+    match decision {
         GateDecision::Skip => Ok(String::new()),
         GateDecision::Minimal => generate_pack_hotspot_with(&conn, path, PackFormat::L2L3, 15),
         GateDecision::Full => generate_pack_hotspot_with(&conn, path, PackFormat::L2L3, 50),
-    };
-    result
+    }
 }
 
 /// C9: Extract repeated open_index logic.
@@ -488,7 +488,7 @@ pub fn parse_pack_entries(pack: &str) -> Vec<PackEntry> {
                     body: std::mem::take(&mut current_body),
                 });
             }
-            current_name = Some(line[3..].split('/').next().unwrap_or("").trim().to_string());
+            current_name = Some(line.strip_prefix("///").unwrap_or(line).split('/').next().unwrap_or("").trim().to_string());
             current_header = line.to_string();
         } else if current_name.is_some() {
             if !current_body.is_empty() {
@@ -702,8 +702,8 @@ pub fn slice_pack_for_query(pack: &str, query: &str, top_k: usize) -> String {
     let max_expansion = 15usize.saturating_sub(top_k.min(15));
     for entry in &selected {
         for line in entry.body.lines() {
-            let refs_text = if line.starts_with("Cross-refs:") {
-                Some(line["Cross-refs:".len()..].trim())
+            let refs_text = if let Some(rest) = line.strip_prefix("Cross-refs:") {
+                Some(rest.trim())
             } else if line.starts_with("L4:") && line.contains("caller") {
                 // L4: Rename → update N caller(s): name1, name2, name3
                 if let Some(pos) = line.find(": ") {
@@ -1010,7 +1010,7 @@ fn extract_name_from_signature(sig: &str) -> String {
 
     // Find the first identifier-like token (up to (, <, :, {, space, =)
     let end = rest
-        .find(|c: char| c == '(' || c == '<' || c == ':' || c == '{' || c == ' ' || c == '=' || c == ';')
+        .find(['(', '<', ':', '{', ' ', '=', ';'])
         .unwrap_or(rest.len());
     let name = rest[..end].trim();
 
@@ -1264,10 +1264,10 @@ fn read_doc_comment(lines: &[String], def_line: i32) -> String {
         j = def_idx.saturating_sub(1);
         while j > 0 {
             let l = lines[j].trim();
-            if l.starts_with("///") {
-                doc_parts.insert(0, l[3..].trim().to_string());
-            } else if l.starts_with("//") {
-                doc_parts.insert(0, l[2..].trim().to_string());
+            if let Some(rest) = l.strip_prefix("///") {
+                doc_parts.insert(0, rest.trim().to_string());
+            } else if let Some(rest) = l.strip_prefix("//") {
+                doc_parts.insert(0, rest.trim().to_string());
             } else if l.starts_with('#') && !l.starts_with("#[") {
                 doc_parts.insert(0, l[1..].trim().to_string());
             } else if l.is_empty() {
@@ -1354,12 +1354,11 @@ fn is_noise_line(line: &str) -> bool {
     } else {
         trimmed
     };
-    if trimmed_for_return.starts_with("return ") {
-        let rest = &trimmed_for_return[7..];
+    if let Some(rest) = trimmed_for_return.strip_prefix("return ") {
         // `return;` or `return Some(x);` or `return None;` IS interesting if it's
         // a sentinel. Only filter the trivial `return <single_word>;` case.
-        if rest.ends_with(";") {
-            let inner = rest[..rest.len()-1].trim();
+        if let Some(inner) = rest.strip_suffix(";") {
+            let inner = inner.trim();
             if !inner.contains("(") && !inner.contains(".") && !inner.contains("[") {
                 // Single bare identifier return — likely noise
                 return true;
@@ -1469,7 +1468,7 @@ fn is_noise_line(line: &str) -> bool {
         return true;
     }
     if let Some(eq_pos) = trimmed.find('=') {
-        if eq_pos > 0 && trimmed[eq_pos+1..].trim().starts_with("\"") == false
+        if eq_pos > 0 && !trimmed[eq_pos+1..].trim().starts_with("\"")
             && trimmed.contains(".to_string(")
             && !trimmed.contains("unsafe ") && !trimmed.contains("transmute")
         {
@@ -1571,7 +1570,7 @@ fn extract_surprise_from_body(
 
     // Pattern: gate combination (AND vs OR)
     //   e.g., `if ent < threshold && ratio > max { return None; }`
-    if let Some(_) = regex_capture(r"if\s+\w+\s*[<>]=\s*\w+_threshold\s*[&|][&|]\s*\w+\s*[<>]=\s*\w+", body) {
+    if regex_capture(r"if\s+\w+\s*[<>]=\s*\w+_threshold\s*[&|][&|]\s*\w+\s*[<>]=\s*\w+", body).is_some() {
         if body.contains("&&") {
             add_surprise(&mut surprises, &mut seen,
                 "gates are AND-combined: ALL must fail for None return".to_string());
@@ -1891,7 +1890,7 @@ fn manual_capture_sentinel(text: &str) -> Option<String> {
         if let Some(ret_idx) = after.find("return") {
             let after_ret = &after[ret_idx + 6..];
             let end = after_ret
-                .find(|c: char| c == ';' || c == '}' || c == '\n')
+                .find([';', '}', '\n'])
                 .unwrap_or(after_ret.len());
             return Some(after_ret[..end].trim().to_string());
         }
@@ -1927,8 +1926,8 @@ fn manual_capture_skeleton_let(text: &str) -> Option<String> {
         let after_ident = after
             .trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
         let trimmed = after_ident.trim_start();
-        if trimmed.starts_with('=') {
-            let after_eq = trimmed[1..].trim_start();
+        if let Some(after_eq) = trimmed.strip_prefix('=') {
+            let after_eq = after_eq.trim_start();
             if let Some(sk_idx) = after_eq.find("skeleton(") {
                 let before = &after_eq[..sk_idx].trim();
                 if !before.is_empty() {
@@ -1998,7 +1997,7 @@ fn extract_condition(code: &str) -> Option<String> {
     let after = &code[if_pos + 3..];
     // Find the end of condition (opening brace or end of line)
     let end = after
-        .find(|c| c == '{' || c == '\n')
+        .find(['{', '\n'])
         .unwrap_or(after.len());
     Some(after[..end].trim().to_string())
 }
@@ -2006,7 +2005,7 @@ fn extract_condition(code: &str) -> Option<String> {
 fn extract_return_value(code: &str) -> Option<String> {
     let ret_pos = code.find("return")?;
     let after = &code[ret_pos + 6..];
-    let end = after.find(|c: char| c == ';' || c == '}').unwrap_or(after.len());
+    let end = after.find([';', '}']).unwrap_or(after.len());
     Some(after[..end].trim().to_string())
 }
 
@@ -2038,10 +2037,7 @@ fn build_cross_refs_from_index(
     symbols: &[Symbol],
 ) -> FxHashMap<String, Vec<String>> {
     // C3: Return empty map on error instead of panicking.
-    match build_cross_refs_inner(db, symbols) {
-        Ok(map) => map,
-        Err(_) => FxHashMap::default(),
-    }
+    build_cross_refs_inner(db, symbols).unwrap_or_default()
 }
 
 fn build_cross_refs_inner(
@@ -2266,8 +2262,7 @@ fn find_body_end(lines: &[String], start: usize, _base_indent: i32) -> usize {
         || stripped.starts_with("async def ")
     {
         let first_indent = first_line.len() - first_line.trim_start().len();
-        for i in (start + 1)..lines.len() {
-            let line = &lines[i];
+        for (i, line) in lines.iter().enumerate().skip(start + 1) {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with("#") {
                 continue;
@@ -2288,8 +2283,7 @@ fn find_body_end(lines: &[String], start: usize, _base_indent: i32) -> usize {
     // C-style: brace-matching
     let mut depth: i32 = 0;
     let mut seen_open = false;
-    for i in start..lines.len() {
-        let line = &lines[i];
+    for (i, line) in lines.iter().enumerate().skip(start) {
         let trimmed = line.trim();
 
         // Skip comments and strings (crude — doesn't handle multi-line strings)
@@ -2413,8 +2407,8 @@ fn expand_type_signature(signature: &str, body: &str) -> String {
         let trimmed = line.trim();
         if trimmed == "}" || trimmed.is_empty() { continue; }
         if is_enum {
-            let name = trimmed.split(|c: char| c == ',' || c == '{' || c == '(' || c == ':').next().unwrap_or("").trim().trim_end_matches(',');
-            if !name.is_empty() && name.len() > 1 && name.chars().next().map_or(false, |c| c.is_uppercase() || c == '_') {
+            let name = trimmed.split([',', '{', '(', ':']).next().unwrap_or("").trim().trim_end_matches(',');
+            if !name.is_empty() && name.len() > 1 && name.chars().next().is_some_and(|c| c.is_uppercase() || c == '_') {
                 names.push(name.to_string());
             }
         } else if is_struct {

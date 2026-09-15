@@ -16,9 +16,8 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use smallvec::SmallVec;
 
-use crate::brace_graph::{build_brace_graph, get_brace_graph};
-use crate::lazy_tables::ensure_blocks_for_file;
-use crate::symbol::{file_id_for, phrase_id_for};
+use crate::brace_graph::get_brace_graph;
+use crate::symbol::phrase_id_for;
 use crate::lazy_occurrence::ensure_occurrence_for_phrase;
 
 /// Universal keyword filter — these are NEVER callees.
@@ -185,7 +184,7 @@ fn find_function_body_recurse(
         // Child must start at or after anchor_line and contain anchor_line's general area.
         if child.start_line >= anchor_line && child.start_line <= anchor_line + 5 {
             // Prefer the smallest (deepest) child.
-            if best.map_or(true, |b| child.end_line - child.start_line < b.end_line - b.start_line) {
+            if best.is_none_or(|b| child.end_line - child.start_line < b.end_line - b.start_line) {
                 best = Some(child);
             }
         }
@@ -234,7 +233,7 @@ fn find_definition(db: &Connection, name: &str) -> Option<(String, i32)> {
         }
 
         if let Err(e) = ensure_occurrence_for_phrase(db, phrase_id) { eprintln!("[callgraph_v2] JIT occurrence build failed for phrase_id={}: {}", phrase_id, e); }
-        let mut stmt = if let Some(ref hint) = type_hint {
+        let mut stmt = if let Some(ref _hint) = type_hint {
             match db.prepare_cached(
                 "SELECT f.file_path, o.line, o.tag FROM occurrence o
                  JOIN file_map f ON f.id = o.file_id
@@ -656,8 +655,7 @@ pub fn build_call_graph_ext(
         if let Some(idx) = delegate_idx {
             let delegate_name = callees[idx].name.clone();
             let delegate_anchor = callees[idx].def_file.clone()
-                .zip(callees[idx].def_line)
-                .map(|(f, l)| (f, l as i32));
+                .zip(callees[idx].def_line);
             // Recursively get the delegate's callees.
             if let Ok(sub_cg) = build_call_graph(
                 db, &delegate_name, _path,
@@ -1150,9 +1148,10 @@ pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<Met
                         // Strip visibility prefix: `pub name: T`, `pub(crate) name: T`.
                         let mut toks = before.split_whitespace();
                         let first = toks.next().unwrap_or("");
-                        let name = if first == "pub" {
-                            toks.next().unwrap_or("")
-                        } else if first == "pub(crate)" || first == "pub(super)" {
+                        let name = if first == "pub"
+                            || first == "pub(crate)"
+                            || first == "pub(super)"
+                        {
                             toks.next().unwrap_or("")
                         } else {
                             first
@@ -1237,11 +1236,10 @@ fn find_sibling_types(
         let target_type = extract_impl_target_type(lft);
         if let Some(target) = target_type {
             // Must contain type_name as a stem AND be different from it.
-            if target != type_name && target.contains(type_name) && target.len() > type_name.len() {
-                if !out.contains(&target) {
+            if target != type_name && target.contains(type_name) && target.len() > type_name.len()
+                && !out.contains(&target) {
                     out.push(target);
                 }
-            }
         }
     }
     // Recurse into children (but not into function bodies — check first line).
@@ -1379,9 +1377,9 @@ fn extract_fn_name(text: &str) -> String {
             if bytes[3] == b'(' {
                 // Skip past the `(...)` qualifier
                 let mut depth = 1i32;
-                for j in 4..bytes.len() {
-                    if bytes[j] == b'(' { depth += 1; }
-                    else if bytes[j] == b')' {
+                for (j, &b) in bytes.iter().enumerate().skip(4) {
+                    if b == b'(' { depth += 1; }
+                    else if b == b')' {
                         depth -= 1;
                         if depth == 0 { start_idx = j + 1; break; }
                     }

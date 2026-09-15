@@ -320,7 +320,7 @@ fn install_claude_hooks(hooks_dir: &PathBuf) -> bool {
     // V61: register_claude_sift_hook returns false when settings.json is
     // malformed — init must not report success with a dead hook.
     if !register_claude_sift_hook() {
-        eprintln!("{} Failed to register sift hook in ~/.claude/settings.json (malformed JSON?)", "\u{26A0}\u{FE0F}");
+        eprintln!("\u{26A0}\u{FE0F} Failed to register sift hook in ~/.claude/settings.json (malformed JSON?)");
         return false;
     }
     true
@@ -471,7 +471,7 @@ fn inject_opencode_plugin(cfg_path: &PathBuf, exe_path: &std::path::Path) -> Res
             // Drop any deprecated entry (the old `@reliary/opencode` v0.x plugin)
             arr.retain(|v| {
                 let s = v.as_str().unwrap_or("");
-                !(s.contains("@reliary/opencode") && !s.ends_with("opencode-plugin/dist/index.js"))
+                !s.contains("@reliary/opencode") || s.ends_with("opencode-plugin/dist/index.js")
             });
             // Idempotent: only add if not present
             let already = arr.iter().any(|v| {
@@ -561,12 +561,11 @@ pub fn uninstall() {
         };
 
         if let Some(cfg_path) = opencode_cfg {
-            if cfg_path.exists() {
-                if remove_mcp_server(&cfg_path, "reliary", "mcp") {
+            if cfg_path.exists()
+                && remove_mcp_server(&cfg_path, "reliary", "mcp") {
                     ok("Removed Reliary from OpenCode");
                     removed_agents += 1;
                 }
-            }
         }
     }
     

@@ -20,8 +20,10 @@ pub struct FileMeta {
     pub brace_graph: Arc<BraceNode>,
 }
 
-fn cache() -> &'static Mutex<(AHashMap<String, Arc<FileMeta>>, std::collections::VecDeque<String>)> {
-    static C: OnceLock<Mutex<(AHashMap<String, Arc<FileMeta>>, std::collections::VecDeque<String>)>> = OnceLock::new();
+type MetaCache = (AHashMap<String, Arc<FileMeta>>, std::collections::VecDeque<String>);
+
+fn cache() -> &'static Mutex<MetaCache> {
+    static C: OnceLock<Mutex<MetaCache>> = OnceLock::new();
     C.get_or_init(|| Mutex::new((AHashMap::with_capacity(200), std::collections::VecDeque::new())))
 }
 
@@ -137,9 +139,8 @@ fn walk(
     for line in node.start_line..=node.end_line {
         // V26: brace_graph uses 1-indexed lines, fn_names is 0-indexed.
         let li = (line as usize).saturating_sub(1);
-        if li < lines.len() {
-            if !cur_fn.is_empty() { fn_names[li] = cur_fn.clone(); }
-        }
+        if li < lines.len()
+            && !cur_fn.is_empty() { fn_names[li] = cur_fn.clone(); }
     }
 
     for child in &node.children {
@@ -167,10 +168,10 @@ fn call_arity_from_line(t: &str) -> Option<usize> {
 
 fn extract_impl_type(s: &str) -> Option<String> {
     let after_impl = s.strip_prefix("impl")?.trim_start();
-    let after_impl = if after_impl.starts_with('<') {
+    let after_impl = if let Some(rest) = after_impl.strip_prefix('<') {
         let mut depth = 1;
         let mut i = 1;
-        for c in after_impl[1..].chars() {
+        for c in rest.chars() {
             if c == '<' { depth += 1; }
             if c == '>' { depth -= 1; if depth == 0 { break; } }
             i += c.len_utf8();
@@ -180,12 +181,12 @@ fn extract_impl_type(s: &str) -> Option<String> {
 
     if let Some(for_pos) = after_impl.find(" for ") {
         let after_for = after_impl[for_pos + 5..].trim_start();
-        let end = after_for.find(|c: char| c == '<' || c == '{' || c == ' ' || c == ';').unwrap_or(after_for.len());
+        let end = after_for.find(['<', '{', ' ', ';']).unwrap_or(after_for.len());
         let type_name = after_for[..end].trim();
         if !type_name.is_empty() { return Some(type_name.to_string()); }
     }
 
-    let end = after_impl.find(|c: char| c == '<' || c == '{' || c == ' ' || c == ';').unwrap_or(after_impl.len());
+    let end = after_impl.find(['<', '{', ' ', ';']).unwrap_or(after_impl.len());
     let type_name = after_impl[..end].trim();
     if !type_name.is_empty() { Some(type_name.to_string()) } else { None }
 }

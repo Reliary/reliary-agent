@@ -3,8 +3,7 @@
 // sequence of existing library calls + edits + verify. Compiler-error mode
 // drives fixes from `cargo check` output directly.
 
-use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FixTask {

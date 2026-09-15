@@ -16,7 +16,6 @@
 use crate::symbol::{OccHit, block_id_at, file_id_for, phrase_id_for};
 use crate::compat::{infer_receiver_type, type_jaccard};
 use rusqlite::{params, Connection};
-use ahash::AHashMap;
 use rustc_hash::FxHashMap;
 use parking_lot::Mutex;
 
@@ -165,7 +164,7 @@ fn parse_file_info(file_path: &str) -> FileInfo {
             // Extract mod name (grammar-free: find identifier after the mod declaration).
             let mod_pos = trimmed.find("mod ").unwrap_or(0);
             let after = &trimmed[mod_pos + 4..];
-            let name = after.split(|c: char| c == ' ' || c == ';' || c == '{').next().unwrap_or("");
+            let name = after.split([' ', ';', '{']).next().unwrap_or("");
             if !name.is_empty() {
                 info.mod_list.push(name.to_string());
             }

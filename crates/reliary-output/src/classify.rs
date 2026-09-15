@@ -21,11 +21,6 @@ pub struct OutputLine {
 }
 
 struct Patterns {
-    uuid: Regex,
-    hex40: Regex,
-    version: Regex,
-    numbers: Regex,
-    timestamp: Regex,
     progress: Regex,
     error_starts: [&'static str; 5],
     warning_starts: [&'static str; 2],
@@ -34,11 +29,6 @@ struct Patterns {
 }
 
 static PATTERNS: std::sync::LazyLock<Patterns> = std::sync::LazyLock::new(|| Patterns {
-    uuid: Regex::new(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap(),
-    hex40: Regex::new(r"(?i)\b[0-9a-f]{7,40}\b").unwrap(),
-    version: Regex::new(r"\b\d+\.\d+(?:\.\d+(?:-\w+(?:\.\d+)?)?)?\b").unwrap(),
-    numbers: Regex::new(r"\b\d+\b").unwrap(),
-    timestamp: Regex::new(r"\d{2}:\d{2}:\d{2}(?:[.,]\d{3,})?").unwrap(),
     progress: Regex::new(r"^\s*(?:Compiling|Checking|Building|Linking|Running|Processing|Generating)\s").unwrap(),
     error_starts: ["error:", "error[", "Error:", "FAILED", "thread '"],
     warning_starts: ["warning:", "Warning:"],

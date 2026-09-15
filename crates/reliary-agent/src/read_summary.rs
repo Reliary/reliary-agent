@@ -8,18 +8,22 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 /// Delegate to main::index_db_path (P17: single source of truth).
+#[allow(dead_code)]
 fn index_db_path(path: &str) -> String {
     crate::index_db_path(path)
 }
 
+#[allow(dead_code)]
 static SIG_RE: LazyLock<regex_lite::Regex> = LazyLock::new(|| {
     regex_lite::Regex::new(r"^\s*(pub\s+)?(fn|def|class|struct|enum|trait|function|func)\s+(\w+)").unwrap()
 });
+#[allow(dead_code)]
 static NAME_RE: LazyLock<regex_lite::Regex> = LazyLock::new(|| {
     regex_lite::Regex::new(r"(fn|def|class|struct|enum|trait|function|func)\s+(\w+)").unwrap()
 });
 
 // Build a structured file summary from FTS5 index data.
+#[allow(dead_code)]
 pub fn build(file: &str) -> String {
     let content = match reliary_core::safe_read(file) {
         Ok(c) => c,
@@ -87,6 +91,7 @@ pub fn build(file: &str) -> String {
 
 // Load compression dictionary from the nearest FTS5 index.
 // Returns None if no index is found or query fails.
+#[allow(dead_code)]
 pub fn load_dictionary() -> Option<reliary_compress::CompressionDict> {
     for dir in &[".", ".."] {
         let db_path = format!("{}/.reliary/index.sqlite", dir);
@@ -106,6 +111,7 @@ pub fn load_dictionary() -> Option<reliary_compress::CompressionDict> {
 
 /// Bug 87: return the mtime of the nearest .reliary/index.sqlite file.
 /// Used to detect when to refresh the compression dictionary.
+#[allow(dead_code)]
 pub fn index_mtime() -> Option<SystemTime> {
     for dir in &[".", ".."] {
         let db_path = format!("{}/.reliary/index.sqlite", dir);

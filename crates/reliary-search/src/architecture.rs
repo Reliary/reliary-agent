@@ -188,7 +188,7 @@ pub fn get_architecture(
             file_count,
         })
         .collect();
-    languages.sort_by(|a, b| b.file_count.cmp(&a.file_count));
+    languages.sort_by_key(|x| std::cmp::Reverse(x.file_count));
 
     // Packages: group files by top-2 dirs, count + measure cross-package references.
     let mut pkg_files: HashMap<String, Vec<String>> = HashMap::new();
@@ -241,7 +241,7 @@ pub fn get_architecture(
             name,
         })
         .collect();
-    packages.sort_by(|a, b| b.file_count.cmp(&a.file_count));
+    packages.sort_by_key(|x| std::cmp::Reverse(x.file_count));
     packages.truncate(limit);
 
     // Hotspots: files with most occurrences.
@@ -278,7 +278,7 @@ pub fn get_architecture(
         .iter()
         .map(|(&fid, &defs)| (fid, defs))
         .collect();
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.sort_by_key(|x| std::cmp::Reverse(x.1));
     let entry_points: Vec<FileCount> = candidates
         .into_iter()
         .take(limit)
@@ -302,7 +302,7 @@ pub fn get_architecture(
     }
     let total_clusters = pkg_files.len();
     let mut sorted_pkgs: Vec<(String, Vec<String>)> = pkg_files.into_iter().collect();
-    sorted_pkgs.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    sorted_pkgs.sort_by_key(|x| std::cmp::Reverse(x.1.len()));
     sorted_pkgs.truncate(limit);
     let clusters: Vec<Cluster> = sorted_pkgs
         .into_iter()
@@ -347,7 +347,7 @@ pub fn get_architecture(
         all_tokens.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
     let route_files: HashSet<i32> = stmt
         .query_map(params.as_slice(), |r| {
-            Ok(r.get::<_, i32>(0)?)
+            r.get::<_, i32>(0)
         })?
         .filter_map(|r| r.ok())
         .collect();

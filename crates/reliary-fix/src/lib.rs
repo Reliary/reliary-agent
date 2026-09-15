@@ -23,7 +23,7 @@ pub fn extract_fixes(memory_content: &str) -> Vec<(String, String)> {
     let mut seen: rustc_hash::FxHashSet<(String, String)> = rustc_hash::FxHashSet::default();
 
     // D5: Borrow keys from captures, only own at final push.
-    let mut push = |old: &str, new: &str, fixes: &mut Vec<(String, String)>, seen: &mut rustc_hash::FxHashSet<(String, String)>| {
+    let push = |old: &str, new: &str, fixes: &mut Vec<(String, String)>, seen: &mut rustc_hash::FxHashSet<(String, String)>| {
         if !old.is_empty() && old != new && seen.insert((old.to_string(), new.to_string())) {
             fixes.push((old.to_string(), new.to_string()));
         }

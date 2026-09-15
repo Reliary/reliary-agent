@@ -1,7 +1,7 @@
 //! V23: Hologram Plan — task-to-file mapping.
 //! Given a task description, returns the most likely file to look at,
 //! related test files, coupled files, and risk level. Ported from stria.
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use rustc_hash::FxHashMap;
 use serde_json::{json, Value};
 
@@ -47,7 +47,7 @@ pub fn hologram_plan(db: &Connection, task: &str) -> Value {
             "SELECT id FROM phrases WHERE phrase = ?1",
             [st],
             |r| r.get(0),
-        ).ok();
+        ).ok(); // GUARDED: intentional — missing phrase => skip
         let pid = match phrase_id { Some(p) => p, None => continue };
 
         // Get (file_blob) for this phrase.
@@ -84,11 +84,11 @@ pub fn hologram_plan(db: &Connection, task: &str) -> Value {
         let mut uniq: Vec<i64> = needed_ids.clone();
         uniq.sort_unstable();
         uniq.dedup();
-        let placeholders = std::iter::repeat("?").take(uniq.len()).collect::<Vec<_>>().join(",");
+        let placeholders = std::iter::repeat_n("?", uniq.len()).collect::<Vec<_>>().join(",");
         let sql = format!("SELECT id, file_path FROM file_map WHERE id IN ({})", placeholders);
         if let Ok(mut stmt) = db.prepare_cached(&sql) {
             let refs: Vec<&dyn rusqlite::ToSql> = uniq.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
-            if let Ok(mut rows) = stmt.query_map(refs.as_slice(), |r| {
+            if let Ok(rows) = stmt.query_map(refs.as_slice(), |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
             }) {
                 for row in rows.flatten() {

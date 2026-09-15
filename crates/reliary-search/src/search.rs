@@ -57,11 +57,10 @@ fn rarest_term(db: &Connection, terms: &[String]) -> Option<String> {
         let df: i64 = db
             .query_row("SELECT COUNT(*) FROM phrases WHERE phrase LIKE ?1 ESCAPE '\\'", params![&like], |r| r.get(0))
             .unwrap_or(0);
-        if df > 0 {
-            if best.as_ref().map(|(b, _)| df < *b).unwrap_or(true) {
+        if df > 0
+            && best.as_ref().map(|(b, _)| df < *b).unwrap_or(true) {
                 best = Some((df, t.clone()));
             }
-        }
     }
     best.map(|(_, t)| t)
 }
@@ -148,10 +147,10 @@ fn run_terms_query(db: &Connection, terms: &[String], mode: JoinMode, top_n: usi
             needed_ids_set.insert(fid);
         }
     }
-    let mut needed_ids: Vec<i64> = needed_ids_set.into_iter().collect();
+    let needed_ids: Vec<i64> = needed_ids_set.into_iter().collect();
     if needed_ids.is_empty() { return vec![]; }
 
-    let placeholders = std::iter::repeat("?").take(needed_ids.len()).collect::<Vec<_>>().join(",");
+    let placeholders = std::iter::repeat_n("?", needed_ids.len()).collect::<Vec<_>>().join(",");
     let max_fid: i64 = db.query_row(
         "SELECT COALESCE(MAX(id), 0) FROM file_map", [], |r| r.get(0),
     ).unwrap_or(0);
@@ -177,7 +176,7 @@ fn run_terms_query(db: &Connection, terms: &[String], mode: JoinMode, top_n: usi
 
     let mut results: Vec<SearchResult> = Vec::new();
     let mut file_index: rustc_hash::FxHashMap<String, usize> = rustc_hash::FxHashMap::default();
-    for (phrase_id, file_blob) in &phrase_rows {
+    for (_, file_blob) in &phrase_rows {
         let entries: Vec<(i64, u8)> = crate::schema::unpack_file_blob(file_blob).collect();
         if entries.is_empty() { continue; }
         let doc_freq = entries.len() as f64;
@@ -191,7 +190,7 @@ fn run_terms_query(db: &Connection, terms: &[String], mode: JoinMode, top_n: usi
             let tf = (crate::schema::unpack_count(flags) as f64).max(1.0);
             let zone = Some(crate::schema::unpack_zone_int(flags) as u8);
             let idf = crate::bm25_idf(total_files as f32, doc_freq as f32);
-            let base = crate::bm25_score(idf as f32, tf as f32, token_len as f32, avg_tokens as f32);
+            let base = crate::bm25_score(idf, tf as f32, token_len as f32, avg_tokens as f32);
             // M1: definition-first ranking. Files where the phrase is defined
             // outrank files that merely reference it; production paths outrank
             // tests/bench/docs.
@@ -262,7 +261,7 @@ pub fn who_calls(db: &Connection, identifier: &str, exclude_file: &str) -> Vec<(
     if entries.is_empty() { return vec![]; }
     let file_ids: Vec<i64> = entries.iter().map(|(fid, _)| *fid).collect();
 
-    let placeholders = std::iter::repeat("?").take(file_ids.len()).collect::<Vec<_>>().join(",");
+    let placeholders = std::iter::repeat_n("?", file_ids.len()).collect::<Vec<_>>().join(",");
     let sql = format!(
         "SELECT id, file_path FROM file_map WHERE id IN ({}) ORDER BY id",
         placeholders
@@ -361,7 +360,7 @@ pub fn late_interaction_rerank(
             Some(index) => terms.iter().map(|t| index.substring_candidates(t, 200)).collect(),
             None => terms.iter().map(|t| vec![format!("%{}%", t)]).collect(),
         };
-    for (term, cands) in terms.iter().zip(term_candidates.iter()) {
+    for (_, cands) in terms.iter().zip(term_candidates.iter()) {
         let sql = "SELECT p.phrase, po.file_blob
              FROM phrase_occ po
              JOIN phrases p ON p.id = po.phrase_id
@@ -457,16 +456,15 @@ fn term_similarity(term: &str, phrase: &str) -> f32 {
     // Prefix overlap: one is a prefix of the other (compound identifiers).
     if t.len() >= 3 && p.len() >= 3 {
         let min_len = t.len().min(p.len());
-        if &t[..min_len] == &p[..min_len] {
+        if t[..min_len] == p[..min_len] {
             return 0.7 + 0.2 * (min_len as f32 / t.len().max(p.len()) as f32);
         }
     }
     // Containment (phrase contains term or vice versa — snake_case compounds).
-    if t.len() >= 3 && p.len() >= 3 {
-        if phrase.contains(term) || term.contains(phrase) {
+    if t.len() >= 3 && p.len() >= 3
+        && (phrase.contains(term) || term.contains(phrase)) {
             return 0.6;
         }
-    }
     // Edit distance <= 2 (typos, pluralization).
     if edit_distance(term, phrase) <= 2 {
         return 0.5;
@@ -622,7 +620,7 @@ mod tests {
         let db = Connection::open_in_memory().unwrap();
         crate::schema::create_new_db(&db).unwrap();
         let mut results = vec![];
-        quale_rerank(&db, &vec!["test".to_string()], &mut results);
+        quale_rerank(&db, &["test".to_string()], &mut results);
         assert!(results.is_empty());
     }
 
@@ -640,7 +638,7 @@ mod tests {
         let db = Connection::open_in_memory().unwrap();
         crate::schema::create_new_db(&db).unwrap();
         let mut results = vec![SearchResult { file: "a.rs".into(), score: 1.0, line: None, zone: None }];
-        quale_rerank(&db, &vec!["ab".to_string()], &mut results);
+        quale_rerank(&db, &["ab".to_string()], &mut results);
         assert_eq!(results[0].score, 1.0, "terms < 3 chars skipped");
     }
 

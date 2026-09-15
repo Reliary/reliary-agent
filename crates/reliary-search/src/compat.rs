@@ -52,7 +52,7 @@ pub fn enclosing_fn_name(
             }
             // Fallback: extract identifier from node text via scanner.
             let first = node.first_line_text.clone();
-            for tok in crate::scan_identifiers(&first) {
+            if let Some(tok) = crate::scan_identifiers(&first).into_iter().next() {
                 return Some(tok);
             }
         }
@@ -77,7 +77,7 @@ pub fn enclosing_impl_target(
         if text.trim_start().starts_with("impl ") || text.trim_start().starts_with("impl<") {
             if let Some(idx) = text.find(" for ") {
                 let after = &text[idx + 5..];
-                for tok in crate::scan_identifiers(after) {
+                if let Some(tok) = crate::scan_identifiers(after).into_iter().next() {
                     return tok;
                 }
             } else if let Some(idx) = text.find('{') {

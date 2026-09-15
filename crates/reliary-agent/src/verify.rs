@@ -104,7 +104,7 @@ pub fn extract_claims(text: &str) -> Vec<Claim> {
     let mut out: Vec<Claim> = Vec::new();
     let mut seen: std::collections::HashSet<(String, String, i32)> =
         std::collections::HashSet::new();
-    let mut push = |sym: String, file: String, line: i32, out: &mut Vec<Claim>,
+    let push = |sym: String, file: String, line: i32, out: &mut Vec<Claim>,
                     seen: &mut std::collections::HashSet<(String, String, i32)>| {
         let key = (sym.clone(), file.clone(), line);
         if seen.insert(key) {

@@ -17,7 +17,6 @@
 //! it's a fast no-op (one indexed SELECT).
 
 use rusqlite::{params, Connection};
-use crate::lazy_occurrence::bump_gen_if_inserted;
 use std::fs;
 
 /// Fast guard: do we have any rows in `block` for this file_id?
@@ -78,8 +77,7 @@ pub fn ensure_blocks_for_file(db: &Connection, file_id: i64) -> rusqlite::Result
     }
     for chunk in out.blocks.chunks(BATCH) {
         let m = chunk.len();
-        let placeholders = std::iter::repeat("(?,?,?,?)")
-            .take(m)
+        let placeholders = std::iter::repeat_n("(?,?,?,?)", m)
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
@@ -143,8 +141,7 @@ pub fn ensure_blocks_for_file_with_content(db: &Connection, file_id: i64, conten
     }
     for chunk in out.blocks.chunks(BATCH) {
         let m = chunk.len();
-        let placeholders = std::iter::repeat("(?,?,?,?)")
-            .take(m)
+        let placeholders = std::iter::repeat_n("(?,?,?,?)", m)
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(

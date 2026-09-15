@@ -36,6 +36,7 @@ pub fn save_tee(raw: &str) -> std::io::Result<Option<String>> {
 }
 
 /// V14: Read a tee file by hash.
+#[allow(dead_code)]
 pub fn read_tee(hash_or_path: &str) -> std::io::Result<String> {
     // If it looks like a path, use directly; otherwise treat as hash.
     let path = if hash_or_path.contains('/') || hash_or_path.ends_with(".log") {
@@ -47,6 +48,7 @@ pub fn read_tee(hash_or_path: &str) -> std::io::Result<String> {
 }
 
 /// V14: List all tee files with sizes (for `reliary-agent tee --list`).
+#[allow(dead_code)]
 pub fn list_tee_files() -> std::io::Result<Vec<(String, u64)>> {
     let dir = PathBuf::from(TEE_DIR);
     if !dir.exists() { return Ok(Vec::new()); }

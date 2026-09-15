@@ -14,13 +14,14 @@
 use crate::symbol::{OccHit, block_id_at, file_id_for, phrase_id_for};
 use crate::pattern::{best_context_key, context_key_at, match_level};
 use crate::compat::{infer_receiver_type, type_jaccard, module_path, module_jaccard, enclosing_fn_name, enclosing_impl_target, function_profile_wasserstein};
-use crate::full_file::{get_file_info, enclosing_impl_at};
-use crate::brace_graph::{get_brace_graph, same_scope, shared_enclosing};
-use crate::func_profile::function_cooccurrence_score;
+use crate::brace_graph::{get_brace_graph, same_scope};
 use crate::signature::{call_arity, resolve_pattern_match_binding, extract_call_receiver};
 use rusqlite::{params, Connection};
 use ahash::AHashMap;
 use rustc_hash::FxHashMap;
+
+/// Occurrence tuple read from the occurrence table.
+type OccTuple = (i64, i64, String, i32, i32, bool, i64, i64);
 
 // ── Phase Y: Role prediction (grammar-free, no regex crate) ──
 
@@ -281,6 +282,7 @@ fn contains_bare_call(line: &str) -> bool {
 
 /// Check if line is a struct field: `    name: Type,`
 /// Arc 22: grammar-free — uses structural check (not a definition block-start).
+#[allow(dead_code)]
 fn is_struct_field(line: &str) -> bool {
     let trimmed = line.trim();
     // Must not be a module path (`::`) or a definition block-start.
@@ -302,6 +304,7 @@ fn is_struct_field(line: &str) -> bool {
 }
 
 /// Predict the anchor's role from its file + line.
+#[allow(dead_code)]
 fn predict_anchor_role(file_path: &str, line: i32) -> &'static str {
     let lines = read_lines(file_path);
     let idx = (line as usize).saturating_sub(1);
@@ -322,8 +325,9 @@ fn predict_anchor_role(file_path: &str, line: i32) -> &'static str {
 // Arc 58 Phase 2: per-session receiver cache.
 // Key: (file_path, line, stem). Populated on first miss, reused across queries.
 use std::sync::{Mutex, OnceLock};
-fn rcache() -> &'static Mutex<AHashMap<(String, i32, String), String>> {
-    static C: OnceLock<Mutex<AHashMap<(String, i32, String), String>>> = OnceLock::new();
+type RCache = AHashMap<(String, i32, String), String>;
+fn rcache() -> &'static Mutex<RCache> {
+    static C: OnceLock<Mutex<RCache>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(AHashMap::with_capacity(500)))
 }
 
@@ -381,8 +385,8 @@ fn resolve_receiver_type_with_path_inner(
     // For local variables, fall through to the expensive path.
     let receiver = extract_receiver(line_text, stem);
     if receiver.is_empty() { return String::new(); }
-    if (receiver == "self" || receiver == "&self" || receiver == "&mut self" ||
-        receiver == "Self" || receiver.starts_with("self.")) {
+    if receiver == "self" || receiver == "&self" || receiver == "&mut self" ||
+        receiver == "Self" || receiver.starts_with("self.") {
         if let Some(fp) = file_path {
             if let Some(m) = crate::file_meta::get(fp) {
                 if idx < m.impl_targets.len() && !m.impl_targets[idx].is_empty() {
@@ -399,8 +403,7 @@ fn resolve_receiver_type_with_path_inner(
 
     // Resolve based on receiver kind (non-self, non-capitalized).
     // self.field → try to resolve field type from struct.
-    if receiver.starts_with("self.") {
-        let field = &receiver[5..];
+    if let Some(field) = receiver.strip_prefix("self.") {
         return resolve_field_type(file_lines, line, field);
     }
 
@@ -474,6 +477,7 @@ fn extract_receiver(line: &str, stem: &str) -> String {
 
 /// Resolve `self` to its actual type by walking up to the enclosing fn and impl.
 /// Arc 22: grammar-free — uses structural detection instead of keyword matching.
+#[allow(dead_code)]
 fn resolve_self_type(file_lines: &[String], line: i32) -> String {
     let start = (line as usize).saturating_sub(1);
     // Walk up to find function definition (structural: block-start with `(`).
@@ -519,6 +523,7 @@ fn resolve_self_type(file_lines: &[String], line: i32) -> String {
 
 /// Extract the target type from an impl header.
 /// Arc 22: grammar-free — uses structural detection of the type name.
+#[allow(dead_code)]
 fn extract_impl_type(impl_line: &str) -> String {
     // Use structural detector to find the defined name (last ID before `{` or `<`).
     let result = crate::structural::classify_structural(impl_line, 0, true, false);
@@ -533,8 +538,8 @@ fn resolve_field_type(file_lines: &[String], line: i32, field: &str) -> String {
         let result = crate::structural::classify_structural(&file_lines[i], 0, true, false);
         if result.is_def && result.tag == 2 {
             // Found a type definition — search forward for the field.
-            for j in i..file_lines.len().min(i + 200) {
-                let fl = file_lines[j].trim();
+            for fl in file_lines[i..file_lines.len().min(i + 200)].iter() {
+                let fl = fl.trim();
                 // "field: Type," pattern — grammar-free structural check.
                 if fl.starts_with(field) && fl.contains(':') && !fl.contains('(') {
                     let after_colon = fl.split(':').nth(1).unwrap_or("").trim();
@@ -560,7 +565,8 @@ fn resolve_let_binding_type(file_lines: &[String], line: i32, var: &str, file_pa
     // Cache eliminates redundant scans for the same (file,line,var) triple.
     // P3-3: includes file_path in cache key to prevent cross-file collisions.
     use std::sync::{Mutex, OnceLock};
-    static LBT_CACHE: OnceLock<Mutex<AHashMap<(String, usize, String), String>>> = OnceLock::new();
+    type LbtCache = AHashMap<(String, usize, String), String>;
+    static LBT_CACHE: OnceLock<Mutex<LbtCache>> = OnceLock::new();
     let cache = LBT_CACHE.get_or_init(|| Mutex::new(AHashMap::with_capacity(500)));
     let key = (file_path.unwrap_or("").to_string(), line as usize, var.to_string());
     // P3-3 with eviction: limit LBT_CACHE to 512 entries.
@@ -673,11 +679,12 @@ fn extract_rhs_type(rhs: &str) -> Option<String> {
 // ── Phase AA: Multi-view self-similarity count ──
 
 /// Compute 5 binary views: does this view match the anchor?
+#[allow(clippy::too_many_arguments)]
 fn compute_views(
     anchor_role: &str, anchor_receiver: &str,
     anchor_impl_target: Option<&str>, cand_role: &str, cand_receiver: &str,
     cand_impl_target: Option<&str>,
-    anchor_key: &((String, String)), cand_key: &((String, String)),
+    anchor_key: &(String, String), cand_key: &(String, String),
     anchor_module: &str, cand_module: &str,
 ) -> u8 {
     let mut count = 0u8;
@@ -796,9 +803,6 @@ pub fn find_best_anchor(db: &Connection, raw_name: &str) -> rusqlite::Result<(Op
 }
 
 /// Auto-discover anchor then call find_references_type_flow.
-
-
-/// Auto-discover anchor then call find_references_type_flow.
 /// Use this when the LLM hasn't supplied anchor_file or the supplied anchor
 /// fails to find any hits in the index.
 pub fn find_references_auto(
@@ -833,7 +837,7 @@ pub fn find_references_auto(
         // If type_hint available, prefer files where basename matches the type name
         // V24: Caller-count ranking — most callers = most central definition.
         // Grammar-free: SQL subquery on occurrence table.
-        let mut stmt = if let Some(ref hint) = type_hint {
+        let mut stmt = if let Some(ref _hint) = type_hint {
             db.prepare_cached(
                 "SELECT f.file_path, o.line, o.block_id,
                         (SELECT COUNT(*) FROM occurrence o2
@@ -996,7 +1000,6 @@ pub fn top_candidate_definitions(
 pub fn find_references_fallback(
     db: &Connection, raw_name: &str, limit: usize,
 ) -> rusqlite::Result<Vec<OccHit>> {
-    use crate::symbol::OccHit;
     // Try full name, then last component.
     let candidates: Vec<String> = if raw_name.contains("::") {
         let last = raw_name.rsplit("::").next().unwrap_or(raw_name).to_string();
@@ -1018,7 +1021,6 @@ pub fn find_references_fallback(
 fn try_fallback(
     db: &Connection, raw_name: &str, limit: usize,
 ) -> rusqlite::Result<Option<Vec<crate::symbol::OccHit>>> {
-    use crate::symbol::OccHit;
     let phrase_id = match phrase_id_for(db, raw_name)? { Some(id) => id, None => return Ok(None) };
     let _ = crate::lazy_occurrence::ensure_occurrence_for_phrase(db, phrase_id)?;
 
@@ -1092,7 +1094,7 @@ pub fn find_references_type_flow(
          FROM occurrence o JOIN file_map f ON f.id = o.file_id WHERE o.phrase_id = ?1",
     )?;
     let mut rows = stmt.query(params![phrase_id])?;
-    let mut occs: Vec<(i64, i64, String, i32, i32, bool, i64, i64)> = Vec::new();
+    let mut occs: Vec<OccTuple> = Vec::new();
     let mut anchor_idx = 0usize;
     while let Some(r) = rows.next()? {
         let oi = (r.get::<_,i64>(0)?, r.get::<_,i64>(1)?, r.get::<_,String>(2)?,
@@ -1139,7 +1141,7 @@ pub fn find_references_type_flow(
     let anchor_receiver = resolve_receiver_type_with_path(&anchor_lines_vec, anchor_line, raw_name, Some(anchor_file));
     let anchor_key = best_context_key(db, phrase_id, anchor_file, anchor_line, raw_name);
     let anchor_module = module_path(anchor_file);
-    let anchor_fn = enclosing_fn_name(&anchor_lines_vec, anchor_line);
+    let _anchor_fn = enclosing_fn_name(&anchor_lines_vec, anchor_line);
     let anchor_impl = enclosing_impl_target(&anchor_lines_vec, anchor_line);
 
     // Arc 57: Precompute file_meta for all unique files in capped set.
@@ -1213,7 +1215,7 @@ pub fn find_references_type_flow(
             // Phase Y: Predict candidate's role from DB tag.
             // For method_call anchors, also accept candidates that actually call `.stem(`.
             let cand_role_str = match oi.7 {
-                1 | 2 | 3 => "function_def",
+                1..=3 => "function_def",
                 4 => "field_access",
                 5 => "param",
                 6 => "local_var",
@@ -1238,7 +1240,7 @@ pub fn find_references_type_flow(
             let cand_module = module_path(&oi.2);
             // Arc 57: use file_meta for O(1) lookups when available.
             let meta = meta_cache.get(&oi.2);
-            let cand_fn = if let Some(m) = meta {
+            let _cand_fn = if let Some(m) = meta {
                 let li = (oi.3 as usize).min(m.fn_names.len().saturating_sub(1));
                 Some(m.fn_names.get(li).cloned().unwrap_or_default())
             } else {
@@ -1292,7 +1294,7 @@ pub fn find_references_type_flow(
                 let ti = infer_receiver_type(db, &oi.2, oi.3, raw_name);
                 let ti_str = ti.as_deref().unwrap_or("");
                 if _t_irt.elapsed().as_millis() > 100 { _n_slow_irt += 1; }
-                type_jaccard(&anchor_receiver, ti_str) as f32
+                type_jaccard(&anchor_receiver, ti_str)
             } else { 0.0 };
             let ck_score = match_level(&anchor_key, &cand_key);
             let base_sim = type_score.max(ck_score).max(view_score);
@@ -1321,7 +1323,7 @@ pub fn find_references_type_flow(
             let same_impl: f32 = if anchor_impl == cand_impl && !anchor_impl.is_empty() { 0.30 } else { 0.0 };
 
             // Brace-graph cross-file: candidate shares the same impl target text as anchor.
-            let same_impl_target: f32 = if !anchor_impl.is_empty() && !cand_impl.is_empty() {
+            let _same_impl_target: f32 = if !anchor_impl.is_empty() && !cand_impl.is_empty() {
                 if anchor_impl == cand_impl { 0.30 } else { -0.10 }
             } else { 0.0 };
 
@@ -1330,7 +1332,7 @@ pub fn find_references_type_flow(
                 (Some(a), Some(b)) => {
                     let base_jacc = crate::func_profile::function_profile_jaccard(a, b);
                     let anchor_pid = Some(phrase_id);
-                    let shared_stem = anchor_pid.map_or(false, |pid| a.stems.contains(&pid) && b.stems.contains(&pid));
+                    let shared_stem = anchor_pid.is_some_and(|pid| a.stems.contains(&pid) && b.stems.contains(&pid));
                     if shared_stem { base_jacc * 1.5 } else { base_jacc * 0.5 }
                 }
                 _ => 0.0,
@@ -1353,12 +1355,12 @@ pub fn find_references_type_flow(
 
             let arity_score: f32 = match (anchor_arity, cand_arity) {
                 (Some(a), Some(c)) if a == c && has_call_syntax => 0.15,
-                (Some(a), Some(c)) => -0.10,
+                (Some(_), Some(_)) => -0.10,
                 _ => call_gate,
             };
 
             // Phase S: pattern match binding — resolve Enum::Variant(v) → Enum.
-            let pattern_type = if cand_receiver.len() > 0
+            let pattern_type = if !cand_receiver.is_empty()
                 && cand_receiver.chars().next().map(|c| c.is_lowercase()).unwrap_or(false) {
                 resolve_pattern_match_binding(lines, oi.3, &cand_receiver)
             } else { None };
@@ -1371,8 +1373,7 @@ pub fn find_references_type_flow(
             };
 
             // Phase T: import-assisted field type for self.X.
-            let import_type: Option<String> = if cand_receiver.starts_with("self.") {
-                let field = &cand_receiver[5..];
+            let import_type: Option<String> = if let Some(field) = cand_receiver.strip_prefix("self.") {
                 let field_part = field.split('.').next().unwrap_or("");
                 let mut found = None;
                 for i in (0..oi.3.max(1) as usize).rev().take(50) {
@@ -1393,8 +1394,8 @@ pub fn find_references_type_flow(
             } else { None };
             let import_boost: f32 = if import_type.is_some() { 0.05 } else { 0.0 };
 
-            let is_impl_line = false;
-            let impl_demote: f32 = 0.0;
+            let _is_impl_line = false;
+            let _impl_demote: f32 = 0.0;
 
             // Phase R3: Wasserstein distance over function profiles.
             const WS_STUBS_ENABLED: bool = false;
@@ -1405,14 +1406,14 @@ pub fn find_references_type_flow(
 
             // Brace-graph scope: candidate shares a deep scope with the anchor.
             // P1-4: use meta_cache brace_graph instead of get_brace_graph (which clones).
-            let scope_bonus: f32 = if let (Some(ref anchor_graph), Some(m)) =
+            let scope_bonus: f32 = if let (Some(anchor_graph), Some(m)) =
                 (anchor_brace_graph.as_ref(), meta_cache.get(&oi.2))
             {
-                let cand_graph = &m.brace_graph;
-                if same_scope(&anchor_graph, anchor_line, oi.3) { 0.35 }
+                let _cand_graph = &m.brace_graph;
+                if same_scope(anchor_graph, anchor_line, oi.3) { 0.35 }
                 else if anchor_file == oi.2 { 0.20 }
                 else { 0.0 }
-            } else if let Some(ref anchor_graph) = anchor_brace_graph {
+            } else if let Some(ref _anchor_graph) = anchor_brace_graph {
                 if anchor_file == oi.2 { 0.20 } else { 0.0 }
             } else { 0.0 };
             let tie_break = f32::max(f32::max(in_same_file, same_impl), scope_bonus);
@@ -1438,8 +1439,8 @@ pub fn find_references_type_flow(
             let base = role_separated + receiver_bonus + tie_break + view_bonus + fn_def_boost
                 + defined_boost + arity_penalty + pattern_boost + import_boost + func_boost + ws_boost + arity_score
                 + scope_bonus + method_bonus + local_binding_bonus;
-            let scored = (base.max(line_text_score)).max(0.0);
-            scored
+            
+            (base.max(line_text_score)).max(0.0)
         };
         // Phase 3: don't pre-filter. Apply all signals, then filter.
         // Arc 21: grammar-free — use is_def (oi.5) from DB.
@@ -1460,8 +1461,8 @@ pub fn find_references_type_flow(
         let cand_lt = get_line_text(lines2, oi.3.max(0));
         let cand_line_text_score: f32 = if oi.5 { 0.9 } else { 0.0 };
         let cand_arity_for_filter = call_arity(&cand_lt, raw_name);
-        let cand_rec_for_filter = extract_call_receiver(&cand_lt, raw_name);
-        let anchor_rec_filter = extract_call_receiver(&anchor_line_text, raw_name);
+        let _cand_rec_for_filter = extract_call_receiver(&cand_lt, raw_name);
+        let _anchor_rec_filter = extract_call_receiver(&anchor_line_text, raw_name);
         // Arc 24: filter_mult is 1.0 — scoring already handles arity/receiver via role separation.
         // Only gate when we're sure it's a call AND arity definitely mismatches.
         let filter_mult: f32 = if anchor_role == "method_call" {

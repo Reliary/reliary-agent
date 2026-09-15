@@ -96,35 +96,6 @@ fn collapse_ws(s: &str) -> String {
     out
 }
 
-/// Find `needle` (already whitespace-normalized) within `hay` using
-/// whitespace-insensitive matching. Returns the byte offset of the first
-/// non-whitespace char of the match.
-fn fuzzy_find(hay: &str, needle: &str) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    let n = collapse_ws(hay);
-    let nneedle = needle.as_bytes();
-    // Direct normalized-string search.
-    if let Some(pos) = n.find(needle) {
-        // Map normalized pos -> original pos: count non-ws chars before pos.
-        let mut orig = 0usize;
-        let mut count = 0usize;
-        for c in hay.chars() {
-            if !c.is_whitespace() {
-                if count == pos {
-                    return Some(orig);
-                }
-                count += 1;
-            }
-            orig += c.len_utf8();
-        }
-        let _ = nneedle;
-        return Some(0); // fallback
-    }
-    None
-}
-
 /// Atomic-ish write: write to temp then rename.
 fn write_file(path: &Path, content: &str) -> Result<(), String> {
     let tmp = path.with_extension("reliary-tmp");

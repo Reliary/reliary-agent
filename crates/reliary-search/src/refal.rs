@@ -91,10 +91,9 @@ fn parse_pat_token(s: &str) -> Result<(Pat, usize), String> {
         let kind = s[..end].to_string();
         let rest = s[end..].trim_start();
 
-        if rest.starts_with('(') {
+        if let Some(after_paren) = rest.strip_prefix('(') {
             // Parse arguments.
             let mut args = Vec::new();
-            let after_paren = &rest[1..];
             let mut pos = 0;
             let bytes = after_paren.as_bytes();
             while pos < bytes.len() && bytes[pos] != b')' {

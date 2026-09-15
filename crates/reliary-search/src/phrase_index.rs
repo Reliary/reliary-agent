@@ -166,6 +166,7 @@ impl PhraseIndex {
     }
 }
 
+#[allow(dead_code)]
 fn global_available_impl(db: &Connection, db_path: &str) -> bool {
     get_phrase_index(db, db_path).is_some()
 }
@@ -180,7 +181,7 @@ fn set_current_db_path(p: &str) {
     let _ = CURRENT_DB_PATH.set(p.to_string());
 }
 
-/// Thread-local in-memory phrase index for the MCP server (CWD project).
+// Thread-local in-memory phrase index for the MCP server (CWD project).
 thread_local! {
     static PHRASE_INDEX: std::cell::RefCell<Option<std::rc::Rc<PhraseIndex>>> = const { std::cell::RefCell::new(None) };
 }

@@ -4,6 +4,7 @@
 //!   1. callers of changed symbols that live in test paths
 //!   2. mirror paths (src/foo.rs -> tests/foo.rs, src/foo/ -> tests/foo/)
 //!   3. vocabulary overlap (rare identifiers shared between change and test)
+//!
 //! Deterministic: sorted output, same index => same plan.
 
 use crate::callgraph_v2::build_call_graph_ext;
@@ -59,6 +60,7 @@ fn mirror_candidates(changed: &str) -> Vec<String> {
 
 /// Extract rare identifiers (length >= 5) from a file's changed symbols for
 /// vocabulary-overlap matching. Grammar-free token scan.
+#[allow(dead_code)]
 fn rare_identifiers(text: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let mut cur = String::new();
@@ -194,7 +196,7 @@ pub fn compute_plan(
     // Commands: language-agnostic — cargo if Cargo.toml in repo root, pytest if
     // any .py test, go test if any _test.go.
     let mut commands: BTreeSet<String> = BTreeSet::new();
-    let has_cargo = std::path::Path::new(&format!("{}/Cargo.toml", path.trim_end_matches('/'))).exists();
+    let _has_cargo = std::path::Path::new(&format!("{}/Cargo.toml", path.trim_end_matches('/'))).exists();
     // V74: choose the runner from THE FILE'S extension, not global flags.
     // The old code emitted `pytest x.js` for any non-Rust test when a single
     // .py existed anywhere, and `go test .//abs/path` for absolute paths.

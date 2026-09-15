@@ -16,6 +16,7 @@ pub fn init() {
 }
 
 /// Return the filtering directive (env filter syntax).
+#[allow(dead_code)]
 fn resolve_reliary_log() -> String {
     match std::env::var("RELIARY_LOG").as_deref() {
         Ok("error") => "reliary_agent=error".into(),

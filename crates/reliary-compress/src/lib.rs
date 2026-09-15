@@ -2,25 +2,6 @@ use ahash::AHashMap;
 use std::sync::LazyLock;
 use regex::Regex;
 
-/// Pre-compiled reasoning compression patterns — compiled once at startup.
-static COMPRESSION_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [
-        r"(?i)\b(Let me (analyze|look|check|review|see|think|consider)\b[^.]*\.)",
-        r"(?i)\b(I (?:can|would|will) need to)[^.]*\.",
-        r"(?i)\b(In order to)[^.]*\.",
-        r"(?i)\b(First(?:,|ly)? let me)[^.]*\.",
-        r"(?i)\b(Based on (?:the|this|my|our))[^.]*\.?",
-        r"(?i)\b(This means that)[^.]*\.",
-        r"(?i)\b(The (?:next|final|first) step)[^.]*\.",
-        r"(?i)\b(Now I(?: can| will|'ll| need to| should))[^.,;]*[,;.]?",
-        r"(?i)\b(Alright|Okay|So,?|Well,?|Now,?)\s*",
-        r"(?i)\bessentially|basically|simply|actually|obviously|clearly|currently\b",
-    ]
-    .into_iter()
-    .filter_map(|p| Regex::new(p).ok())
-    .collect()
-});
-
 /// D2: Combined regex alternation — single pass over text instead of 10.
 /// Matches all 10 patterns at once, replaces with single space.
 static COMBINED_PATTERN: LazyLock<Regex> = LazyLock::new(|| {

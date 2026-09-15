@@ -336,12 +336,8 @@ pub fn doctor(fix: bool, format: &str) {
             format!("{}✗{}", red(), reset())
         };
         println!("  {} {} {}{}", icon, c.name, dim(), c.detail);
-        if !c.ok && c.fixable {
-            match c.name {
-                "index" => needs_index = true,
-                _ => {}
-            }
-        }
+        if !c.ok && c.fixable
+            && c.name == "index" { needs_index = true }
     }
 
     if fix && needs_index {

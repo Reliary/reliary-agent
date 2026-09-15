@@ -23,6 +23,7 @@ use std::fs;
 /// phrase's occurrence rows are unchanged.
 static PHRASE_GENS: std::sync::Mutex<Option<FxHashMap<i64, u64>>> = std::sync::Mutex::new(None);
 
+#[allow(dead_code)]
 fn phrase_gens() -> FxHashMap<i64, u64> {
     let mut g = PHRASE_GENS.lock().unwrap_or_else(|e| e.into_inner());
     g.get_or_insert_with(FxHashMap::default).clone()
@@ -32,7 +33,7 @@ fn phrase_gens() -> FxHashMap<i64, u64> {
 /// The hot path (mcp.rs phrase_generation) was cloning the ENTIRE
 /// generation map under lock on every call.
 fn phrase_gen(phrase_id: i64) -> Option<u64> {
-    let mut g = PHRASE_GENS.lock().unwrap_or_else(|e| e.into_inner());
+    let g = PHRASE_GENS.lock().unwrap_or_else(|e| e.into_inner());
     g.as_ref().and_then(|m| m.get(&phrase_id).copied())
 }
 
@@ -246,7 +247,7 @@ pub fn file_ids_for_phrase(db: &Connection, phrase_id: i64) -> rusqlite::Result<
     if file_ids.is_empty() { return Ok(vec![]); }
 
     // Look up file paths via IN clause.
-    let placeholders = std::iter::repeat("?").take(file_ids.len()).collect::<Vec<_>>().join(",");
+    let placeholders = std::iter::repeat_n("?", file_ids.len()).collect::<Vec<_>>().join(",");
     let sql = format!(
         "SELECT id, file_path FROM file_map WHERE id IN ({}) ORDER BY id ASC",
         placeholders
@@ -280,6 +281,7 @@ fn phrase_text_for(db: &Connection, phrase_id: i64) -> rusqlite::Result<Option<S
 /// Lazy: if the block table is empty for this file, scan the source to
 /// compute blocks on demand. For typical repos, the block table IS built
 /// at trust time, so this is just an indexed lookup.
+#[allow(dead_code)]
 fn block_id_at_line(db: &Connection, file_id: i64, line: i32) -> rusqlite::Result<i64> {
     let mut stmt = db.prepare_cached(
         "SELECT block_id FROM block
@@ -426,7 +428,7 @@ pub fn ensure_occurrence_for_phrase(
                     // V59: is_def iff this token IS the line's defined name.
                     // Case-insensitive: scan_identifiers lowercases, the
                     // classifier returns source-case names.
-                    let is_def_int = if line_tag >= 1 && line_tag <= 4
+                    let is_def_int = if (1..=4).contains(&line_tag)
                         && line_def_name.as_deref().map(|d| d.eq_ignore_ascii_case(&token)).unwrap_or(false)
                     { 1 } else { 0 };
                     let tag = if is_def_int == 1 { line_tag } else { 0 };
@@ -589,7 +591,7 @@ fn ensure_occurrence_for_file_impl(
     }
 
     // Single INSERT statement, reused for every token.
-    let mut stmt = db.prepare_cached(
+    let _stmt = db.prepare_cached(
         "INSERT INTO occurrence (phrase_id, file_id, line, col, is_def, block_id, tag)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
     )?;
@@ -630,8 +632,8 @@ fn ensure_occurrence_for_file_impl(
             for (start, end, bid) in ranges {
                 let start = start.max(0) as usize;
                 let end = (end.max(0) as usize).min(map.len().saturating_sub(1));
-                for li in start..=end {
-                    map[li] = bid;
+                for slot in map[start..=end].iter_mut() {
+                    *slot = bid;
                 }
             }
             map
@@ -683,11 +685,10 @@ fn ensure_occurrence_for_file_impl(
                 // V73: per-token definition flag — only the token that IS the
                 // defined name gets is_def/tag; other identifiers on the same
                 // line stay usages.
-                let is_def_int = if matches!(line_tag, 1 | 2 | 3 | 4 | 5 | 6)
-                    && line_def_name.as_deref() == Some(token.as_str())
+                let is_def_int = if (matches!(line_tag, 1..=6)
+                    && line_def_name.as_deref() == Some(token.as_str()))
+                    || (col == 0 && line_tag >= 5)
                 {
-                    1
-                } else if col == 0 && line_tag >= 5 {
                     1
                 } else {
                     0
@@ -862,8 +863,8 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
             for (start, end, bid) in ranges {
                 let start = start.max(0) as usize;
                 let end = (end.max(0) as usize).min(map.len().saturating_sub(1));
-                for li in start..=end {
-                    map[li] = bid;
+                for slot in map[start..=end].iter_mut() {
+                    *slot = bid;
                 }
             }
             map
@@ -908,11 +909,10 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
                 let col_idx = col as i32;
                 let line_no = li as i32;
                 // V73: only the token that IS the defined name gets is_def/tag.
-                let is_def_int = if matches!(line_tag, 1 | 2 | 3 | 4 | 5 | 6)
-                    && line_def_name.as_deref() == Some(token.as_str())
+                let is_def_int = if (matches!(line_tag, 1..=6)
+                    && line_def_name.as_deref() == Some(token.as_str()))
+                    || (col == 0 && line_tag >= 5)
                 {
-                    1
-                } else if col == 0 && line_tag >= 5 {
                     1
                 } else {
                     0

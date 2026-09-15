@@ -7,7 +7,6 @@
 //! Grammar-free: regex-based extraction of type names from let declarations.
 
 use crate::brace_graph::BraceNode;
-use ahash::AHashMap;
 use rustc_hash::FxHashMap;
 
 #[derive(Clone, Debug, Default)]
@@ -225,7 +224,8 @@ pub fn build_all_scope_type_maps(file_path: &str) -> Vec<(BraceNode, ScopeTypeMa
     // Arc 60 Phase 3: per-file cache. Eliminates redundant file reads
     // and brace-graph builds for candidates in the same file.
     use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<std::collections::HashMap<String, Vec<(BraceNode, ScopeTypeMap)>>>> = OnceLock::new();
+    type ScopeCache = std::collections::HashMap<String, Vec<(BraceNode, ScopeTypeMap)>>;
+    static CACHE: OnceLock<Mutex<ScopeCache>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::with_capacity(100)));
     if let Ok(c) = cache.lock() {
         if let Some(v) = c.get(file_path) {

@@ -23,12 +23,6 @@ mod paths;
 use clap::{Parser, Subcommand, ValueEnum, CommandFactory};
 use clap_complete::generate;
 use std::io::{Write, IsTerminal};
-macro_rules! info {
-    ($($arg:tt)*) => { eprintln!("[INFO] $($arg)*") };
-}
-macro_rules! error {
-    ($($arg:tt)*) => { eprintln!("[ERROR] $($arg)*") };
-}
 
 /// Simple ANSI color helpers — respects NO_COLOR env var
 mod color {
@@ -50,9 +44,11 @@ mod color {
     pub fn dim(s: &str) -> String {
         if no_color() { s.to_string() } else { format!("\x1b[2m{}\x1b[0m", s) }
     }
+    #[allow(dead_code)]
     pub fn reset(_s: &str) -> String {
         if no_color() { String::new() } else { "\x1b[0m".to_string() }
     }
+    #[allow(dead_code)]
     pub fn is_enabled() -> bool { !no_color() }
 }
 
@@ -459,7 +455,7 @@ pub fn run_vacuum(path: &str) {
         Err(e) => { eprintln!("{} open: {}", color::red("✗"), e); return; }
     }
     let after = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
-    let saved = if before > after { before - after } else { 0 };
+    let saved = before.saturating_sub(after);
     eprintln!("{} {} → {} bytes ({} saved)",
         color::green("✓"), before, after, saved);
 }
@@ -1106,10 +1102,7 @@ fn exec_wrap(cmd: &[String]) {
                         };
                         // V74: a signal-killed child (None) is NOT success — use 128+signal if we
     // can get the signal number, else 1.
-    std::process::exit(match output.code() {
-        Some(c) => c,
-        None => 1,
-    });
+    std::process::exit(output.code().unwrap_or(1));
                     }
                 }
             }
@@ -1344,9 +1337,8 @@ fn find_open_index(start_path: &str) -> Option<rusqlite::Connection> {
     loop {
         let candidate = current.join(".reliary").join("index.sqlite");
         if candidate.exists() {
-            return rusqlite::Connection::open(&candidate).ok().map(|d| {
+            return rusqlite::Connection::open(&candidate).ok().inspect(|d| {
                 let _ = d.execute_batch("PRAGMA synchronous = NORMAL;");
-                d
             });
         }
         if !current.pop() { break; }
@@ -1849,9 +1841,9 @@ fn main() {
                 } else {
                     reliary_pack::PackFormat::L2L3
                 };
-                match reliary_pack::generate_pack(&path, pack_format) {
+                match reliary_pack::generate_pack(path, pack_format) {
                     Ok(full_pack) => {
-                        let sliced = reliary_pack::slice_pack_for_query(&full_pack, &query, *top_k);
+                        let sliced = reliary_pack::slice_pack_for_query(&full_pack, query, *top_k);
                         if sliced.is_empty() {
                             eprintln!("{} no matching entries for query",
                                 color::yellow("⊙"));
@@ -1863,7 +1855,7 @@ fn main() {
                 }
             } else if *auto {
                 // Auto-mode: gate + hotspot
-                match reliary_pack::should_inject_pack(&path) {
+                match reliary_pack::should_inject_pack(path) {
                     Ok(reliary_pack::GateDecision::Skip) => {
                         eprintln!("{} pack skipped (codebase too simple or famous)",
                             color::yellow("⊙"));
@@ -1871,7 +1863,7 @@ fn main() {
                     Ok(reliary_pack::GateDecision::Minimal) => {
                         eprintln!("{} minimal pack (low-complexity codebase, top-15 hotspot)",
                             color::yellow("ℹ"));
-                        match reliary_pack::generate_pack_hotspot(&path, reliary_pack::PackFormat::L2L3, 15) {
+                        match reliary_pack::generate_pack_hotspot(path, reliary_pack::PackFormat::L2L3, 15) {
                             Ok(pack) => { print!("{}", pack); }
                             Err(e) => { eprintln!("{} {}", color::red("✗"), e); }
                         }
@@ -1879,7 +1871,7 @@ fn main() {
                     Ok(reliary_pack::GateDecision::Full) => {
                         eprintln!("{} full pack (high-complexity codebase, top-{} hotspot)",
                             color::green("✓"), top_k);
-                        match reliary_pack::generate_pack_hotspot(&path, reliary_pack::PackFormat::L2L3, *top_k) {
+                        match reliary_pack::generate_pack_hotspot(path, reliary_pack::PackFormat::L2L3, *top_k) {
                             Ok(pack) => { print!("{}", pack); }
                             Err(e) => { eprintln!("{} {}", color::red("✗"), e); }
                         }
@@ -1887,7 +1879,7 @@ fn main() {
                     Err(e) => { eprintln!("{} {}", color::red("✗"), e); }
                 }
             } else if strategy == "hotspot" {
-                match reliary_pack::generate_pack_hotspot(&path, reliary_pack::PackFormat::L2L3, *top_k) {
+                match reliary_pack::generate_pack_hotspot(path, reliary_pack::PackFormat::L2L3, *top_k) {
                     Ok(pack) => { print!("{}", pack); }
                     Err(e) => { eprintln!("{} {}", color::red("✗"), e); }
                 }
@@ -1897,7 +1889,7 @@ fn main() {
                 } else {
                     reliary_pack::PackFormat::L2L3
                 };
-                match reliary_pack::generate_pack(&path, pack_format) {
+                match reliary_pack::generate_pack(path, pack_format) {
                     Ok(pack) => { print!("{}", pack); }
                     Err(e) => { eprintln!("{} {}", color::red("✗"), e); }
                 }
@@ -1957,9 +1949,9 @@ fn main() {
             };
             let path = std::path::Path::new(".reliary/cache.sqlite");
             std::fs::create_dir_all(".reliary").ok();  // GUARDED: intentional
-            match reliary_core::open(&path).and_then(|conn| reliary_core::store(&conn, &input)) {
+            match reliary_core::open(path).and_then(|conn| reliary_core::store(&conn, &input)) {
                 Ok(hash) => {
-                    let _ = reliary_core::evict(&open_or_create(&path).unwrap_or_else(|_| dummy_conn()),
+                    let _ = reliary_core::evict(&open_or_create(path).unwrap_or_else(|_| dummy_conn()),
                         reliary_core::default_ttl(), reliary_core::default_max_entries());
                     println!("{}", hash);
                 }
@@ -1968,7 +1960,7 @@ fn main() {
         }
         Commands::CacheRetrieve { hash } => {
             let path = std::path::Path::new(".reliary/cache.sqlite");
-            match open_or_create(&path) {
+            match open_or_create(path) {
                 Ok(conn) => {
                     match reliary_core::retrieve(&conn, hash) {
                         Ok(Some(content)) => print!("{}", content),
@@ -1981,7 +1973,7 @@ fn main() {
         }
         Commands::CacheStats => {
             let path = std::path::Path::new(".reliary/cache.sqlite");
-            match open_or_create(&path) {
+            match open_or_create(path) {
                 Ok(conn) => {
                     match reliary_core::stats(&conn) {
                         Ok((count, bytes)) => println!("entries: {}\nbytes: {}", count, bytes),
@@ -2230,11 +2222,11 @@ fn main() {
                 }
                 Ok(slot_path.to_string_lossy().to_string())
             };
-            let dir_a = match resolve(&rev1, "a") {
+            let dir_a = match resolve(rev1, "a") {
                 Ok(d) => d,
                 Err(e) => { eprintln!("{}", e); diff_exit = 2; break 'diff; }
             };
-            let dir_b = match resolve(&rev2, "b") {
+            let dir_b = match resolve(rev2, "b") {
                 Ok(d) => d,
                 Err(e) => { eprintln!("{}", e); diff_exit = 2; break 'diff; }
             };
@@ -2634,7 +2626,7 @@ fn main() {
         Commands::Classify { file, line, stem } => {
             // Arc 21 (grammar-free): classify from DB is_def/tag, not from line text.
             let role = if let Some(db) = open_index_or_prompt(".") {
-                let stem_stemmed = reliary_search::porter_stem(&stem);
+                let stem_stemmed = reliary_search::porter_stem(stem);
                 let stem_lower = stem.to_lowercase();
                 // Try both the original stem (lowercased) and the porter-stemmed version.
                 let mut stmt = match db.prepare_cached(
@@ -2663,7 +2655,7 @@ fn main() {
                         // Tag 0 or not found (lazy mode — occurrence table empty).
                         // Arc 38: use col-aware predict_role_with_stem (better than
                         // the prior inline regex-based classifier).
-                        let content = std::fs::read_to_string(&file).unwrap_or_default();
+                        let content = std::fs::read_to_string(file).unwrap_or_default();
                         let line_idx = if *line < 0 { 0usize } else { *line as usize };
                         let line_text = content.lines().nth(line_idx).unwrap_or("");
                         reliary_search::type_flow::predict_role_with_stem(line_text, stem)
@@ -2671,10 +2663,7 @@ fn main() {
                 }
             } else {
                 // No DB — fall back to col-aware structural detector.
-                let content = match std::fs::read_to_string(&file) {
-                    Ok(s) => s,
-                    Err(_) => String::new(),
-                };
+                let content = std::fs::read_to_string(file).unwrap_or_default();
                 let line_idx = if *line < 0 { 0usize } else { *line as usize };
                 let line_text = content.lines().nth(line_idx).unwrap_or("");
                 // Arc 38: col-aware classify, falls through to predict_role() if stem absent.
@@ -2683,7 +2672,7 @@ fn main() {
             println!("{}", role);
         }
         Commands::ParseExpr { line, path } => {
-            let db_path = index_db_path(&path);
+            let db_path = index_db_path(path);
             let table = if let Ok(db) = rusqlite::Connection::open(&db_path) {
                 let mut t = reliary_search::op_table::mine_op_table(&db).unwrap_or_else(|_| reliary_search::op_table::OpTable::new());
                 // Fall back to defaults if no ops were mined.
@@ -2704,7 +2693,7 @@ fn main() {
             } else {
                 reliary_search::op_table::OpTable::new()
             };
-            match reliary_search::expr_tree::parse_expression(&line, &table) {
+            match reliary_search::expr_tree::parse_expression(line, &table) {
                 Some(tree) => println!("{}", tree.dump(0)),
                 None => println!("(parse failed)"),
             }

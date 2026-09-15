@@ -62,7 +62,7 @@ pub fn is_likely_binary(path: &Path, probe_bytes: usize) -> bool {
 
     // Check 1: null byte present → binary.
     // LLVM auto-vectorizes this loop on x86-64 with SSE2.
-    if buf.iter().any(|&b| b == 0) {
+    if buf.contains(&0) {
         return true;
     }
 
@@ -154,7 +154,7 @@ pub fn stem_identifier(name: &str) -> String {
 /// S9: Streaming iterator version of scan_identifiers. Yields borrowed slices —
 /// caller applies to_ascii_lowercase lazily, avoiding the per-line Vec allocation.
 /// Grammar-free: same ASCII-only alphanumeric + 3..=40 length filter.
-pub fn scan_identifiers_iter<'a>(text: &'a str) -> impl Iterator<Item = &'a str> {
+pub fn scan_identifiers_iter(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .filter(|t| {
             let len = t.len();
@@ -223,15 +223,14 @@ fn inside_string_or_comment(line: &str, pos: usize) -> bool {
     //    it's in a comment.
     if let Some(slc_idx) = find_byte_outside_string(line, b'/') {
         // Check for `//` — need TWO consecutive `/` after the slc_idx.
-        if slc_idx + 1 < bytes.len() && bytes[slc_idx] == b'/' && bytes[slc_idx + 1] == b'/' {
-            if pos >= slc_idx { return true; }
-        }
+        if slc_idx + 1 < bytes.len() && bytes[slc_idx] == b'/' && bytes[slc_idx + 1] == b'/'
+            && pos >= slc_idx { return true; }
     }
 
     // 2. Block comment: scan for `/* ... */`. If `/*` appears before pos and
     //    no matching `*/` appears between `/*` and pos, it's in a block comment.
     //    For a single line we treat anything between `/*` and `*/` as comment.
-    if let Some(mut depth) = find_block_comment_depth(line, pos) {
+    if let Some(depth) = find_block_comment_depth(line, pos) {
         if depth > 0 { return true; }
     }
 
@@ -368,7 +367,6 @@ pub fn is_definition_str(phrase: &str, line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn write_tmp(name: &str, data: &[u8]) -> std::path::PathBuf {
         let p = std::env::temp_dir().join(name);

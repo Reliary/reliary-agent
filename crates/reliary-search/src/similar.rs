@@ -59,7 +59,7 @@ pub fn find_similar(db: &Connection, name: &str, top_n: usize) -> Vec<SimilarFn>
     if defs.is_empty() { return out; }
 
     // Anchor HV from its body tokens.
-    let mut store = MemoryStore::new(10_000);
+    let _store = MemoryStore::new(10_000);
     // store is mutable: encode_tokens registers token HVs
     let (anchor_file, anchor_line) = &defs[0];
     let meta = match crate::file_meta::get(anchor_file) {
@@ -71,7 +71,6 @@ pub fn find_similar(db: &Connection, name: &str, top_n: usize) -> Vec<SimilarFn>
     let anchor_text: String = meta.lines[start..end].join("\n");
     let mut anchor_tokens: Vec<String> = crate::scan_identifiers(&anchor_text);
     anchor_tokens.retain(|t| t.len() >= 3);
-    let anchor_hv = encode_fn(&mut store, &anchor_tokens);
 
     // V58b: candidate pool = ALL indexed function definitions (bounded).
     // The co-occurrence-pid approach under-sampled: doc-comment def rows and

@@ -24,7 +24,7 @@ use rustc_hash::FxHashMap;
 use rayon::prelude::*;
 
 use crate::schema::{classify_line, pack_flags};
-use crate::{scan_identifiers, stem_identifier, porter_stem_lower as porter_stem, is_likely_binary};
+use crate::{scan_identifiers, stem_identifier, is_likely_binary};
 
 // A-HIGH-6: block-comment-aware state tracking across lines.
 // Static assert ensures single-threaded usage (count_unmatched is always
@@ -118,15 +118,22 @@ pub(crate) struct DetectBlocksOut {
     pub(crate) line_block: Vec<usize>,
 }
 
+/// Per-token location: (line, zone, col, is_def, block_local_id, tag).
+type PhraseLoc = (usize, u8, usize, bool, usize, u8);
+/// phrase -> all its locations in one file.
+type PhraseLocations = FxHashMap<String, Vec<PhraseLoc>>;
+
+#[derive(Default)]
 struct FileResult {
     file: String,
     content: String,
     content_len: usize,
     /// phrase_id -> Vec<OccRow> for the new occurrence table (filled later when phrase_ids are known).
-    phrase_locations: FxHashMap<String, Vec<(usize /*line*/, u8 /*zone*/, usize /*col*/, bool /*is_def*/, usize /*block_local_id*/, u8 /*tag*/)>>,
+    phrase_locations: PhraseLocations,
     #[allow(dead_code)]
     lines_is_def: Vec<bool>, // pre-calculated is_def for each line
     /// Block rows computed per-file (in file-local block_id order; mapped to global ids at insert time).
+    #[allow(dead_code)]
     blocks: Vec<BlockRow>,
     #[allow(dead_code)]
     /// block_local_id for each line (indexed by line number).
@@ -144,9 +151,9 @@ struct FileResult {
 /// token_len proxy used by BM25.
 pub fn extract_file_phrases(
     content: &str,
-) -> (FxHashMap<String, Vec<(usize, u8, usize, bool, usize, u8)>>, i64) {
+) -> (PhraseLocations, i64) {
     let lines: Vec<&str> = content.lines().collect();
-    let mut phrase_locations: FxHashMap<String, Vec<(usize, u8, usize, bool, usize, u8)>> =
+    let mut phrase_locations: PhraseLocations =
         FxHashMap::default();
 
     let mut line_tags: Vec<u8> = Vec::with_capacity(lines.len());
@@ -182,11 +189,9 @@ pub fn extract_file_phrases(
             if crate::keywords::is_keyword(&stemmed) {
                 continue;
             }
-            let id_tag = if col == 0 && line_tag >= 5 {
-                line_tag
-            } else if matches!(line_tag, 1 | 2 | 3 | 4) && line_def_name == Some(token.as_str()) {
-                line_tag
-            } else if line_tag >= 5 && line_def_name == Some(token.as_str()) {
+            let id_tag = if (col == 0 && line_tag >= 5)
+                || (line_tag >= 1 && line_def_name == Some(token.as_str()))
+            {
                 line_tag
             } else {
                 0
@@ -339,7 +344,7 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
         let content = std::fs::read_to_string(path).ok()?;
 
         let lines: Vec<&str> = content.lines().collect();
-        let mut phrase_locations: FxHashMap<String, Vec<(usize, u8, usize, bool, usize, u8)>> = FxHashMap::default();
+        let mut phrase_locations: PhraseLocations = FxHashMap::default();
         let mut lines_is_def = Vec::with_capacity(lines.len());
 
         // Arc 33 Phase A: merge brace_depth + classify_structural + defined_name
@@ -393,7 +398,7 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
         if is_table_file {
             // Skip extraction — file is mostly a const table.
             // We still emit a single placeholder phrase_occ so the file is registered.
-            let mut minimal: FxHashMap<String, Vec<(usize, u8, usize, bool, usize, u8)>> = FxHashMap::default();
+            let mut minimal: PhraseLocations = FxHashMap::default();
             minimal.insert("__table_file__".to_string(), vec![(0, 0, 0, false, 0, 0)]);
             return Some(FileResult {
                 file,
@@ -429,14 +434,12 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
 
                 // Per-identifier tag: use line_tag, but distinguish the defined name
                 // (returned by structural detector) from other identifiers.
-                let id_tag = if col == 0 && line_tag >= 5 {
-                    line_tag // local_binding, param, import — first token
-                } else if matches!(line_tag, 1 | 2 | 3 | 4) && line_def_name == Some(token.as_str()) {
-                    line_tag // this token IS the defined name
-                } else if line_tag >= 5 && line_def_name == Some(token.as_str()) {
-                    line_tag // this token IS the defined name (local_var/param/import)
+                let id_tag = if (col == 0 && line_tag >= 5)
+                    || (line_tag >= 1 && line_def_name == Some(token.as_str()))
+                {
+                    line_tag
                 } else {
-                    0 // usage
+                    0
                 };
                 phrase_locations.entry(stemmed).or_default().push((
                     li,
@@ -510,9 +513,6 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
         .map_err(|e| format!("prepare phrase: {}", e))?;
     let mut sel_phrase_id = db.prepare_cached("SELECT id FROM phrases WHERE phrase = ?1")
         .map_err(|e| format!("prepare sel phrase: {}", e))?;
-    let mut ins_occurrence = db.prepare_cached(
-        "INSERT INTO occurrence (phrase_id, file_id, line, col, is_def, block_id, tag) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
-    ).map_err(|e| format!("prepare occ: {}", e))?;
 
     // Arc 33 Layer 6: detect fresh build by counting rows in occurrence BEFORE
     // the first delete. If 0 rows total, all DELETEs are no-ops and we skip them.
@@ -538,7 +538,6 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
     let mut t_filemap = std::time::Duration::ZERO;
     let mut t_occ_collect = std::time::Duration::ZERO;
     let mut t_phrase_occ = std::time::Duration::ZERO;
-    let mut n_blocks = 0u64;
 
     for res in results {
         let _t = std::time::Instant::now();
@@ -569,7 +568,6 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
         // empty until first query that needs blocks for this file (see
         // lazy_tables.rs::ensure_blocks_for_file). Drivers/ trust time
         // drops from 600s+ → ~10s.
-        n_blocks += res.blocks.len() as u64;
 
         // ─── v2: insert one occurrence row per (phrase, occurrence) ───
         // Arc 33 Phase B Trick #2: COLLECT all occurrences for the file,
@@ -578,6 +576,7 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
         // Arc 34 Step 3 LAZY OCCURRENCE: occurrence insertion is 41-50% of
         // trust time on Linux kernel. Skip at trust time. Build on-demand
         // at first find_references query per phrase (see symbol.rs).
+        #[allow(dead_code)]
         const OCC_BATCH: usize = 200;
 
         let mut phrase_data: Vec<(i64, u32, u32, u32, bool)> = Vec::new();
@@ -621,11 +620,11 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
             entry.push(flags[0]);
             // Append entry into the per-phrase blob. Reuse the entry Vec's
             // bytes by appending (avoid double-alloc).
-            let blob = phrase_blobs.entry(*phrase_id).or_insert_with(Vec::new);
+            let blob = phrase_blobs.entry(*phrase_id).or_default();
             blob.extend_from_slice(&entry);
         }
         // P1-5: accumulate file_phrases entries for this file.
-        file_phrase_ids.entry(file_id).or_insert_with(Vec::new)
+        file_phrase_ids.entry(file_id).or_default()
             .extend(phrase_data.iter().map(|(pid, ..)| *pid));
         t_phrase_occ += _tp.elapsed();
 
@@ -671,8 +670,7 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
         // Build a single INSERT per file with explicit VALUES.
         for (fid, phrase_ids) in &file_phrase_ids {
             if phrase_ids.is_empty() { continue; }
-            let values: Vec<String> = std::iter::repeat("(?, ?)")
-                .take(phrase_ids.len()).map(|s| s.to_string()).collect();
+            let values: Vec<String> = std::iter::repeat_n("(?, ?)", phrase_ids.len()).map(|s| s.to_string()).collect();
             let sql = format!(
                 "INSERT OR IGNORE INTO file_phrases (file_id, phrase_id) VALUES {}",
                 values.join(", ")
@@ -702,7 +700,7 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
     // table is empty at trust time (lazy build). Recreating them costs ~2s
     // on drivers and they're empty. The JIT rebuilds them lazily when the
     // first occurrence row is inserted.
-    let t_recreate = std::time::Instant::now();
+    let _t_recreate = std::time::Instant::now();
     db.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_block_file ON block(file_id); CREATE INDEX IF NOT EXISTS idx_block_range ON block(file_id, start_line, end_line);"
     ).map_err(|e| format!("recreate indexes: {}", e))?;

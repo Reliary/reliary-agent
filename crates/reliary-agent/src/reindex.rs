@@ -52,7 +52,7 @@ fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
     // V73: extract via the SHARED pipeline (stem_identifier, keywords, is_def,
     // zones, blocks). The old code used `tokenize()` (porter_stem) and wrote a
     // flags=0 stub — both silently degraded search after any edit.
-    let (phrase_locations, line_count) = reliary_search::ingest::extract_file_phrases(content);
+    let (phrase_locations, _line_count) = reliary_search::ingest::extract_file_phrases(content);
     let token_len = phrase_locations.len() as i64;
     let content_len = content.len() as i64;
 

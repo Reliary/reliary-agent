@@ -107,7 +107,7 @@ fn result_cache_get(key: u64) -> Option<String> {
 /// get_cached_db() while the caller held it checked out, opening a SECOND
 /// connection on every call and defeating the V54 warm-connection cache.
 fn index_stamp(db: Option<&rusqlite::Connection>) -> String {
-    let gen = db.map(|d| reliary_search::schema::index_gen(d)).unwrap_or(0);
+    let gen = db.map(reliary_search::schema::index_gen).unwrap_or(0);
     format!("{:08x}", (gen as u64 & 0xffff_ffff) as u32)
 }
 
@@ -144,6 +144,7 @@ fn result_cache_put(key: u64, text: String) {
 
 /// One-line compact form of a cached result: the answer line (V40 format
 /// puts the answer first), prefixed with "cached:".
+#[allow(dead_code)]
 fn compact_cached(text: &str) -> String {
     match text.lines().next() {
         Some(line) if !line.is_empty() => format!("cached: {}", line),
@@ -242,6 +243,7 @@ fn relpath_with(file_path: &str, workdir: &str) -> String {
         .unwrap_or_else(|| file_path.to_string())
 }
 
+#[allow(dead_code)]
 fn relpath(file_path: &str) -> String {
     let workdir = cached_cwd().to_string_lossy().to_string();
     relpath_with(file_path, &workdir)
@@ -342,7 +344,7 @@ fn closest_symbols(db: &Connection, name: &str, limit: usize) -> Vec<String> {
         }
         // V57: looser edit-distance (d <= 3) as last resort.
         if out.is_empty() {
-            for (cand, dist) in idx.closest(name, limit) {
+            for (cand, _dist) in idx.closest(name, limit) {
                 let s = cand.to_string();
                 if seen.insert(s.clone()) {
                     out.push(s);
@@ -361,7 +363,7 @@ fn closest_symbols(db: &Connection, name: &str, limit: usize) -> Vec<String> {
         if let Ok(mut stmt) = db.prepare_cached(
             "SELECT DISTINCT phrase FROM phrases WHERE phrase LIKE ?1 ORDER BY LENGTH(phrase) ASC LIMIT ?2"
         ) {
-            if let Ok(mut rows) = stmt.query_map(params![&like, limit as i64], |r| r.get::<_, String>(0)) {
+            if let Ok(rows) = stmt.query_map(params![&like, limit as i64], |r| r.get::<_, String>(0)) {
                 let v: Vec<String> = rows.filter_map(|r| r.ok()).collect();
                 if !v.is_empty() { return v; }
             }
@@ -373,7 +375,7 @@ fn closest_symbols(db: &Connection, name: &str, limit: usize) -> Vec<String> {
     if let Ok(mut stmt) = db.prepare_cached(
         "SELECT DISTINCT phrase FROM phrases WHERE phrase LIKE ?1 ORDER BY LENGTH(phrase) ASC LIMIT ?2"
     ) {
-        if let Ok(mut rows) = stmt.query_map(params![&like, limit as i64], |r| r.get::<_, String>(0)) {
+        if let Ok(rows) = stmt.query_map(params![&like, limit as i64], |r| r.get::<_, String>(0)) {
             let v: Vec<String> = rows.filter_map(|r| r.ok()).collect();
             if !v.is_empty() { return v; }
         }
@@ -529,16 +531,21 @@ fn truncate_result(result: &mut DispatchResult, args: &serde_json::Map<String, s
 /// C12: JSON-RPC + semantic error codes.
 /// Standard codes per JSON-RPC 2.0 spec.
 pub mod codes {
+    #[allow(dead_code)]
     pub const PARSE_ERROR: i32 = -32700;
+    #[allow(dead_code)]
     pub const INVALID_REQUEST: i32 = -32600;
+    #[allow(dead_code)]
     pub const METHOD_NOT_FOUND: i32 = -32601;
     pub const INVALID_PARAMS: i32 = -32602;
+    #[allow(dead_code)]
     pub const INTERNAL_ERROR: i32 = -32603;
     /// Custom range -32000..-32099 for server-defined errors.
     pub const NOT_FOUND: i32 = -32001;        // File/symbol/path doesn't exist
     pub const INVALID_PATH: i32 = -32002;      // Path traversal/escape attempt
     pub const DB_ERROR: i32 = -32003;          // SQLite error
     pub const IO_ERROR: i32 = -32004;           // Filesystem error (permission, etc)
+    #[allow(dead_code)]
     pub const SCHEMA_MISMATCH: i32 = -32005;    // Index file out of date
     pub const NOT_IMPLEMENTED: i32 = -32006;    // Stub/future work
 }
@@ -601,6 +608,7 @@ fn callee_signature(file: &str, line1: i32) -> String {
     raw
 }
 /// M7: Require a non-empty 'name' parameter. Returns it or an error.
+#[allow(dead_code)]
 pub fn require_name(args: &serde_json::Map<String, serde_json::Value>) -> Result<String, DispatchResult> {
     args.get("name").and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
@@ -641,7 +649,7 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                 Ok(p) => p,
                 Err(e) => return err_invalid_path(&e),
             };
-            let db_path = format!("{}/.reliary/index.sqlite", sp.to_string_lossy().trim_end_matches('/'));
+            let _db_path = format!("{}/.reliary/index.sqlite", sp.to_string_lossy().trim_end_matches('/'));
             // V54: cached connection.
             match get_cached_db() {
                 Some(db) => {
@@ -666,7 +674,7 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                 Ok(p) => p,
                 Err(e) => return err_invalid_path(&e),
             };
-            let db_path = format!("{}/.reliary/index.sqlite", sp.to_string_lossy().trim_end_matches('/'));
+            let _db_path = format!("{}/.reliary/index.sqlite", sp.to_string_lossy().trim_end_matches('/'));
             // V54: cached connection.
             match get_cached_db() {
                 Some(db) => {
@@ -695,13 +703,13 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                 a.insert("summary".into(), serde_json::Value::Bool(true));
                 return dispatch_tool_call("reliary_callgraph_v2", &a);
             }
-            return dispatch_tool_call("reliary_callgraph_v2", args);
+            dispatch_tool_call("reliary_callgraph_v2", args)
         }
         "reliary_list_methods" => {
-            return dispatch_tool_call("reliary_methods_on", args);
+            dispatch_tool_call("reliary_methods_on", args)
         }
         "reliary_find_dead_code" => {
-            return dispatch_tool_call("reliary_dead_symbols", args);
+            dispatch_tool_call("reliary_dead_symbols", args)
         }
         "reliary_describe" => {
             // V37: methods → list_methods. dead_only → find_dead_code.
@@ -791,7 +799,7 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                 };
                 return result;
             }
-            return dispatch_tool_call("reliary_pack_query", args);
+            dispatch_tool_call("reliary_pack_query", args)
         }        "reliary_verify" => {
             // V70 P1: mechanical claim verification against the index.
             let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
@@ -934,7 +942,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         "content": [{ "type": "text", "text": serde_json::json!({"file": risk.file, "risk": format!("{:?}", risk.risk), "reason": risk.reason, "blast_radius": blast_radius}).to_string() }]
                     }))
                 }
-                Err(e) => err_io("read", &format!("{}", e)),
+                Err(e) => err_io("read", format!("{}", e)),
             }
         }
         "reliary_fix" => {
@@ -977,7 +985,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         err_not_found("matches")
                     }
                 }
-                Err(e) => err_io("read", &format!("{}", e)),
+                Err(e) => err_io("read", format!("{}", e)),
             }
         }
         "reliary_dead" => {
@@ -1064,7 +1072,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         "content": [{ "type": "text", "text": content }]
                     })),
                     Ok(None) => err_not_found(&format!("hash {}", hash)),
-                    Err(e) => err_db(&format!("retrieve: {}", e)),
+                    Err(e) => err_db(format!("retrieve: {}", e)),
                 },
                 Err(_) => err_io("cache open", "not found"),
             }
@@ -1083,13 +1091,13 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             }))
         }
         // ───── Symbol-level vocab (occurrence-level, grammar-free) ─────
-        "reliary_find_references" | "reliary_find_references_type_flow" | "reliary_find_references_with_source" | "reliary_brace_graph" | "reliary_call_graph" | "reliary_brace_debug" | "reliary_goto_def" | "reliary_callgraph" | "reliary_callgraph_v2" | "reliary_methods_on" | "reliary_scope" | "reliary_dead_symbols" => {
+        "reliary_find_references" | "reliary_find_references_type_flow" | "reliary_find_references_with_source" | "reliary_brace_graph" | "reliary_brace_debug" | "reliary_goto_def" | "reliary_callgraph" | "reliary_callgraph_v2" | "reliary_methods_on" | "reliary_scope" | "reliary_dead_symbols" => {
             handle_symbol_tool(name, args)
         }
         "reliary_query_ast" => {
             // Already handled inline in this match — but actually we need to
             // reach it here.
-            return disp_query_ast(name, args);
+            disp_query_ast(name, args)
         }
         "reliary_architecture" => {
             let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
@@ -1100,7 +1108,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 Err(e) => return err_invalid_path(&e),
             };
             let pp_str = pp.to_string_lossy().to_string();
-            let db_path = format!("{}/.reliary/index.sqlite", pp_str.trim_end_matches('/'));
+            let _db_path = format!("{}/.reliary/index.sqlite", pp_str.trim_end_matches('/'));
             // V54: cached connection.
             match get_cached_db() {
                 Some(db) => {
@@ -1125,7 +1133,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 Err(e) => return err_invalid_path(&e),
             };
             let pp_str = pp.to_string_lossy().to_string();
-            let db_path = format!("{}/.reliary/index.sqlite", pp_str.trim_end_matches('/'));
+            let _db_path = format!("{}/.reliary/index.sqlite", pp_str.trim_end_matches('/'));
             // V54: cached connection.
             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
             if name.is_empty() { return err_missing_param("name"); }
@@ -1244,7 +1252,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             if let Some(target_lines) = target_entry {
                 for line in target_lines {
                     if line.contains("caller") || line.contains("match sites") || line.contains("constructors") {
-                        for token in line.split(|c: char| c == ':' || c == ',' || c == '/' || c == ';') {
+                        for token in line.split([':', ',', '/', ';']) {
                             let t = token.trim();
                             if !t.is_empty() && t != target_name {
                                 callers_to_include.insert(t.to_string());
@@ -1405,7 +1413,7 @@ fn open_symbol_index(path: &str) -> Result<(CachedDbGuard, String), DispatchResu
     // V54: reuse the thread-local cached connection (warm prepare_cached
     // statements, no per-call open/verify overhead).
     let db = get_cached_db().ok_or_else(|| {
-        err_db(&format!(
+        err_db(format!(
             "cannot open index at {}\n  -> run `reliary trust .` to build it",
             cached_db_path().display()
         ))
@@ -1463,11 +1471,11 @@ fn handle_symbol_tool_with_db(
             }
             if sym.is_empty() && !dead_only_early { return err_missing_param("name"); }
             let af_raw = args.get("anchor_file").and_then(|v| v.as_str()).unwrap_or("");
-            let af = resolve_af(af_raw);
-let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i32; let al = if al_raw > 0 { al_raw - 1 } else { al_raw };
+            let _af = resolve_af(af_raw);
+let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i32; let _al = if al_raw > 0 { al_raw - 1 } else { al_raw };
             // S1: match schema default 0.1
-            let th = args.get("threshold").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
-            let k = args.get("window").and_then(|v| v.as_i64()).unwrap_or(5) as i32;
+            let _th = args.get("threshold").and_then(|v| v.as_f64()).unwrap_or(0.1) as f32;
+            let _k = args.get("window").and_then(|v| v.as_i64()).unwrap_or(5) as i32;
             // V37: def_only replaces goto_def. usage_only replaces call_graph(inbound).
             let def_only = args.get("def_only").and_then(|v| v.as_bool()).unwrap_or(false);
             let usage_only = args.get("usage_only").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -1517,7 +1525,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
                 let functions_only = args.get("functions_only").and_then(|v| v.as_bool()).unwrap_or(true);
                 let scope: Option<String> = if !pf.is_empty() {
-                    Some(normalize_scope(&pf))
+                    Some(normalize_scope(pf))
                 } else {
                     // V66e: scope to the repo's src/ dir when it exists and the
                     // caller asked for the root (path="." or a repo root). This
@@ -1544,7 +1552,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 return match reliary_search::symbol::dead_symbols(db, limit, path_filter, functions_only) {
                     Ok(dead) => {
                         let mut text = String::new();
-                        for (stem, file, line, _col) in dead.iter() {
+                        for (_stem, file, line, _col) in dead.iter() {
                             // V66e: show corpus-relative path (strip the absolute
                             // mount) so the model can verify the scope, e.g.
                             // "src/search.rs:187" not the bare "search.rs:187".
@@ -1576,8 +1584,8 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             // Resolve phrase_id via stem_identifier (preserves snake_case: classify_structural
             // stays classify_structural, not stemmed to classifi).
 let sym_stemmed = reliary_search::stem_identifier(sym);
-let phrase_id = reliary_search::symbol::phrase_id_for(&db, &sym_stemmed).ok().flatten()
-    .or_else(|| reliary_search::symbol::phrase_id_for(&db, sym).ok().flatten());
+let phrase_id = reliary_search::symbol::phrase_id_for(db, &sym_stemmed).ok().flatten()
+    .or_else(|| reliary_search::symbol::phrase_id_for(db, sym).ok().flatten());
 
             // Direct occurrence query — ORDER BY is_def DESC ranks definitions first.
             // V39: add `f.file_path LIKE '%.rs'` filter to prefer Rust source files
@@ -1637,7 +1645,7 @@ let phrase_id = reliary_search::symbol::phrase_id_for(&db, &sym_stemmed).ok().fl
             } else {
                 Vec::new()
             };
-            let mut last_err = String::new();
+            let _last_err = String::new();
 
             let wd = cached_cwd().to_string_lossy().to_string();
 
@@ -1708,7 +1716,7 @@ if def_only {
     // V59: no is_def rows yet → try JIT + centrality before giving up.
     // The occurrence table builds lazily; a fresh index has zero rows until
     // the first query triggers ensure_occurrence_for_phrase.
-    if let Some((fp, line, _)) = reliary_search::type_flow::top_candidate_definitions(&db, sym).into_iter().next() {
+    if let Some((fp, line, _)) = reliary_search::type_flow::top_candidate_definitions(db, sym).into_iter().next() {
         let f_short = std::path::Path::new(&fp).file_name()
             .map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| fp.clone());
         let code_evidence = reliary_search::file_meta::get(&fp)
@@ -1721,7 +1729,7 @@ if def_only {
         }));
     }
     // V59 B1: maybe it's a trait being implemented — return implementors.
-    let impls = reliary_search::callgraph_v2::find_trait_impls(&db, sym);
+    let impls = reliary_search::callgraph_v2::find_trait_impls(db, sym);
     if !impls.is_empty() {
         let items: Vec<String> = impls.iter().take(8)
             .map(|i| format!("{} ({}:{})", i.type_name,
@@ -1734,7 +1742,7 @@ if def_only {
         }));
     }
     // Still nothing — suggest closest symbols (prevents retry loop)
-    let suggestions = closest_symbols(&db, sym, 5);
+    let suggestions = closest_symbols(db, sym, 5);
     let text = if suggestions.is_empty() {
         format!("No definition found for \"{}\" in this index.\n", sym)
     } else {
@@ -1767,7 +1775,7 @@ if def_only {
                     let looks_type_t = sym.chars().next()
                         .map(|c| c.is_ascii_uppercase()).unwrap_or(false);
                     let impls = if looks_type_t {
-                        reliary_search::callgraph_v2::find_trait_impls(&db, sym)
+                        reliary_search::callgraph_v2::find_trait_impls(db, sym)
                     } else { Vec::new() };
                     if !impls.is_empty() {
                         let items: Vec<String> = impls.iter().take(8)
@@ -1781,7 +1789,7 @@ if def_only {
                         }));
                     }
                     // V50: Informational success — prevents dead-end retry
-                    let suggestions = closest_symbols(&db, sym, 5);
+                    let suggestions = closest_symbols(db, sym, 5);
                     let text = if suggestions.is_empty() {
                         format!("No call sites found for \"{}\" in non-test code.\n", sym)
                     } else {
@@ -1851,7 +1859,7 @@ if def_only {
                     reliary_search::file_meta::get(f)
                         .or_else(|| {
                             // Look up by absolute path
-                            let abs = std::path::Path::new(f).to_string_lossy().to_string();
+                            let _abs = std::path::Path::new(f).to_string_lossy().to_string();
                             None
                         })
                         .and_then(|meta| meta.lines.get(*ln as usize).cloned())
@@ -1875,7 +1883,7 @@ if def_only {
                 out.push_str(&format!("{} is defined at {}:{}. ", qn, f_short, ln));
             } else {
                 // V59 B1: trait? return implementors instead of a dead end.
-                let impls = reliary_search::callgraph_v2::find_trait_impls(&db, sym);
+                let impls = reliary_search::callgraph_v2::find_trait_impls(db, sym);
                 if !impls.is_empty() {
                     let items: Vec<String> = impls.iter().take(8)
                         .map(|i| format!("{} ({}:{})", i.type_name,
@@ -1914,7 +1922,7 @@ if def_only {
             let af_raw = args.get("anchor_file").and_then(|v| v.as_str()).unwrap_or("");
             let af = resolve_af(af_raw);
 let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i32; let al = if al_raw > 0 { al_raw - 1 } else { al_raw };
-            match reliary_search::symbol::goto_def(&db, sym, &af, al) {
+            match reliary_search::symbol::goto_def(db, sym, &af, al) {
                 Ok(Some(hit)) => {
                     let wd = cached_cwd().to_string_lossy().to_string();
                     let hit_obj = hit_with_qualified_name(&hit.file_path, hit.line, hit.col, &wd);
@@ -1955,12 +1963,12 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             };
             // V13: delegate to callgraph_v2 for Fix C + D (anchor validation, depth-2 expansion)
             let depth = delegate_depth(sym);
-            match reliary_search::callgraph_v2::build_call_graph(&db, sym, ".", anchor.clone(), depth) {
+            match reliary_search::callgraph_v2::build_call_graph(db, sym, ".", anchor.clone(), depth) {
                 Ok(cg) => {
                     // If the qualified name returned empty, try the unqualified last component.
                     if cg.callees.is_empty() && cg.callers.is_empty() && sym.contains("::") {
                         let last = sym.rsplit("::").next().unwrap_or(sym);
-                        if let Ok(cg2) = reliary_search::callgraph_v2::build_call_graph(&db, last, ".", anchor, delegate_depth(last)) {
+                        if let Ok(cg2) = reliary_search::callgraph_v2::build_call_graph(db, last, ".", anchor, delegate_depth(last)) {
                             let caller_names: Vec<&str> = cg2.callers.iter().map(|c| c.name.as_str()).collect();
                             // V64: callees include their definition site so answers can cite file:line.
                             let callee_list: Vec<String> = cg2.callees.iter().map(|c| {
@@ -2025,7 +2033,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 Some((anchor_file.to_string(), anchor_line))
             };
             let depth_v2 = delegate_depth(sym);
-            match reliary_search::callgraph_v2::build_call_graph(&db, sym, path, anchor, depth_v2) {
+            match reliary_search::callgraph_v2::build_call_graph(db, sym, path, anchor, depth_v2) {
                 Ok(mut cg) => {
                     // Phase 1: strip whitespace from source fields (cache-safe cost reduction).
                     cg.source_preview = cg.source_preview.trim().to_string();
@@ -2105,7 +2113,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
         "reliary_methods_on" => {
             // V40: One-line methods output
             let type_name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            match reliary_search::callgraph_v2::find_methods_on(&db, type_name) {
+            match reliary_search::callgraph_v2::find_methods_on(db, type_name) {
                 Ok(mr) => {
                     let text = if mr.methods.is_empty() {
                         format!("No methods found on {}.\n", type_name)
@@ -2131,7 +2139,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             let af_raw = args.get("anchor_file").and_then(|v| v.as_str()).unwrap_or("");
             let af = resolve_af(af_raw);
 let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i32; let al = if al_raw > 0 { al_raw - 1 } else { al_raw };
-            match reliary_search::symbol::scope(&db, sym, &af, al) {
+            match reliary_search::symbol::scope(db, sym, &af, al) {
                 Ok(Some((lo, hi, cnt))) => DispatchResult::Success(serde_json::json!({
                     "content": [{ "type": "text", "text": serde_json::json!({
                         "name": sym, "min_line": lo + 1, "max_line": hi + 1, "count": cnt
@@ -2149,12 +2157,12 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
             let path_filter = args.get("path").and_then(|v| v.as_str()).filter(|s| !s.is_empty() && *s != ".");
             let functions_only = args.get("functions_only").and_then(|v| v.as_bool()).unwrap_or(true);
-            match reliary_search::symbol::dead_symbols(&db, limit, path_filter, functions_only) {
+            match reliary_search::symbol::dead_symbols(db, limit, path_filter, functions_only) {
                 Ok(dead) => {
                     // V35: Flat text output — same fix as find_references V25.
                     let mut out = String::with_capacity(1024);
                     out.push_str(&format!("The answer is: {} dead items in {}:\n", dead.len(), path_filter.unwrap_or(".")));
-                    for (stem, file, line, col) in &dead {
+                    for (stem, file, line, _col) in &dead {
                         let f_short = file.rsplit('/').next().unwrap_or(file);
                         out.push_str(&format!("{} at {}:{}\n", stem, f_short, line + 1));
                     }
@@ -2173,16 +2181,13 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
 let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i32; let al = if al_raw > 0 { al_raw - 1 } else { al_raw };
             let th = args.get("threshold").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
             // Arc 42 Phase A: auto-anchor + dead-end fallback.
-            let mut hits = match reliary_search::type_flow::find_references_type_flow(&db, sym, &af, al, th) {
-                Ok(h) => h,
-                Err(_) => Vec::new(),
-            };
+            let mut hits = reliary_search::type_flow::find_references_type_flow(db, sym, &af, al, th).unwrap_or_default();
             if hits.is_empty() || af.is_empty() {
-                let auto = match reliary_search::type_flow::find_references_auto(&db, sym, th) { Ok(v) => v, Err(e) => { eprintln!("find_references_auto: {}", e); Vec::new() } };
+                let auto = match reliary_search::type_flow::find_references_auto(db, sym, th) { Ok(v) => v, Err(e) => { eprintln!("find_references_auto: {}", e); Vec::new() } };
                 if !auto.is_empty() {
                     hits = auto;
                 } else {
-                    hits = match reliary_search::type_flow::find_references_fallback(&db, sym, 50) { Ok(v) => v, Err(e) => { eprintln!("find_references_fallback: {}", e); Vec::new() } };
+                    hits = match reliary_search::type_flow::find_references_fallback(db, sym, 50) { Ok(v) => v, Err(e) => { eprintln!("find_references_fallback: {}", e); Vec::new() } };
                 }
             }
             {
@@ -2216,8 +2221,8 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     .unwrap_or("");
                 let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(30) as usize;
                 let functions_only = args.get("functions_only").and_then(|v| v.as_bool()).unwrap_or(true);
-                let pf: Option<&str> = if dpath == "." || dpath.is_empty() { None } else { Some(&dpath[..]) };
-                let dir_label = if dpath.is_empty() { "." } else { &dpath[..] };
+                let pf: Option<&str> = if dpath == "." || dpath.is_empty() { None } else { Some(dpath) };
+                let dir_label = if dpath.is_empty() { "." } else { dpath };
                 return match reliary_search::symbol::dead_symbols(db, limit, pf, functions_only) {
                     Ok(items) => {
                         // dead_symbols returns (phrase_text, file_path, line0, col)
@@ -2272,7 +2277,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     }
                     None => {
                         // V57: same closest-symbol recovery as find_references.
-                        let suggestions = closest_symbols(&db, sym, 5);
+                        let suggestions = closest_symbols(db, sym, 5);
                         let text = if suggestions.is_empty() {
                             format!("No definition found for \"{}\" in this index.\n", sym)
                         } else {
@@ -2326,19 +2331,16 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             // Try user-supplied anchor first. If empty anchor OR zero hits,
             // discover best IS_DEF occurrence. If still zero, return all
             // occurrences unfiltered (grep-style fallback).
-            let mut hits = match reliary_search::type_flow::find_references_type_flow(&db, sym, &af, al, th) {
-                Ok(h) => h,
-                Err(_) => Vec::new(),
-            };
+            let mut hits = reliary_search::type_flow::find_references_type_flow(db, sym, &af, al, th).unwrap_or_default();
             if hits.is_empty() || af.is_empty() {
                 // Auto-discover anchor.
-                let auto = match reliary_search::type_flow::find_references_auto(&db, sym, th) { Ok(v) => v, Err(e) => { eprintln!("find_references_auto: {}", e); Vec::new() } };
+                let auto = match reliary_search::type_flow::find_references_auto(db, sym, th) { Ok(v) => v, Err(e) => { eprintln!("find_references_auto: {}", e); Vec::new() } };
                 if !auto.is_empty() {
                     hits = auto;
                 } else {
                     // Last resort: unfiltered fallback.
                     let lim = limit.unwrap_or(50);
-                    hits = match reliary_search::type_flow::find_references_fallback(&db, sym, lim) { Ok(v) => v, Err(e) => { eprintln!("find_references_fallback: {}", e); Vec::new() } };
+                    hits = match reliary_search::type_flow::find_references_fallback(db, sym, lim) { Ok(v) => v, Err(e) => { eprintln!("find_references_fallback: {}", e); Vec::new() } };
                 }
             }
             // Use the auto-anchor path result.
@@ -2357,30 +2359,6 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 });
             }
             let mut is_summary_mode = false;
-            if !af.is_empty() && al > 0 {
-                // P5-1: use safe_path result directly as the absolute path.
-                // Was: .is_ok() discarded the canonicalized path, then a separate
-                // current_dir().join() recomputed it — 2 syscalls per call.
-                let abs = safe_path(&af, &dir).ok(); // GUARDED: intentional — None => fall through
-                if let Some(abs) = abs {
-                if let Ok(file) = std::fs::File::open(&abs) {
-                    use std::io::{BufRead, BufReader};
-                    let anchor_line_text = BufReader::new(file).lines()
-                        .nth((al as usize).max(1) - 1)
-                        .and_then(|r| r.ok())
-                        .unwrap_or_default();
-                        let anchor_lt = anchor_line_text.trim_start();
-                        // Grammar-free intent detection.
-                        let fn_pat = format!("fn {}(", sym);
-                        let call_pat = format!(".{}(", sym);
-                        let let_pat = format!("let {}", sym);
-                        if anchor_lt.contains(&fn_pat) || anchor_lt.contains(&format!("fn {}<", sym)) {
-                        } else if anchor_lt.contains(&call_pat) {
-                        } else if anchor_lt.contains(&let_pat) || anchor_lt.contains(&format!("let mut {}", sym)) {
-                        }
-                    }
-                }
-            }
 
             // Tier 2: summary-only mode.
             if let Some(ws) = args.get("with_source") {
@@ -2399,14 +2377,14 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 if top5.len() >= 5 {
                     let avg_sim = top5.iter().map(|h| h.similarity).sum::<f32>() / 5.0;
                     if avg_sim >= 0.9 {
-                        (n as usize).min(10)
+                        n.min(10)
                     } else if avg_sim >= 0.5 {
-                        (n as usize).min(20) 
+                        n.min(20) 
                     } else {
-                        n.min(30) as usize
+                        n.min(30)
                     }
                 } else {
-                    n.min(30) as usize
+                    n.min(30)
                 }
             } else {
                 (hits.len() as usize).min(30)
@@ -2608,7 +2586,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             if file_path.is_empty() {
                 return err_missing_param("file_path");
             }
-            let fp = match safe_path(file_path, &dir) {
+            let fp = match safe_path(file_path, dir) {
                 Ok(p) => p,
                 Err(e) => return err_db(format!("reliary_brace_graph: {}", e)),
             };
@@ -2649,7 +2627,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             if file_path.is_empty() {
                 return err_missing_param("file_path");
             }
-            let fp = match safe_path(file_path, &dir) {
+            let fp = match safe_path(file_path, dir) {
                 Ok(p) => p,
                 Err(e) => return err_db(format!("reliary_call_graph: {}", e)),
             };

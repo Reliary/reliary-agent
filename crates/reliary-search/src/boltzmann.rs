@@ -126,7 +126,7 @@ mod tests {
         // With scores 5, 1, 0.1 and T=1, the low score 0.1 should drop below tau=0.05.
         let calibrated = calibrate_hits(&hits, 1.0, 0.05);
         assert!(calibrated.len() < 3, "low-score hit should be cut, got {} hits", calibrated.len());
-        assert!(calibrated.len() >= 1);
+        assert!(!calibrated.is_empty());
     }
 
     #[test]

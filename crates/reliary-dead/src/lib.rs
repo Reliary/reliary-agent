@@ -267,7 +267,7 @@ fn collect_source_files(path: &str) -> Vec<String> {
         .into_iter()
         .filter_entry(|e| {
             !e.file_name().to_str().map(|s| {
-                SKIP_DIRS.iter().any(|d| s == *d) || s.starts_with('.')
+                SKIP_DIRS.contains(&s) || s.starts_with('.')
             }).unwrap_or(false)
         })
         .flatten()

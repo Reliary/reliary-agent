@@ -2,7 +2,6 @@
 // We test the tool's registration and basic implementation by static analysis
 // rather than subprocess invocation (MCP stdio doesn't exit cleanly on stdin close).
 
-use std::path::Path;
 
 #[test]
 fn s2_mcp_source_contains_describe_tool_definition() {

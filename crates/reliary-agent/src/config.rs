@@ -69,7 +69,7 @@ pub fn global_config_path() -> PathBuf {
     let home = std::env::var("HOME")
         .ok()
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir())
+        .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."));
     home.join(CONFIG_FILENAME)
 }

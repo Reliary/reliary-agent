@@ -224,14 +224,14 @@ pub fn to_postfix(&self, tokens: &[String]) -> Vec<String> {
 
     pub fn save(&self, path: &str) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(&self.entries)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         fs::write(path, json)
     }
 
     pub fn load(path: &str) -> std::io::Result<Self> {
         let content = fs::read_to_string(path)?;
         let entries: FxHashMap<String, OpEntry> = serde_json::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         Ok(Self { entries, postfix: default_postfix() })
     }
 }
@@ -374,11 +374,10 @@ fn mine_v2(
                 if i > 0 && (bytes[i-1] == b'#' || (i > 1 && bytes[i-2] == b'#' && bytes[i-1].is_ascii_whitespace())) {
                     bracket_depth += 1;
                 }
-            } else if b == b'[' {
-                if i > 0 && bytes[i-1] == b'#' {
+            } else if b == b'['
+                && i > 0 && bytes[i-1] == b'#' {
                     bracket_depth += 1;
                 }
-            }
             i += 1;
             continue;
         }
@@ -479,6 +478,7 @@ fn check_space_after(bytes: &[u8], pos: usize) -> bool {
 /// are mostly wrapped are HIGH precedence (need parens to override lower-precedence neighbors).
 ///
 /// Also extract dominance from OP-OP pairs within paren groups.
+#[allow(dead_code)]
 fn mine_operator_chains(
     content: &str,
     dominates: &mut FxHashMap<(String, String), u64>,
@@ -553,7 +553,7 @@ fn mine_operator_chains(
         }
 
         // Extract operator.
-        let op_start = i;
+        let _op_start = i;
         let op_str: String = match extract_op_at(bytes, &mut i, b) {
             Some(s) => s,
             None => continue,
@@ -609,6 +609,7 @@ fn extract_op_at(bytes: &[u8], i: &mut usize, b: u8) -> Option<String> {
     None
 }
 
+#[allow(dead_code)]
 fn is_wrapped_in_paren_at(bytes: &[u8], pos: usize) -> bool {
     let mut depth = 0;
     let mut i = pos;

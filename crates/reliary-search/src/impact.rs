@@ -4,7 +4,7 @@
 //! file, which callers are tests, and a risk verdict. Deterministic:
 //! same index + same symbol => same output.
 
-use crate::callgraph_v2::{build_call_graph, build_call_graph_ext, CallGraph};
+use crate::callgraph_v2::{build_call_graph_ext, CallGraph};
 use rusqlite::Connection;
 
 #[derive(Debug, Clone)]

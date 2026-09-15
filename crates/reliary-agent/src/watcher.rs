@@ -27,20 +27,26 @@ const TICK_MS: u64 = 100;
 /// Record of a single file change processed by the watcher.
 #[derive(Clone, Debug)]
 pub struct ChangeRecord {
+    #[allow(dead_code)]
     pub file: String,
+    #[allow(dead_code)]
     pub ts: Instant,
+    #[allow(dead_code)]
     pub outcome: String, // "ok" | "error" | "skipped"
 }
 
 /// Shared state for the watcher — cloneable handle.
 #[derive(Clone)]
 pub struct WatcherHandle {
+    #[allow(dead_code)]
     pub last_changes: Arc<Mutex<VecDeque<ChangeRecord>>>,
     pub workdir: PathBuf,
+    #[allow(dead_code)]
     pub started_at: Instant,
 }
 
 impl WatcherHandle {
+    #[allow(dead_code)]
     pub fn recent_changes(&self) -> Vec<ChangeRecord> {
         self.last_changes.lock().map(|v| v.iter().cloned().collect()).unwrap_or_default()
     }
@@ -85,7 +91,7 @@ pub fn start_watcher(workdir: &Path) -> Result<WatcherHandle, String> {
     let watched_dir = project_root.clone();
 
     let changes = Arc::new(Mutex::new(VecDeque::<ChangeRecord>::new()));
-    let changes_for_handler = changes.clone();
+    let _changes_for_handler = changes.clone();
     let project_for_handler = project_root.clone();
 
     // Trailing-edge debounce state: path → (last event time, removed?).
@@ -188,7 +194,7 @@ fn push_change(changes: &Arc<Mutex<VecDeque<ChangeRecord>>>, file: &str, outcome
 /// the worker loop processes paths after they go quiet.
 fn record_event(
     event: &Event,
-    project_root: &PathBuf,
+    project_root: &Path,
     pending: &Arc<Mutex<HashMap<PathBuf, Pending>>>,
 ) {
     let is_change = matches!(
@@ -206,11 +212,10 @@ fn record_event(
         }
         // For creations/modifications the file must exist and be text-like.
         // Removals are always recorded (the worker indexes empty content).
-        if !removed {
-            if !path.exists() || !is_supported(path) {
+        if !removed
+            && (!path.exists() || !is_supported(path)) {
                 continue;
             }
-        }
         let mut map = pending.lock().unwrap_or_else(|p| p.into_inner());
         // A Modify after a Remove (or vice versa) keeps the LATEST intent.
         map.insert(path.clone(), Pending { last: Instant::now(), removed });

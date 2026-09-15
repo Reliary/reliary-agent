@@ -7,11 +7,11 @@
 //!    matches. This fixes the receiver-vs-method ambiguity.
 //!
 //! 2. PROGRESSIVE WILDCARDS: match (left, right) at 5 levels of specificity:
-//!      Level 0: exact match          → 1.0  "same call site"
-//!      Level 1: wildcard-right       → 0.8  "same receiver, any arg"
-//!      Level 2: wildcard-left        → 0.7  "same first arg, any receiver"
-//!      Level 3: both wildcard        → 0.5  "any call of this method"
-//!      Level 4: empty-key fallback   → 0.2  "no distinguishing context"
+//!    Level 0: exact match          → 1.0  "same call site"
+//!    Level 1: wildcard-right       → 0.8  "same receiver, any arg"
+//!    Level 2: wildcard-left        → 0.7  "same first arg, any receiver"
+//!    Level 3: both wildcard        → 0.5  "any call of this method"
+//!    Level 4: empty-key fallback   → 0.2  "no distinguishing context"
 //!    These levels are STRUCTURAL (0/1/2 wildcards), not tuned.
 
 use crate::symbol::{OccHit, file_id_for, phrase_id_for};
@@ -128,7 +128,7 @@ pub fn context_key_at(file: &str, line: i32, stem: &str, col: usize) -> (String,
 /// Resolve the BEST context key for an anchor: try ALL columns, pick the one
 /// whose key has the most matches in the DB.
 pub fn best_context_key(
-    db: &Connection, phrase_id: i64, anchor_file: &str, anchor_line: i32, stem: &str,
+    _db: &Connection, _phrase_id: i64, anchor_file: &str, anchor_line: i32, stem: &str,
 ) -> (String, String) {
     // Arc 60 Phase 2: use file_meta cache instead of file read.
     // V51: anchor_line from MCP is 1-indexed; file_lines is 0-indexed.
@@ -337,10 +337,10 @@ pub fn find_references_pattern_hybrid(
         ));
     }
     for &(_, _, _, _, _, _, block_id) in &all_occ {
-        if !fp_cache.contains_key(&block_id) {
+        if let std::collections::hash_map::Entry::Vacant(e) = fp_cache.entry(block_id) {
             if let Ok(bag) = block_bag(db, block_id) {
                 let fp: rustc_hash::FxHashSet<i64> = bag.keys().copied().collect();
-                fp_cache.insert(block_id, fp);
+                e.insert(fp);
             }
         }
     }

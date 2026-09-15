@@ -95,14 +95,14 @@ fn block_bag_bigram(db: &Connection, block_id: i64) -> rusqlite::Result<FxHashMa
          GROUP BY a.phrase_id, b.phrase_id",
     )?;
     let mut rows = stmt.query(params![block_id])?;
-    let BIGRAM_OFFSET: i64 = 10_000_000;
+    let bigram_offset: i64 = 10_000_000;
     let max_phrase_id: i64 = db.query_row("SELECT COALESCE(MAX(id), 1) FROM phrases", [], |r| r.get(0)).unwrap_or(1);
     let stride = max_phrase_id + 1;
     while let Some(r) = rows.next()? {
         let pid_a: i64 = r.get(0)?;
         let pid_b: i64 = r.get(1)?;
         let c: i64 = r.get(2)?;
-        let bigram_key = pid_a * stride + pid_b + BIGRAM_OFFSET;
+        let bigram_key = pid_a * stride + pid_b + bigram_offset;
         *bag.entry(bigram_key).or_insert(0) += c as u32;
     }
     Ok(bag)
@@ -201,6 +201,7 @@ impl IdfTable {
 }
 
 /// Weighted block bag: raw counts multiplied by IDF weights.
+#[allow(dead_code)]
 fn block_bag_idf(db: &Connection, idf: &IdfTable, block_id: i64) -> rusqlite::Result<FxHashMap<i64, f32>> {
     let raw = block_bag(db, block_id)?;
     Ok(idf.weight_bag(&raw))
@@ -243,7 +244,7 @@ fn cosine_f32(a: &FxHashMap<i64, f32>, b: &FxHashMap<i64, f32>) -> f32 {
         nb += vb_f * vb_f;
     }
     let denom = (na.sqrt() * nb.sqrt()) as f32;
-    if denom == 0.0 { 0.0 } else { (dot as f64 / denom as f64) as f32 }
+    if denom == 0.0 { 0.0 } else { (dot / denom as f64) as f32 }
 }
 
 /// Stem a raw token the same way the indexer does (for callers that supply raw names).
@@ -421,9 +422,9 @@ pub fn find_references_prototype(
     for _ in 1..effective_k {
         // Pre-fetch all candidate bags outside the inner loop to avoid borrow conflicts.
         for &bid in &candidate_blocks {
-            if !bag_cache.contains_key(&bid) {
+            if let std::collections::hash_map::Entry::Vacant(e) = bag_cache.entry(bid) {
                 if let Ok(bag) = block_bag(db, bid) {
-                    bag_cache.insert(bid, bag);
+                    e.insert(bag);
                 }
             }
         }
@@ -474,9 +475,9 @@ pub fn find_references_prototype(
         let block_id: i64 = r.get(6)?;
 
         // Pre-fetch candidate bag outside the inner loop.
-        if !bag_cache.contains_key(&block_id) {
+        if let std::collections::hash_map::Entry::Vacant(e) = bag_cache.entry(block_id) {
             if let Ok(bag) = block_bag(db, block_id) {
-                bag_cache.insert(block_id, bag);
+                e.insert(bag);
             }
         }
 
@@ -1068,80 +1069,6 @@ pub fn dead_symbols(db: &Connection, limit: usize, path_filter: Option<&str>, fu
     Ok(dead)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ingest::DetectBlocksOut;
-    use crate::ingest::detect_blocks;
-
-    #[test]
-    fn test_cosine_identical() {
-        let mut a = FxHashMap::default();
-        a.insert(1, 3);
-        a.insert(2, 1);
-        let b = a.clone();
-        assert!((cosine(&a, &b) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_orthogonal() {
-        let mut a = FxHashMap::default();
-        a.insert(1, 5);
-        let mut b = FxHashMap::default();
-        b.insert(2, 5);
-        assert!(cosine(&a, &b).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_partial() {
-        let mut a = FxHashMap::default();
-        a.insert(1, 3);
-        a.insert(2, 2);
-        let mut b = FxHashMap::default();
-        b.insert(1, 1);
-        b.insert(2, 5);
-        // dot = 3*1 + 2*5 = 13
-        // |a| = sqrt(9+4) = sqrt(13)
-        // |b| = sqrt(1+25) = sqrt(26)
-        let s = cosine(&a, &b);
-        let expected = 13.0 / ((13.0f64).sqrt() * (26.0f64).sqrt());
-        assert!((s as f64 - expected).abs() < 1e-6, "{} vs {}", s, expected);
-    }
-
-    #[test]
-    fn test_detect_blocks_basic() {
-        // Grammar-free block detection treats "}" at indent 0 as the same block as
-        // "fn a() {" because indentation rules only see indent >= leading. Real scope
-        // boundaries require parser awareness — by design we don't have that.
-        let lines = vec![
-            "fn a() {",      // 0
-            "    let x = 1;", // 1
-            "    let y = 2;", // 2
-            "}",              // 3 same indent 0 → same block
-            "fn b() {",      // 4 same indent 0 → same block
-            "    let z = 3;", // 5
-        ];
-        let DetectBlocksOut { blocks, line_block: lb } = detect_blocks(&lines);
-        assert_eq!(blocks.len(), 1, "grammar-free: same-indent runs are one block");
-        assert_eq!(blocks[0].start_line, 0);
-        assert_eq!(blocks[0].end_line, 5);
-        assert_eq!(lb[5], 0);
-    }
-
-    #[test]
-    fn test_detect_blocks_blank_separator() {
-        let lines = vec![
-            "let x = 1;",
-            "",
-            "let y = 2;",
-        ];
-        let DetectBlocksOut { blocks, line_block: _lb } = detect_blocks(&lines);
-        assert_eq!(blocks.len(), 2, "blank line should split blocks");
-        assert_eq!(blocks[0].start_line, 0);
-        assert_eq!(blocks[1].start_line, 2);
-    }
-}
-
 /// Extract the stem(s) immediately to the left of col on line_text.
 /// Returns the raw left-token string before further tokenization/splitting.
 /// E.g. for "self.poll(cx)" at col 5 (pointing at "poll"), returns "self".
@@ -1174,13 +1101,13 @@ pub fn find_references_role(
     use crate::compat::{extract_window, ncd_similarity};
 
     let phrase_id = match phrase_id_for(db, raw_name)? { Some(id) => id, None => return Ok(vec![]) };
-    let file_id = match file_id_for(db, anchor_file)? { Some(id) => id, None => return Ok(vec![]) };
+    let _file_id = match file_id_for(db, anchor_file)? { Some(id) => id, None => return Ok(vec![]) };
 
     // Read anchor file and extract anchor role + NCD window.
     // V54: prefer file_meta cache (Arc<FileMeta>.lines) over disk re-read.
-    let anchor_lines: Vec<String> = crate::file_meta::get(&anchor_file)
+    let anchor_lines: Vec<String> = crate::file_meta::get(anchor_file)
         .map(|m| m.lines.clone())
-        .or_else(|| std::fs::read_to_string(&anchor_file).ok().map(|c| c.lines().map(|l| l.to_string()).collect()))
+        .or_else(|| std::fs::read_to_string(anchor_file).ok().map(|c| c.lines().map(|l| l.to_string()).collect()))
         .unwrap_or_default();
     if anchor_lines.is_empty() {
         return Ok(vec![]);
@@ -1255,4 +1182,78 @@ pub fn find_references_role(
             .then_with(|| a.line.cmp(&b.line))
     });
     Ok(hits)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ingest::DetectBlocksOut;
+    use crate::ingest::detect_blocks;
+
+    #[test]
+    fn test_cosine_identical() {
+        let mut a = FxHashMap::default();
+        a.insert(1, 3);
+        a.insert(2, 1);
+        let b = a.clone();
+        assert!((cosine(&a, &b) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_cosine_orthogonal() {
+        let mut a = FxHashMap::default();
+        a.insert(1, 5);
+        let mut b = FxHashMap::default();
+        b.insert(2, 5);
+        assert!(cosine(&a, &b).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_cosine_partial() {
+        let mut a = FxHashMap::default();
+        a.insert(1, 3);
+        a.insert(2, 2);
+        let mut b = FxHashMap::default();
+        b.insert(1, 1);
+        b.insert(2, 5);
+        // dot = 3*1 + 2*5 = 13
+        // |a| = sqrt(9+4) = sqrt(13)
+        // |b| = sqrt(1+25) = sqrt(26)
+        let s = cosine(&a, &b);
+        let expected = 13.0 / ((13.0f64).sqrt() * (26.0f64).sqrt());
+        assert!((s as f64 - expected).abs() < 1e-6, "{} vs {}", s, expected);
+    }
+
+    #[test]
+    fn test_detect_blocks_basic() {
+        // Grammar-free block detection treats "}" at indent 0 as the same block as
+        // "fn a() {" because indentation rules only see indent >= leading. Real scope
+        // boundaries require parser awareness — by design we don't have that.
+        let lines = vec![
+            "fn a() {",      // 0
+            "    let x = 1;", // 1
+            "    let y = 2;", // 2
+            "}",              // 3 same indent 0 → same block
+            "fn b() {",      // 4 same indent 0 → same block
+            "    let z = 3;", // 5
+        ];
+        let DetectBlocksOut { blocks, line_block: lb } = detect_blocks(&lines);
+        assert_eq!(blocks.len(), 1, "grammar-free: same-indent runs are one block");
+        assert_eq!(blocks[0].start_line, 0);
+        assert_eq!(blocks[0].end_line, 5);
+        assert_eq!(lb[5], 0);
+    }
+
+    #[test]
+    fn test_detect_blocks_blank_separator() {
+        let lines = vec![
+            "let x = 1;",
+            "",
+            "let y = 2;",
+        ];
+        let DetectBlocksOut { blocks, line_block: _lb } = detect_blocks(&lines);
+        assert_eq!(blocks.len(), 2, "blank line should split blocks");
+        assert_eq!(blocks[0].start_line, 0);
+        assert_eq!(blocks[1].start_line, 2);
+    }
 }

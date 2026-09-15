@@ -301,8 +301,6 @@ pub fn preprocess_macros_decorators(line: &str) -> String {
 }
 
 /// Parse with a default operator table (universal — no corpus mining).
-
-/// Parse with a default operator table (universal — no corpus mining).
 pub fn parse_with_default_table(line: &str) -> Option<ExprNode> {
     let mut table = OpTable::new();
     table.entries.insert("+".to_string(), crate::op_table::OpEntry { precedence: 5.0, associativity: 'L' });

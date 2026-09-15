@@ -105,6 +105,7 @@ fn load_deepseek_key_from_auth() -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// A single tool result fed back into the LLM.
+#[allow(dead_code)]
 pub struct ToolResult {
     pub name: String,
     pub output: String,
@@ -293,7 +294,7 @@ fn describe_output(path: &str, sym: &str) -> String {
 }
 
 fn similar_output(path: &str, sym: &str) -> String {
-    match open_index(path).and_then(|db| Ok(reliary_search::similar::find_similar(&db, sym, 5))) {
+    match open_index(path).map(|db| reliary_search::similar::find_similar(&db, sym, 5)) {
         Ok(list) if !list.is_empty() => {
             let names: Vec<String> = list.iter().map(|f| f.name.clone()).collect();
             format!("Similar to {}: {}", sym, names.join(", "))
@@ -323,7 +324,7 @@ pub fn run(path: &str, task: &str, max_iters: usize, dry_run: bool, json_out: bo
 
     let mut applied: Vec<String> = Vec::new();
     for _it in 0..max_iters {
-        let (reply, _usage) = client.complete(&msgs).map_err(|e| e)?;
+        let (reply, _usage) = client.complete(&msgs)?;
         // Detect a tool_call request from the assistant (any format).
         // The table format uses full-width ｜ separators — parse it on the
         // RAW reply before the ｜-strip makes it unreachable.

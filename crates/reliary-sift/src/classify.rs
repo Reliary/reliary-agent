@@ -402,7 +402,7 @@ fn skeleton_hash(text: &str) -> u64 {
             let mut i = 0;
             while i + 8 <= bytes.len() {
                 let chunk = u64::from_le_bytes(bytes[i..i+8].try_into().unwrap());
-                h = h.wrapping_mul(0x100000001_b3).wrapping_add(chunk);
+                h = h.wrapping_mul(0x100000001b3).wrapping_add(chunk);
                 i += 8;
             }
             while i < bytes.len() { h = h.wrapping_mul(33).wrapping_add(bytes[i] as u64); i += 1; }
@@ -508,7 +508,7 @@ pub fn skeleton_groups_prefixed(lines: &[Line]) -> Vec<LineGroup> {
             let mut i = 0;
             while i + 8 <= bytes.len() {
                 let chunk = u64::from_le_bytes(bytes[i..i+8].try_into().unwrap());
-                h = h.wrapping_mul(0x100000001_b3).wrapping_add(chunk);
+                h = h.wrapping_mul(0x100000001b3).wrapping_add(chunk);
                 i += 8;
             }
             while i < bytes.len() { h = h.wrapping_mul(33).wrapping_add(bytes[i] as u64); i += 1; }
@@ -566,7 +566,7 @@ fn aggressive_skeleton_hash(line: &str) -> u64 {
             let mut i = 0;
             while i + 8 <= bytes.len() {
                 let chunk = u64::from_le_bytes(bytes[i..i+8].try_into().unwrap());
-                h = h.wrapping_mul(0x100000001_b3).wrapping_add(chunk);
+                h = h.wrapping_mul(0x100000001b3).wrapping_add(chunk);
                 i += 8;
             }
             while i < bytes.len() { h = h.wrapping_mul(33).wrapping_add(bytes[i] as u64); i += 1; }
@@ -669,7 +669,7 @@ fn find_clusters_global_impl(source: &str, min_count: usize, min_line_len: usize
         });
     }
 
-    clusters.sort_by(|a, b| b.indices.len().cmp(&a.indices.len()));
+    clusters.sort_by_key(|b| std::cmp::Reverse(b.indices.len()));
     clusters
 }
 

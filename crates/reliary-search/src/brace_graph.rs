@@ -9,7 +9,6 @@
 
 use crate::type_flow::predict_role;
 use ahash::AHashMap;
-use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 /// A node in the brace-graph tree.
@@ -104,7 +103,7 @@ impl BraceNode {
 
 /// Build the brace-graph for a file from its lines.
 pub fn build_brace_graph(file_lines: &[String]) -> BraceNode {
-    let mut root = BraceNode::new(1, "file".to_string(), file_lines.get(0).cloned().unwrap_or_default());
+    let root = BraceNode::new(1, "file".to_string(), file_lines.first().cloned().unwrap_or_default());
 
     // Use a single mutable root. Stack tracks indices into a flat node list.
     let mut all_nodes: Vec<BraceNode> = vec![root.clone()];
@@ -281,12 +280,7 @@ pub fn find_parent<'a>(root: &'a BraceNode, target: &BraceNode) -> Option<&'a Br
 /// Find the nearest ancestor with a given role for a line.
 pub fn find_enclosing_with_role<'a>(root: &'a BraceNode, line: i32, role: &str) -> Option<&'a BraceNode> {
     let chain = collect_enclosing_chain(root, line);
-    for node in chain {
-        if node.role == role {
-            return Some(node);
-        }
-    }
-    None
+    chain.into_iter().find(|&node| node.role == role).map(|v| v as _)
 }
 
 fn collect_enclosing_chain<'a>(root: &'a BraceNode, line: i32) -> Vec<&'a BraceNode> {

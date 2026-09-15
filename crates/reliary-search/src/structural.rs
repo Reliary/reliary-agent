@@ -28,7 +28,7 @@ pub struct StructuralResult<'a> {
 /// `block_depth` is the current brace nesting depth (0 = module top level).
 /// `has_open_block` is true if this line starts a new block (has `{` at end, or
 ///   `:` at end for Python, or the next line has increased indent).
-pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: bool, in_impl: bool) -> StructuralResult<'a> {
+pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: bool, _in_impl: bool) -> StructuralResult<'a> {
     let trimmed = line.trim_start();
     if trimmed.is_empty() {
         return StructuralResult { tag: 0, is_def: false, defined_name: None };
@@ -67,7 +67,7 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     // For generics: `<` after identifier (e.g., `fn foo<T>`).
 
     let bytes = trimmed.as_bytes();
-    let len = bytes.len();
+    let _len = bytes.len();
 
     // P3-1: Single-pass delimiter scan. Records first/last positions of each
     // delimiter outside strings in ONE walk over the line. Replaces 8+
@@ -322,7 +322,7 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     let is_impl_line = trimmed.starts_with("impl") 
         && (trimmed.as_bytes().get(4) == Some(&b' ') || trimmed.as_bytes().get(4) == Some(&b'<'));
     let name = if is_impl_line {
-        let before_brace = &trimmed[..delim_pos.max(0) as usize];
+        let before_brace = &trimmed[..delim_pos];
         // Find the `for` keyword — after it is the target type.
         let target_type = if let Some(for_pos) = before_brace.find(" for ") {
             after_for_identifiers(before_brace[for_pos + 5..].trim())
@@ -603,7 +603,6 @@ pub fn scan_delimiters(line: &str) -> LineDelimiters {
     let bytes = line.as_bytes();
     let mut d = LineDelimiters::default();
     let mut in_string = false;
-    let mut escape = false;
     let mut angle_depth: u8 = 0;
     let mut i = 0;
     let mut ident_start: Option<u16> = None;
@@ -704,13 +703,13 @@ pub fn scan_delimiters(line: &str) -> LineDelimiters {
                             if d.first_lt.is_none() { d.first_lt = Some(i); }
                             d.last_lt = Some(i);
                         }
-                        if angle_depth < 255 { angle_depth += 1; }
+                        angle_depth = angle_depth.saturating_add(1);
                     }
                     b'>' => {
                         // M4: use forward-tracked last_non_ws — no backward scan.
                         match last_non_ws {
                             b'-' | b'=' => {} // arrow / fat-arrow — skip
-                            _ => { if angle_depth > 0 { angle_depth -= 1; } }
+                            _ => { angle_depth = angle_depth.saturating_sub(1); }
                         }
                     }
                     _ => {}
@@ -758,6 +757,7 @@ fn find_function_name_pos(delims: &LineDelimiters) -> Option<(usize, usize)> {
 }
 
 /// P3-1: Find the type name position — LAST identifier before `{`.
+#[allow(dead_code)]
 fn find_type_name_pos(delims: &LineDelimiters) -> Option<usize> {
     if let Some(brace) = delims.first_brace_pos() {
         for idx in (0..delims.ident_count).rev() {
@@ -771,11 +771,7 @@ fn find_type_name_pos(delims: &LineDelimiters) -> Option<usize> {
 
 /// P3-1: find the first `<` strictly after `start` position.
 pub fn first_lt_after(delims: &LineDelimiters, start: usize) -> Option<usize> {
-    if let Some(lt) = delims.first_lt_pos() {
-        if lt > start { Some(lt) } else { None }
-    } else {
-        None
-    }
+    delims.first_lt_pos().filter(|&lt| lt > start)
 }
 
 
@@ -809,7 +805,7 @@ fn scan_last_identifier(s: &str) -> Option<&str> {
     // Skip very short tokens (likely noise). However, single-char identifiers
     // like generic type params (`T`, `K`, `V`, `E`) are legitimate in impl lines
     // like `impl<T: Bound> Foo for Bar<T> {`. Only filter empty or bare-syntax.
-    if id_bytes.len() == 0 {
+    if id_bytes.is_empty() {
         return None;
     }
     // SAFETY: we only split on ASCII bytes, so the slice is valid UTF-8.
@@ -823,6 +819,7 @@ fn scan_last_identifier_before(s: &str) -> Option<&str> {
 }
 
 /// Check if an identifier is preceded by `.` (indicating a method call).
+#[allow(dead_code)]
 fn is_preceded_by_dot(before: &str, id: &str) -> bool {
     let pos = before.rfind(id);
     if pos.is_none() { return false; }
@@ -854,6 +851,7 @@ fn find_top_level_eq(s: &str) -> Option<usize> {
 }
 
 /// Find the LAST occurrence of a byte outside of string literals.
+#[allow(dead_code)]
 fn last_byte_outside_string(s: &str, target: u8) -> Option<usize> {
     let bytes = s.as_bytes();
     let mut in_string = false;

@@ -10,8 +10,6 @@
 //!
 //! W: Return type consistency — check if def return type matches call usage.
 
-use rustc_hash::FxHashMap;
-
 /// Extract the arity (number of comma-separated args) from a call site.
 /// `park.park()` → 0. `v.park(handle)` → 1. `self.park(a, b)` → 2.
 pub fn call_arity(line_text: &str, stem: &str) -> Option<usize> {
@@ -210,9 +208,6 @@ fn capitalize(s: &str) -> String {
 pub fn classify_occurrence_role(line_text: &str, stem: &str) -> &'static str {
     let line = line_text.trim();
     let needle = format!(".{}", stem);
-    let bare_needle = format!("{}::", stem);
-    let colons_needle = format!(" {} ", stem);
-    let let_needle = format!("let (?:mut )?{}", stem);
     let fn_needle = format!("fn {}", stem);
     let struct_needle = format!("struct {}", stem);
     let enum_needle = format!("enum {}", stem);
@@ -324,7 +319,7 @@ fn let_binding(line: &str, stem: &str) -> bool {
         format!("let mut {}[^a-zA-Z0-9_]", stem),
     ];
     for p in &patterns {
-        if let Some(pos) = line.find(p.as_str()) {
+        if line.find(p.as_str()).is_some() {
             return true;
         }
     }
@@ -357,7 +352,7 @@ fn is_param(line: &str, stem: &str) -> bool {
 fn is_field_decl(line: &str, stem: &str) -> bool {
     // `name: Type,` or `pub name: Type,`
     let needle = format!("{}:", stem);
-    if let Some(pos) = line.find(&needle) {
+    if line.find(&needle).is_some() {
         // Ensure it's not part of a function signature.
         if line.contains("fn ") { return false; }
         return true;
@@ -418,7 +413,7 @@ pub fn stem_line_text_score(line_text: &str, stem: &str) -> f32 {
     ];
 
     // Verify the stem is at word boundary (not part of larger identifier).
-    let has_word_boundary = |line: &str, pos: usize, stem: &str| -> bool {
+    let has_word_boundary = |line: &str, pos: usize, _stem: &str| -> bool {
         // Check character before the stem at this position.
         if pos == 0 { return true; }
         let before = line.as_bytes()[pos - 1];
