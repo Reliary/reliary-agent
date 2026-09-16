@@ -39,7 +39,10 @@ if [ -z "$cmd" ] || [ ${#cmd} -lt 4 ]; then
 fi
 
 # Reject commands with newlines (would break single-quote wrapping).
-case "$cmd" in *$'\n'*) exit 0;; esac
+case "$cmd" in
+  *'
+'*) exit 0;;
+esac
 
 # Skip if user already opted out at command level.
 case "$cmd" in *"--no-sift"*) exit 0;; esac
@@ -86,9 +89,12 @@ if [ -z "$RELIARY_BIN" ]; then
     echo "$RELIARY_BIN" > "$_CACHE_FILE" 2>/dev/null || true
   fi
 fi
-if ! [[ "$RELIARY_BIN" =~ ^[A-Za-z0-9_./-]+$ ]]; then
-  exit 0
-fi
+# Reject any binary path containing characters outside a strict allowlist.
+# POSIX-safe case match (not `[[ ... =~ ]]`) so this works when the hook is
+# invoked as `sh` — dash on Debian/Ubuntu has no `[[`.
+case "$RELIARY_BIN" in
+  *[!A-Za-z0-9_./-]* | "") exit 0 ;;
+esac
 if [ ! -x "$RELIARY_BIN" ]; then
   exit 0
 fi
