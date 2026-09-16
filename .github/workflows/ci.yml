@@ -159,5 +159,10 @@ jobs:
             echo "FAIL: test suites contain pass-by-skip early returns"; exit 1
           fi
 
+      # V75: the bench cassette (record/replay determinism). Pure-Python unit
+      # + harness-integration tests; no network, no API key, no corpus.
+      - name: bench cassette tests
+        run: python3 -m pytest bench/tests/ -q
+
       - name: binary size
         run: ls -lh target/release/reliary

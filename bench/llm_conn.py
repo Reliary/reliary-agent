@@ -113,6 +113,10 @@ def deepseek_chat(messages, model=DEEPSEEK_MODEL, max_tokens=200,
     v4-flash/v4-pro skip chain-of-thought and return clean JSON directly.
     Without this, the model burns 500-1000 tokens on reasoning before any
     visible output — fatal for small `max_tokens` budgets.
+
+    V75: when RELIARY_CASSETTE is set, responses come from a record/replay
+    cassette (bench/cassette.py). Replay is byte-exact and makes zero API
+    calls; strict mode errors on a miss instead of silently going live.
     """
     body = {
         "model": model,
@@ -123,6 +127,18 @@ def deepseek_chat(messages, model=DEEPSEEK_MODEL, max_tokens=200,
     }
     if disable_thinking:
         body["thinking"] = {"type": "disabled"}
+    # V75: replay/record through the cassette when one is configured.
+    try:
+        from cassette import active, configure_from_env
+        cas = active() or configure_from_env()
+    except Exception:
+        cas = None
+    if cas is not None:
+        # logprobs is report-only (does not affect sampling) and lets the
+        # cassette annotate near-tie decisions. Never streamed, so cheap.
+        body["logprobs"] = True
+        body["top_logprobs"] = 3
+        return cas.respond(body, timeout=timeout)
     # W2: pooled connection first; urllib fallback keeps behavior identical
     # if http.client is unavailable or the pool errors twice.
     if _HAVE_HTTPC:

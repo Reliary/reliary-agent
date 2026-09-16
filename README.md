@@ -104,6 +104,30 @@ Prompt-fairness disclosure: condition A receives the shipped routing prompt (~30
 
 Full reproduction: `python3 bench/long_session_bench.py --conditions A,C --seeds 42 17`
 
+### Deterministic transcripts (cassette)
+
+A remote sampler cannot be forced deterministic from the client. Verified against
+the live DeepSeek API: `seed` is accepted but ignored, `response_format:
+json_object` is not enforced, and `json_schema` is unavailable. What *is* forced
+is the transcript — `bench/cassette.py` records every model response keyed on the
+exact sampling-affecting request plus the corpus's `meta.index_gen`, and replays
+it byte-for-byte with **zero API calls**.
+
+```sh
+# record once (live API)
+RELIARY_CASSETTE=bench/cassettes/rel8 RELIARY_CASSETTE_MODE=record \
+  python3 bench/long_session_bench.py --conditions A --seeds 42
+
+# replay forever (no network, no key; a miss is a hard error, never a live call)
+RELIARY_CASSETTE=bench/cassettes/rel8 RELIARY_CASSETTE_MODE=replay-strict \
+  python3 bench/long_session_bench.py --conditions A --seeds 42
+```
+
+Reindexing the corpus invalidates entries automatically (`index_gen` is part of
+the key). `python3 bench/cassette.py summarize <dir>` lists near-tie decisions
+(worst top1−top2 logprob margin) so residual score variance is attributable to
+named coin-flips instead of hand-waved. Tests: `python3 -m pytest bench/tests/ -q`.
+
 ## MCP tool menu
 
 The default menu exposes 6 curated tools (`search`, `find_references`, `call_graph`, `list_methods`, `find_dead_code`, `describe`) plus `reliary_verify`. `goto_def` and `similar` remain dispatchable for backward compatibility but are hidden unless `RELIARY_FULL_MENU=1`. Specialist research variants (`callgraph_v2`, `methods_on`, `find_references_type_flow`, `trace_path`, `query_ast`, `brace_graph`, `architecture`, `risk`, `fix`, `prior`, `compress`, `retrieve`, `stats`) still exist as dispatch targets but are not listed.

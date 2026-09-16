@@ -309,6 +309,19 @@ def main():
     if args.sift_bash:
         os.environ["RELIARY_SIFT_BASH"] = "1"
 
+    # V75: deterministic transcripts. When RELIARY_CASSETTE is set, model
+    # responses are recorded/replayed keyed on the exact request + corpus's
+    # index generation. replay-strict makes the session byte-reproducible and
+    # makes zero API calls; a miss is an error, never a silent live call.
+    try:
+        from cassette import active, configure_from_env
+        cas = configure_from_env()
+        if cas is not None:
+            print(f"[cassette] {cas.mode}: {cas.path} "
+                  f"(index_gen={cas.index_gen})", file=sys.stderr)
+    except Exception as e:
+        print(f"[cassette] disabled: {e}", file=sys.stderr)
+
     conditions = args.conditions.split(",")
     out_path = args.out or f"results/long_session_{int(time.time())}.jsonl"
     
@@ -321,6 +334,22 @@ def main():
             
             try:
                 metrics = run_long_session(cond, args.model, seed, args.timeout)
+                # V75: attach cassette accounting so the result row records
+                # whether the session replayed, recorded, or went unrecorded.
+                try:
+                    from cassette import active
+                    c = active()
+                    if c is not None:
+                        metrics["cassette"] = {
+                            "mode": c.mode,
+                            "hits": c.stats["hits"],
+                            "misses": c.stats["misses"],
+                            "recorded": c.stats["recorded"],
+                            "index_gen": c.index_gen,
+                            "path": c.path,
+                        }
+                except Exception:
+                    pass
                 all_runs.append(metrics)
             except Exception as e:
                 print(f"ERROR: {e}", file=sys.stderr)

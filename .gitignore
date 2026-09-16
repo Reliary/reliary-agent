@@ -37,3 +37,7 @@ Thumbs.db
 
 # Bench result JSONL files
 bench/results/*.jsonl
+
+# V75 bench cassettes: replay artifacts are local by default.
+# Public-corpus cassettes may be committed deliberately (see docs/plans/V75_CASSETTE_DETERMINISM.md).
+bench/cassettes/
