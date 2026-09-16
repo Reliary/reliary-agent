@@ -100,8 +100,19 @@ jobs:
 
       - name: CLI commands documented in README
         run: |
-          cmds=$(grep -A50 "^pub const CLI_COMMANDS" crates/reliary-agent/src/main.rs 2>/dev/null | \
-            grep '"' | grep -oP '"[a-z][a-z-]+"' | tr -d '"' | sort -u || true)
+          # Extract only the CLI_COMMANDS array literal (from `= &[` to `];`),
+          # not an arbitrary 50-line window — that window used to drift into
+          # other string literals (e.g. a subcommand's default_value) and
+          # report phantom missing commands.
+          cmds=$(python3 - <<'PY'
+          import re, pathlib
+          src = pathlib.Path("crates/reliary-agent/src/main.rs").read_text()
+          m = re.search(r'CLI_COMMANDS[^=]*=\s*&\[(.*?)\];', src, re.S)
+          if not m:
+              raise SystemExit("CLI_COMMANDS array not found")
+          print("\n".join(sorted(set(re.findall(r'"([a-z][a-z-]+)"', m.group(1))))))
+          PY
+          )
           missing=""
           for cmd in $cmds; do
             if ! grep -q "$cmd" README.md 2>/dev/null; then missing="$missing  $cmd"; fi
