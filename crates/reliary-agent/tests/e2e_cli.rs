@@ -6,7 +6,7 @@
 //! Run: `cargo test -p reliary-agent --test e2e_cli`
 mod common;
 
-use common::{binary_path, run_cli, Fixture};
+use common::{binary_path, run_cli, run_cli_stdin, Fixture};
 use std::path::Path;
 
 fn stdout_of(out: &std::process::Output) -> String {
@@ -107,14 +107,30 @@ fn e2e_cli_search_finds_symbol_file() {
 
 #[test]
 fn e2e_cli_search_without_index_explains_itself() {
-    // No trust: the CLI must fail with a helpful message, not a panic.
+    // No trust: the CLI must offer to build the index (or explain), never
+    // panic and never silently return nothing. Feed "n" so it exits without
+    // indexing, then assert the prompt named the problem.
     let dir = tempfile::tempdir().unwrap();
-    let out = run_cli(&["search", "anything"], dir.path(), &[]);
+    let out = run_cli_stdin(&["search", "anything"], dir.path(), &[], "n\n");
     let combined = plain(&format!("{}{}", stdout_of(&out), stderr_of(&out)));
     assert!(
         !combined.contains("panicked"),
         "search without index must not panic: {}",
         combined
+    );
+    let lower = combined.to_ascii_lowercase();
+    assert!(
+        lower.contains("no project index")
+            || lower.contains("no index")
+            || lower.contains("index")
+            || lower.contains("trust"),
+        "search without index must explain how to fix it: {}",
+        combined
+    );
+    // Declining the prompt must not create an index.
+    assert!(
+        !dir.path().join(".reliary/index.sqlite").exists(),
+        "declining the build prompt must leave the directory unindexed"
     );
 }
 

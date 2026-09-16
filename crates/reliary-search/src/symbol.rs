@@ -14,7 +14,7 @@
 //! similarity between bags is the disambiguation signal. Window-truncation at block
 //! boundaries is implicit (block IS the bounded context).
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use rustc_hash::FxHashMap;
 
 /// A single occurrence returned by a query.
@@ -803,11 +803,14 @@ pub fn goto_def(
     // P7-1: look up anchor file's block_id once (uses idx_block_range now).
     // find_references already ran this query internally — but the result isn't
     // returned. For goto_def we only need the anchor's block_id for comparison.
-    let anchor_file_id: Option<i64> = db.query_row(
+    let anchor_file_id: Option<i64> = match db.query_row(
         "SELECT id FROM file_map WHERE file_path = ?1",
         params![anchor_file],
         |r| r.get(0),
-    ).ok(); // GUARDED: intentional — None means file not indexed, handled below
+    ).optional() {
+        Ok(v) => v,
+        Err(e) => { eprintln!("[goto_def] anchor file lookup failed for {}: {}", anchor_file, e); None }
+    };
     let anchor_block_id: i64 = anchor_file_id
         .and_then(|fid| block_id_at(db, fid, anchor_line).ok().flatten())
         .unwrap_or(0);

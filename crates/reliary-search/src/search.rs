@@ -1,5 +1,5 @@
 //! FTS5 query and BM25 scoring against the inverted index.
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use rustc_hash::FxHashMap;
 
 pub struct SearchResult {
@@ -235,22 +235,28 @@ fn run_terms_query(db: &Connection, terms: &[String], mode: JoinMode, top_n: usi
 
 pub fn who_calls(db: &Connection, identifier: &str, exclude_file: &str) -> Vec<(String, u64)> {
     let stemmed = crate::porter_stem(&identifier.to_lowercase());
-    let phrase_id: Option<i64> = db.query_row(
+    let phrase_id: Option<i64> = match db.query_row(
         "SELECT id FROM phrases WHERE phrase = ?1",
         params![stemmed],
         |r| r.get(0),
-    ).ok(); // GUARDED: intentional — returns None on absent identifier
+    ).optional() {
+        Ok(v) => v,
+        Err(e) => { eprintln!("[search] phrase lookup failed for {:?}: {}", stemmed, e); None }
+    };
     let phrase_id = match phrase_id {
         Some(id) => id,
         None => return vec![],
     };
 
     // Arc 37 schema v4: fetch file_blob, unpack to get file_ids, then look up paths.
-    let file_blob: Option<Vec<u8>> = db.query_row(
+    let file_blob: Option<Vec<u8>> = match db.query_row(
         "SELECT file_blob FROM phrase_occ WHERE phrase_id = ?1",
         params![phrase_id],
         |r| r.get(0),
-    ).ok(); // GUARDED: intentional — None => returns empty (missing blob)
+    ).optional() {
+        Ok(v) => v,
+        Err(e) => { eprintln!("[search] phrase blob read failed for id {}: {}", phrase_id, e); None }
+    };
     let file_blob = match file_blob { Some(b) => b, None => return vec![] };
 
     // P6-4: unpack once and capture per-file counts from flags.
@@ -535,11 +541,14 @@ fn apply_proximity_bonus(db: &Connection, terms: &[String], results: &mut [Searc
 
     // For each top candidate, query line numbers for each term.
     for r in results.iter_mut().take(top_n) {
-        let fid: Option<i64> = db.query_row(
+        let fid: Option<i64> = match db.query_row(
             "SELECT id FROM file_map WHERE file_path = ?1",
             [&r.file],
             |row| row.get(0),
-        ).ok(); // GUARDED: intentional — None => continue (file not in map)
+        ).optional() {
+            Ok(v) => v,
+            Err(e) => { eprintln!("[search] file_map lookup failed for {}: {}", r.file, e); None }
+        };
         let fid = match fid { Some(f) => f, None => continue };
 
         let mut line_sets: Vec<Vec<usize>> = Vec::with_capacity(terms.len());

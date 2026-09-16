@@ -1,7 +1,7 @@
 //! V23: Hologram Plan — task-to-file mapping.
 //! Given a task description, returns the most likely file to look at,
 //! related test files, coupled files, and risk level. Ported from stria.
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use rustc_hash::FxHashMap;
 use serde_json::{json, Value};
 
@@ -42,12 +42,16 @@ pub fn hologram_plan(db: &Connection, task: &str) -> Value {
     let mut needed_ids: Vec<i64> = Vec::new();
     let mut raw_scores: Vec<(i64, f64, u8)> = Vec::new();
     for st in &task_phrases {
-        // Find phrase_id.
-        let phrase_id: Option<i64> = db.query_row(
+        // Find phrase_id. Distinguish "no such phrase" (skip) from a real DB
+        // error (log — silently returning an empty plan hides corruption).
+        let phrase_id: Option<i64> = match db.query_row(
             "SELECT id FROM phrases WHERE phrase = ?1",
             [st],
             |r| r.get(0),
-        ).ok(); // GUARDED: intentional — missing phrase => skip
+        ).optional() {
+            Ok(v) => v,
+            Err(e) => { eprintln!("[plan] phrase lookup failed for {:?}: {}", st, e); None }
+        };
         let pid = match phrase_id { Some(p) => p, None => continue };
 
         // Get (file_blob) for this phrase.

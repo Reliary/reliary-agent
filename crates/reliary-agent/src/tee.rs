@@ -22,6 +22,15 @@ pub fn save_tee(raw: &str) -> std::io::Result<Option<String>> {
 
     let hash = sha256_hex(raw);
     let dir = PathBuf::from(TEE_DIR);
+    // Tee files contain raw command output, which can include secrets (env
+    // dumps, auth headers). On Unix create the directory 0700 so other local
+    // users cannot read it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+    }
+    #[cfg(not(unix))]
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(&hash);
     // Write atomically: tmp file then rename.
@@ -79,11 +88,11 @@ pub fn clean_tee() -> std::io::Result<u64> {
     Ok(removed)
 }
 
+/// Content address for a tee file. SHA-256 — matches the doc comment and is
+/// stable across processes (DefaultHasher is not guaranteed to be).
 fn sha256_hex(input: &str) -> String {
-    // Simple non-cryptographic hash for tee file addressing.
-    // Determinism matters more than collision resistance here.
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    input.hash(&mut h);
-    format!("{:016x}", h.finish())
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    format!("{:x}", hasher.finalize())
 }

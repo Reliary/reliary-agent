@@ -1,8 +1,10 @@
+#![forbid(unsafe_code)]
 //! Grammar-free dead code detection (V13: cross-file, ported from carrion).
 //!
 //! Key difference from V1: scans ALL files and merges global occurrence counts
 //! BEFORE testing for deadness. A function called from another file will NOT
 //! be flagged as dead. This matches carrion's approach.
+
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 /// HDC memory: 10K-bit hypervectors with Hebbian updates, SQLite persistence.
 /// M1: Bit-packed hypervectors — 10K bipolar {-1,+1} values stored as 10K bits
 /// in a Vec<u64> (156 words = 1248 bytes vs 10K bytes = 8× memory reduction).

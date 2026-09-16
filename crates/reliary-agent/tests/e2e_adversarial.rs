@@ -368,42 +368,126 @@ fn e2e_adv_wrap_handles_binary_and_empty_input() {
 // ── hook injection surface ────────────────────────────────────────────────
 
 #[test]
-fn e2e_adv_hook_bin_path_is_not_a_shell_injection() {
-    // The Claude Code PreToolUse hook takes a binary path from the environment.
-    // A hostile value must not execute a command.
-    let fx = Fixture::new();
-    let marker = fx.path().join("pwned");
-    let hook = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("hooks/claude-pretooluse.sh");
-
-    let injected = format!("reliary; touch {}", marker.display());
+fn e2e_adv_hook_rewrites_bash_and_rejects_injection() {
+    // The hook reads the tool payload from stdin and the binary path from
+    // RELIARY_BIN_PATH. This test drives the real interface: it asserts the
+    // hook *rewrites* a rewriteable command, and that a metacharacter-laden
+    // RELIARY_BIN_PATH is rejected before it can reach a shell.
+    //
+    // Requires `jq` (the hook exits 0 silently without it) and a real reliary
+    // binary to point at.
+    if std::process::Command::new("jq").arg("--version").output().is_err() {
+        eprintln!("skipping: jq not installed");
+        return;
+    }
+    let Some(reliary) = std::env::var_os("CARGO_BIN_EXE_reliary") else {
+        eprintln!("skipping: CARGO_BIN_EXE_reliary not set");
+        return;
+    };
+    let real_bin = reliary.to_string_lossy().to_string();
+    let dir = tempfile::tempdir().unwrap();
     let payload = serde_json::json!({
         "tool_name": "Bash",
-        "tool_input": { "command": "git status" }
+        "tool_input": { "command": "git status --short" }
     })
     .to_string();
 
-    let out = std::process::Command::new("sh")
+    // 1. Legitimate path: the hook must emit a rewrite decision.
+    // hooks/ lives at the workspace root, two levels above the crate dir.
+    let hook = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../hooks/claude-pretooluse.sh");
+    assert!(hook.exists(), "hook not found at {}", hook.display());
+    let cache = dir.path().join("cache-ok");
+    std::fs::create_dir_all(&cache).unwrap();
+    let mut child = std::process::Command::new("sh")
         .arg(&hook)
-        .env("RELIARY_BIN_PATH", &injected)
-        .env("CLAUDE_TOOL_USE", &payload)
+        .env("XDG_RUNTIME_DIR", &cache)
+        .env("HOME", dir.path())
+        .env("RELIARY_BIN_PATH", &real_bin)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .output();
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    child.stdin.as_mut().unwrap().write_all(payload.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("permissionDecision"),
+        "with a valid binary the hook must emit a decision: {}{}",
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("wrap bash -c"),
+        "the rewrite must route through `reliary wrap`: {}",
+        stdout
+    );
 
-    if let Ok(out) = out {
-        let combined = format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        assert!(
-            !combined.contains("panicked"),
-            "hook must not panic on a hostile RELIARY_BIN_PATH: {}",
-            combined
-        );
+    // 2. Hostile path: the dangerous payload is an executable whose path
+    //    contains a single quote. The rewrite template is
+    //    `'$RELIARY_BIN' wrap bash -c '...'` — a quote in the path would break
+    //    out of that quoting when Claude Code executes the rewritten command.
+    //    The allowlist must reject it so no rewrite decision is emitted.
+    let evil_dir = dir.path().join("evi'l");
+    std::fs::create_dir_all(&evil_dir).unwrap();
+    let evil_bin = evil_dir.join("reliary");
+    std::fs::write(&evil_bin, "#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&evil_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+    let cache2 = dir.path().join("cache-hostile");
+    std::fs::create_dir_all(&cache2).unwrap();
+    let mut child = std::process::Command::new("sh")
+        .arg(&hook)
+        .env("XDG_RUNTIME_DIR", &cache2)
+        .env("HOME", dir.path())
+        .env("RELIARY_BIN_PATH", &evil_bin)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(payload.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("permissionDecision"),
+        "an executable path containing a quote must never be rewritten into a \
+         shell command: {}",
+        stdout
+    );
+    assert!(
+        out.status.success(),
+        "the hook must exit 0 on a hostile path (fail open, no rewrite)"
+    );
+
+    // 3. Metacharacter path: also rejected (belt and braces — this payload is
+    //    not executable, so it would fail the -x check even without the
+    //    allowlist; assert the behavior either way).
+    let marker = dir.path().join("pwned");
+    let injected = format!("reliary; touch {}", marker.display());
+    let cache3 = dir.path().join("cache-metachar");
+    std::fs::create_dir_all(&cache3).unwrap();
+    let mut child = std::process::Command::new("sh")
+        .arg(&hook)
+        .env("XDG_RUNTIME_DIR", &cache3)
+        .env("HOME", dir.path())
+        .env("RELIARY_BIN_PATH", &injected)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(payload.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("permissionDecision"),
+        "a metacharacter-laden RELIARY_BIN_PATH must not be rewritten"
+    );
     assert!(
         !marker.exists(),
         "a metacharacter in RELIARY_BIN_PATH must never reach the shell"

@@ -1,7 +1,13 @@
-//! V14: Determinism tests for sift pipeline.
+//! V14: Determinism tests for the sift pipeline.
 //!
-//! Provider KV cache requires identical input to produce identical compressed output.
-//! These tests verify byte-identical output across repeated calls.
+//! Provider KV cache requires identical input to produce identical compressed
+//! output. These tests verify byte-identical output across repeated calls and,
+//! critically, that the ordering primitives can actually *fail*: the
+//! tie-breaking cases below produce many equal-size clusters, which is exactly
+//! where a `HashMap` iteration order (instead of `BTreeMap`) would leak into
+//! the output. A negative control in `determinism_cluster_order_is_observable`
+//! documents that property.
+//!
 //! Failures indicate non-determinism that would bust provider caches.
 
 use reliary_sift::classify;
@@ -27,6 +33,18 @@ fn check_deterministic(label: &str, input: &str, runs: usize) {
             label, i, input.len()
         );
     }
+}
+
+/// Input with many equal-size clusters — the tie-break case where map
+/// iteration order becomes observable in the cluster list.
+fn tie_cluster_input() -> String {
+    let mut lines = Vec::new();
+    for group in 0..20 {
+        for row in 0..3 {
+            lines.push(format!("  processing item group{} row {}", group, row));
+        }
+    }
+    lines.join("\n")
 }
 
 #[test]
@@ -96,12 +114,16 @@ fn determinism_grep_results() {
 
 #[test]
 fn determinism_clusters_global_order() {
-    // The BTreeMap fix in V14 must produce stable cluster ordering.
-    let input: String = (0..30)
-        .map(|i| format!("   Compiling crate_{} v1.0.{}", i % 5, i))
-        .collect::<Vec<_>>()
-        .join("\n");
+    // BTreeMap ordering must produce a stable cluster list. Use an input with
+    // many equal-size clusters: with a HashMap the order varies per instance,
+    // so this test can actually fail (see the observability test below).
+    let input = tie_cluster_input();
     let first = classify::find_clusters_global_with_default(&input);
+    assert!(
+        first.len() > 5,
+        "fixture must produce enough clusters for ordering to be observable, got {}",
+        first.len()
+    );
     for _ in 1..10 {
         let nth = classify::find_clusters_global_with_default(&input);
         assert_eq!(
@@ -120,6 +142,39 @@ fn determinism_clusters_global_order() {
             );
         }
     }
+}
+
+#[test]
+fn determinism_cluster_order_is_observable() {
+    // Negative control: prove the fixture above is sensitive to map ordering
+    // by building the same groups with a HashMap. Two instances must disagree
+    // on order; if they agreed, the determinism test above would be vacuous.
+    use std::collections::HashMap;
+    let input = tie_cluster_input();
+    // Public API gives us the per-line skeleton key the clustering groups by.
+    let keys: Vec<u64> = classify::classify(&input)
+        .iter()
+        .map(|l| l.skeleton_key)
+        .collect();
+    let build = |order: &[u64]| -> Vec<u64> {
+        let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (i, &h) in order.iter().enumerate() {
+            groups.entry(h).or_default().push(i);
+        }
+        groups.keys().copied().collect()
+    };
+    let a = build(&keys);
+    let b = build(&keys);
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "both maps must contain the same key set"
+    );
+    assert_ne!(
+        a, b,
+        "HashMap iteration order unexpectedly stable in this build — the \
+         determinism test above cannot observe ordering regressions"
+    );
 }
 
 #[test]

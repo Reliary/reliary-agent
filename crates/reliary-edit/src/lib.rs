@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // reliary-edit: grammar-free function-boundary resolve and apply.
 // Ported deliberately from stria/src/edit.rs (proven: fuzzy-match failure 15% -> ~0%).
 //
@@ -5,6 +6,7 @@
 // replace it. Otherwise fall back to a fuzzy match: locate the enclosing
 // function/block boundary via indentation-anchored scanning and apply within
 // it. Grammar-free — no AST, no tree-sitter.
+
 
 use std::path::{Path, PathBuf};
 

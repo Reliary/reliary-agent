@@ -23,7 +23,7 @@ Use `reliary_*` tools for code intelligence questions instead of grep/read cycle
 
 Every tool response ends with a freshness stamp `[idx:xxxxxxxx]`. The stamp changes only when the index is rebuilt or a file is reindexed — it is stable across reads and JIT builds. If you see the same symbol with two different stamps, the second read is fresher; if you edited a file and the stamp did not change, the index may be stale (run `reliary reindex-file <path>` or `reliary trust .`).
 
-**Do not call tools that are not in the tool list above.** The menu exposes 8 tools (`search`, `find_references`, `goto_def` [deprecated], `call_graph`, `list_methods`, `find_dead_code`, `describe`, `similar`). Specialist research variants exist as dispatch targets but are not listed — do not guess their names.
+**Do not call tools that are not in the tool list above.** The default menu exposes 6 tools (`search`, `find_references`, `call_graph`, `list_methods`, `find_dead_code`, `describe`) plus `verify`. `goto_def` and `similar` remain dispatchable but are hidden unless `RELIARY_FULL_MENU=1`. Specialist research variants exist as dispatch targets but are not listed — do not guess their names.
 
 ## Efficiency
 
@@ -48,11 +48,14 @@ Deterministic claim verification (F1 = how many model claims `symbol at file:lin
 
 | Backend | F1 | Precision | Billed | Dead-ends | Wall (median) |
 |---------|----|-----------|--------|-----------|------|
-| reliary8 | **0.809** | **0.835** | **24,143** | **0.0** | 43s |
-| altbackend | 0.346 | 0.397 | 24,657 | 4.2 | 41s |
-| grep | 0.414 | 0.511 | 35,180 | 0.0 | 43s |
+| reliary8 | **0.782** | **0.780** | **24,143** | **0.0** | 43s |
+| altbackend | 0.322 | 0.339 | 24,657 | 4.2 | 41s |
+| grep | 0.383 | 0.423 | 35,180 | 0.0 | 43s |
 
-Wall is provider-latency bound (~90% cache hit on all three conditions); the spread is within noise. reliary's edge is F1 (2× grep, 2.3× altbackend) at the lowest billed cost and zero dead-ends. A prompt-parity ablation (condition `M`, ~120-word minimal prompt vs A's ~300-word shipped prompt) scored F1 0.605 — the tool contributes the majority of the gap.
+Wall is provider-latency bound (~90% cache hit on all three conditions); the spread is within noise. reliary's edge is F1 (2× grep, 2.4× altbackend) at the lowest billed cost and zero dead-ends. A prompt-parity ablation (condition `M`, ~120-word minimal prompt vs A's ~300-word shipped prompt) scored F1 0.707 vs A's 0.816 — the tool contributes the majority of the gap.
+
+Do not cite the keyword-score rubric (`/30`) as an accuracy measure: it is substring
+matching and roughly doubles the real accuracy. Use F1 above.
 
 ## Single-call vs multi-call
 
@@ -87,19 +90,22 @@ Returns the top definition with source code. Copy the `file:line` into your resp
 reliary_find_references(name="classify_structural", usage_only=true)
 ```
 
-## Available tool surface (8 tools in primary menu)
+## Available tool surface (6 tools in the default menu)
 
-**Symbol queries** (`reliary_find_references` is the entry point for all of these; the others are aliases kept for convenience):
+**Symbol queries** (`reliary_find_references` is the entry point for most of these; the others are aliases kept for convenience):
 - `reliary_find_references` — def_only / usage_only / methods / dead_only / path_filter modes
-- `reliary_goto_def` — deprecated; use `def_only=true` instead
 - `reliary_call_graph` — callers/callees, direction in/out/both, depth
 - `reliary_list_methods` — methods on a type
 - `reliary_find_dead_code` — unused code, path-scoped
 - `reliary_describe` — symbol overview; `methods`/`dead_only` route to the same handlers
-- `reliary_similar` — near-clone detection
 
 **File queries**:
 - `reliary_search` — BM25 file search, definition-first ranking (never returns empty)
+
+**Verification**:
+- `reliary_verify` — check a `symbol at file:line` claim against the index
+
+Hidden but dispatchable (set `RELIARY_FULL_MENU=1` to expose): `reliary_goto_def` (deprecated — use `def_only=true`), `reliary_similar` (near-clone detection).
 
 ## Compressing tool output
 
@@ -112,7 +118,7 @@ reliary wrap grep "pattern" .
 ```
 
 This pipes output through reliary's universal compressor before it reaches context.
-46.3% average compression across the 6 fixtures in the V14 benchmark (see `~/src/sift/scripts/bench_vs_rtk.py`). Works on ANY command in ANY language.
+Measured on the 20 non-trivial RTK comparison fixtures (`~/src/sift/scripts/bench_vs_rtk.py`): mean 31.6%, median 3.9% byte reduction, concentrated on repeated/ANSI-heavy output and zero on short dense output. Hard no-inflation guarantee: raw bytes are emitted whenever compression would be longer. Works on ANY command in ANY language.
 No cache bust — the LLM builds reasoning on compressed text from the start (rtk pattern).
 Content readers on source files (`cat`/`head`/`tail`/`less`/`bat <source.rs>`) pass through uncompressed.
 

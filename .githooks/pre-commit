@@ -8,7 +8,9 @@ echo "[guard] Running pre-commit checks..."
 # Exclude ux.rs (contains legitimate Linuxbrew/Homebrew detection paths)
 # and bench/ (dev-only scripts that reference local tool paths).
 # paths.rs holds generic /home/user, /home/a fixtures in assertions.
-if git diff --cached --name-only | xargs grep -lnP '/home/[^/]+/' 2>/dev/null | grep -v '.githooks/' | grep -v 'ux\.rs$' | grep -v 'paths\.rs$' | grep -v '^bench/' | grep -v '^docs/archive/'; then
+# Only added/modified files are checked: a staged deletion must not fail
+# because the file still exists in the working tree.
+if git diff --cached --name-only --diff-filter=ACM | xargs grep -lnP '/home/[^/]+/' 2>/dev/null | grep -v '.githooks/' | grep -v 'ux\.rs$' | grep -v 'paths\.rs$' | grep -v '^bench/' | grep -v '^docs/archive/'; then
     echo "FAIL: Hardcoded /home/user/ path detected. Use \$HOME or env vars."
     exit 1
 fi

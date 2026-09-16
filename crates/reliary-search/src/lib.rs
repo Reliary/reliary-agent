@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use std::io::Read;
 use std::path::Path;
 
@@ -6,7 +7,6 @@ pub mod schema;
 pub mod search;
 pub mod phrase_index;
 pub mod ingest;
-pub mod ft_weight;
 pub mod symbol;
 pub mod keywords;
 pub mod pattern;

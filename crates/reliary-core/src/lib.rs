@@ -1,4 +1,6 @@
+#![forbid(unsafe_code)]
 // reliary-core: CLI types, config, session state, output formatting
+
 mod session;
 mod state_block;
 mod ingest;

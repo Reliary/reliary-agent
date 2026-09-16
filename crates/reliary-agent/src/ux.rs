@@ -171,8 +171,10 @@ fn doctor_checks(installs: &[InstallInfo]) -> Vec<DoctorCheck> {
         // Probe the index for freshness
         let probe: Option<(i64, i64, f64)> = (|| -> Option<(i64, i64, f64)> {
             let db = rusqlite::Connection::open(&index_path).ok()?;
-            let file_count: i64 = db.query_row("SELECT COUNT(*) FROM file_map", [], |r| r.get(0)).ok()?;
-            let phrase_count: i64 = db.query_row("SELECT COUNT(*) FROM phrases", [], |r| r.get(0)).ok()?;
+            let file_count: i64 = db.query_row("SELECT COUNT(*) FROM file_map", [], |r| r.get(0))
+                .inspect_err(|e| eprintln!("[doctor] file count query failed: {}", e)).ok()?;
+            let phrase_count: i64 = db.query_row("SELECT COUNT(*) FROM phrases", [], |r| r.get(0))
+                .inspect_err(|e| eprintln!("[doctor] phrase count query failed: {}", e)).ok()?;
             let age_days: f64 = db.query_row(
                 "SELECT (julianday('now') - julianday(MAX(mtime), 'unixepoch')) FROM file_map",
                 [], |r| r.get(0)

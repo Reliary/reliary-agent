@@ -2,7 +2,7 @@
 
 Grammar-free code intelligence + bash compression for AI coding agents.
 
-A single Rust binary (~7 MB) that indexes any codebase via structural detection (no tree-sitter, no language-specific code) and exposes it to AI agents through the Model Context Protocol (MCP). Companion tool `reliary wrap` compresses verbose bash output (cargo test, git diff, pytest) before it reaches agent context — an open-source, grammar-free alternative to RTK.
+A single Rust binary (~9 MB) that indexes any codebase via structural detection (no tree-sitter, no language-specific code) and exposes it to AI agents through the Model Context Protocol (MCP). Companion tool `reliary wrap` compresses verbose bash output (cargo test, git diff, pytest) before it reaches agent context — a grammar-free compressor with a hard no-inflation guarantee.
 
 ## Quick start
 
@@ -42,22 +42,36 @@ For automatic interception (no manual prefix), set `RELIARY_SIFT_BASH=1` and ins
 
 ### Code intelligence (MCP tools)
 
-8 curated tools in the primary menu:
+6 curated tools in the default menu (the specialist dispatch targets still
+exist but are not listed; `goto_def` and `similar` are dispatchable but hidden
+unless `RELIARY_FULL_MENU=1`):
 
 | Tool | What it returns |
 |------|----------------|
 | `reliary_find_references` | Single entry point for all symbol questions. Modes: `def_only=true` → "where is X defined"; `usage_only=true` → "who calls X"; `methods=true` → "list methods on X"; `dead_only=true` (+`path`) → "find dead code"; `path_filter='io/util/'` → scope to a module; no params → general references. One-line answer with raw code evidence. |
 | `reliary_search` | BM25 file search: definition-first ranking, never-empty fallback (closest files by vocabulary similarity). |
-| `reliary_goto_def` | Deprecated — use `reliary_find_references(name=X, def_only=true)`. Still works. |
 | `reliary_call_graph` | Callers + callees with source. `direction=inbound/outbound/both`, `depth` (entry points auto-expand). |
 | `reliary_list_methods` | Methods on a type with file:line. Alias of the same handler. |
 | `reliary_find_dead_code` | Unused functions, path-scoped. Alias of the same handler. |
 | `reliary_describe` | Symbol overview: purpose, signature, callers, methods. `methods`/`dead_only` route to the same handlers. |
-| `reliary_similar` | Structurally similar functions (near-clone detection). |
+| `reliary_verify` | Check a `symbol at file:line` claim against the index. |
 
 ### Bash compression (reliary wrap)
 
-Universal text compressor that works on ANY command output. No per-command filters needed. 46.3% average compression across the 6 fixtures in the V14 benchmark (see `~/src/sift/scripts/bench_vs_rtk.py`). Content readers on source files (`cat`/`head`/`tail`/`less`/`bat <source.rs>`) pass through uncompressed so model-built edits never see mangled code.
+Universal text compressor for command output — no per-command filters, works on
+any language. Measured on the 20 non-trivial fixtures of the RTK comparison
+bench (`$HOME/src/sift/scripts/bench_vs_rtk.py`):
+
+- **mean 31.6%, median 3.9%** byte reduction. Compression is concentrated where
+  it matters — repeated lines (100%), ANSI noise (97%), `ss -tuln` (89%),
+  chaos output (83%), `git status` (72%), `ps aux` (46%) — and **zero or near-zero
+  on short/dense output** (compiler errors, `docker ps`, `ip a`).
+- **Hard no-inflation guarantee**: `wrap`/`sift` emit the raw bytes whenever
+  compression would produce a longer result. The tool never costs you context.
+
+Source-file readers (`cat`/`head`/`tail`/`less`/`bat <source.rs>`) pass through
+byte-identical so model-built edits never see mangled code. Full raw output is
+recoverable from a content-addressed tee file on the paths that compress.
 
 ## Benchmarks
 
@@ -65,9 +79,10 @@ Deterministic claim-verification bench (10 questions on a reliary corpus snapsho
 
 | Metric | Reliary (A) | Altbackend (B) | Grep (C) |
 |--------|-------------|----------------|----------|
-| F1 (claim-weighted) | **0.809** | 0.346 | 0.414 |
-| Precision | **0.835** | 0.397 | 0.511 |
+| F1 (claim-weighted) | **0.782** | 0.322 | 0.383 |
+| Precision | **0.780** | 0.339 | 0.423 |
 | Recall | **0.785** | 0.308 | 0.355 |
+| Coverage | **0.93** | 0.85 | 0.82 |
 | Keyword score /30 | 26.8 | 25.5 | **27.2** |
 | Billed cost | **24,143** | 24,657 | 35,180 |
 | Dead-ends | **0.0** | 4.2 | 0.0 |
@@ -77,13 +92,21 @@ Deterministic claim-verification bench (10 questions on a reliary corpus snapsho
 
 Every model claim (`symbol at file:line`) is verified mechanically against the index — no LLM judge. Wall is provider-latency bound (~90% cache hit on all three); the three conditions are within noise of each other. Repro: `python3 bench/run_snapshot_bench.py --bin target/release/reliary --corpus /tmp/rel8-corpus --conds A,B,C --seeds 42 17 123 456` then `python3 bench/deterministic_verify.py --input bench/results/v70_3way.jsonl --corpus /tmp/rel8-corpus`.
 
-Prompt-fairness disclosure: condition A receives the shipped routing prompt (~300 words); B/C receive ~100-word prompts. An ablation (`M`, minimal ~120-word prompt) scored F1 0.605 vs A's 0.795 — the tool contributes most of the gap, the routing prompt the remainder. See `docs/plans/V70_TELEPATHY.md`.
+**Read F1, not the keyword score.** The `Keyword score /30` row is a substring-matching
+rubric kept only as a smoke test: it is gameable by keyword-stuffing and inflates
+real accuracy roughly 2× (verified against ground-truth F1). The claim-verification
+columns above are the meaningful comparison — every `symbol at file:line` the model
+states is checked against the index, so invented locations are counted as errors.
+Billed cost includes the provider's cache discount (≈94% cache hit on all three
+conditions).
+
+Prompt-fairness disclosure: condition A receives the shipped routing prompt (~300 words); B/C receive ~100-word prompts. An ablation (`M`, minimal ~120-word prompt) scored F1 0.707 vs A's 0.816 — the tool contributes most of the gap, the routing prompt the remainder. See `docs/plans/V70_TELEPATHY.md`.
 
 Full reproduction: `python3 bench/long_session_bench.py --conditions A,C --seeds 42 17`
 
 ## MCP tool menu
 
-The default menu exposes 8 curated tools (`search`, `find_references`, `goto_def`, `call_graph`, `list_methods`, `find_dead_code`, `describe`, `similar`). Specialist research variants (`callgraph_v2`, `methods_on`, `find_references_type_flow`, `find_references_boltzmann`, `trace_path`, `query_ast`, `brace_graph`, `architecture`, `risk`, `fix`, `prior`, `compress`, `retrieve`, `stats`) still exist as dispatch targets but are not listed.
+The default menu exposes 6 curated tools (`search`, `find_references`, `call_graph`, `list_methods`, `find_dead_code`, `describe`) plus `reliary_verify`. `goto_def` and `similar` remain dispatchable for backward compatibility but are hidden unless `RELIARY_FULL_MENU=1`. Specialist research variants (`callgraph_v2`, `methods_on`, `find_references_type_flow`, `trace_path`, `query_ast`, `brace_graph`, `architecture`, `risk`, `fix`, `prior`, `compress`, `retrieve`, `stats`) still exist as dispatch targets but are not listed.
 
 ## CLI reference
 
@@ -97,18 +120,23 @@ reliary sift [--stdin]        Pipe text through compressor
 reliary compress [PATH]       Compress a file or directory
 reliary dead [PATH]           Find dead code (cross-file, carrion-style)
 reliary risk FILE             Pre-edit risk analysis
-reliary fix FILE [OLD] [NEW]  Apply pattern-based fix
+reliary fix TASK              Autonomous bug-fix agent (deterministic recipes, LLM fallback)
+reliary verify CLAIM          Verify a claim about the codebase against the index
+reliary impact SYMBOL         Pre-edit blast radius: callers, test files, risk verdict
+reliary test-plan             Which tests exercise changed files/symbols
+reliary diff REV REV          Structural diff between two revisions
+reliary map                   Render a self-contained SVG map of the codebase
+reliary bench                 Deterministic benchmark: generate questions+GT, score results
 reliary init                  Auto-install agent integrations
-reliary uninstall             Remove agent integrations + daemon state
+reliary uninstall             Remove agent integrations
 reliary doctor                Health check
 reliary status                Show index + integration status
-reliary update                Self-update from GitHub releases
+reliary update                Self-update from GitHub releases (checksum-verified)
 reliary clean                 Clean caches and state
 reliary logs                  Show recent log output
 reliary config                Show resolved configuration
 reliary completions SHELL     Emit shell completion script
 reliary man                   Emit the man page
-reliary full                  Full-menu MCP server (all specialist tools)
 ```
 
 Run `reliary --help` for the complete, always-current command list.

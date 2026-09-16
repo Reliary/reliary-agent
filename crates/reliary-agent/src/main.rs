@@ -1,4 +1,6 @@
+#![forbid(unsafe_code)]
 /// reliary-agent binary. Thin dispatch composing all crates.
+
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -708,12 +710,16 @@ struct Cli {
 /// appears in README.md. Hidden commands (mcp, memory, session-state) are
 /// excluded — they exist but are not documented.
 /// v0.8: veto, fix-dir, fix-file, apply-edit, serve, start, stop, proxy-stats removed.
+/// Commands that must appear in README.md's CLI reference. CI fails if any is
+/// missing. Keep in sync with the `Commands` enum; deliberately omits internal
+/// subcommands (reindex-file, vacuum, build-all, parse-expr, who-calls, etc.).
 pub const CLI_COMMANDS: &[&str] = &[
     "search", "index", "compress", "risk",
     "init", "uninstall", "doctor", "status",
     "clean", "logs", "config",
-    "dead", "sift",
-    "completions", "man", "update", "trust",
+    "dead", "sift", "wrap", "trust",
+    "completions", "man", "update",
+    "fix", "verify", "impact", "test-plan", "diff", "map", "bench",
 ];
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -1229,14 +1235,16 @@ fn exec_sift(cmd: &[String], stdin_mode: bool) {
         };
         if raw.is_empty() { std::process::exit(0); }
         let compressed = reliary_output::compress_unified(&raw);
-        // V14: save full output to tee file for LLM recovery.
-        // Only save when compression actually saved bytes (avoids disk noise).
+        // Same growth invariant as the command path above: never emit more
+        // bytes than we received.
         if compressed.len() < raw.len() {
             if let Ok(Some(path)) = tee::save_tee(&raw) {
                 eprintln!("[full output: {}]", path);
             }
+            print!("{}", compressed);
+        } else {
+            print!("{}", raw);
         }
-        print!("{}", compressed);
         std::process::exit(0);
     }
 
@@ -1297,13 +1305,18 @@ fn exec_sift(cmd: &[String], stdin_mode: bool) {
                 reliary_output::compress_unified(&raw)
             }
         };
-        // V14: save full output to tee file for LLM recovery when compression saved bytes.
+        // Hard growth invariant: never emit more bytes than the raw output.
+        // Some inputs (short tabular output, already-dense logs) do not
+        // compress; emitting a longer "compressed" form is strictly worse for
+        // the caller. Fall back to raw when compression does not save bytes.
         if compressed.len() < raw.len() {
             if let Ok(Some(path)) = tee::save_tee(&raw) {
                 eprintln!("[full output: {}]", path);
             }
+            print!("{}", compressed);
+        } else {
+            print!("{}", raw);
         }
-        print!("{}", compressed);
     }
     std::process::exit(exit_code);
 }
@@ -1499,7 +1512,9 @@ fn diagnose_failure(raw: &str, _program: &str) -> String {
             "SELECT f.file_path FROM phrases p JOIN file_phrases fp ON p.id = fp.phrase_id JOIN file_map f ON fp.file_id = f.id WHERE p.phrase = ?1 LIMIT 1",
             rusqlite::params![&name],
             |row| row.get::<_, String>(0),
-        ).ok();  // GUARDED: intentional
+        )
+        .inspect_err(|e| eprintln!("[diagnose] name lookup failed: {}", e))
+        .ok(); // GUARDED: intentional — error logged above; diagnostic is best-effort
         if let Some(file) = file {
             return format!("undefined '{}' → defined in: {}", name, file);
         }
@@ -1614,123 +1629,209 @@ fn do_trust(path: &str) {
     println!("{} Project trusted: {}", color::green("✓"), path);
 }
 
+/// SHA-256 of a file, lowercase hex. Used to verify release assets against the
+/// digest GitHub reports in the release API before executing them.
+fn sha256_file(path: &std::path::Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+const RELEASES_URL: &str = "https://api.github.com/repos/Reliary/reliary-agent/releases/latest";
+
 fn do_update(check_only: bool) {
     println!("{} Checking for updates...", color::bold(""));
     let current = VERSION;
-    // Try to fetch latest release from GitHub via reqwest (we already depend on it)
-    let release_url = "https://api.github.com/repos/Reliary/reliary-agent/releases/latest";
     let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
         .build()
     {
         Ok(c) => c,
         Err(e) => { eprintln!("{} Could not build HTTP client: {}", color::red("✗"), e); return; }
     };
-    let response: Result<reqwest::blocking::Response, reqwest::Error> = client
-        .get(release_url)
-        .header("User-Agent", "reliary-agent")
-        .send();
-    match response {
-        Ok(r) => {
-            let body: String = match r.text() {
-                Ok(b) => b,
-                Err(e) => { eprintln!("{} Could not read GitHub response: {}", color::red("✗"), e); return; }
-            };
-            if let Ok(release) = serde_json::from_str::<serde_json::Value>(&body) {
-                let tag = release.get("tag_name").and_then(|v| v.as_str()).unwrap_or("unknown");
-                let latest = tag.trim_start_matches('v');
-                if latest == current {
-                    println!("{} Already up to date (v{})", color::green("✓"), current);
-                } else {
-                    println!("{} Update available: v{} → v{}", color::yellow("!"), current, latest);
-                    // Show upgrade commands per detected install method
-                    let installs = ux::find_installs();
-                    if !installs.is_empty() {
-                        let mut seen_methods = std::collections::HashSet::new();
-                        for inst in &installs {
-                            if seen_methods.insert(inst.method) {
-                                match inst.method {
-                                    "cargo" => println!("  {}: cargo install reliary-agent", inst.method),
-                                    "brew" => println!("  {}: brew upgrade Reliary/homebrew-tap/reliary-agent", inst.method),
-                                    "npm" => println!("  {}: npm update -g @reliary/agent", inst.method),
-                                    _ => {}
-                                }
-                            }
-                        }
-                    } else {
-                        println!("  Run 'reliary-agent update' to auto-update");
-                    }
-                    if check_only {
-                        println!("  Run 'reliary-agent update' to install");
-                    } else {
-                        // Detect platform Rust target triple matching release matrix
-                        let os = std::env::consts::OS;
-                        let arch = std::env::consts::ARCH;
-                        let target = match (os, arch) {
-                            ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-                            ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-                            ("macos", "x86_64") => "x86_64-apple-darwin",
-                            ("macos", "aarch64") => "aarch64-apple-darwin",
-                            ("windows", "x86_64") => "x86_64-pc-windows-msvc",
-                            ("windows", "aarch64") => "aarch64-pc-windows-msvc",
-                            _ => { eprintln!("{} Unsupported platform: {}-{}", color::red("✗"), os, arch); std::process::exit(1); }
-                        };
-                        let ext = if os == "windows" { ".zip" } else { ".tar.gz" };
-                        let asset_name = format!("reliary-{}-{}{}", tag, target, ext);
-                        let download_url = format!("https://github.com/Reliary/reliary-agent/releases/download/{}/{}", tag, asset_name);
-                        // Extract directory: tarball contains a single directory matching asset_name without .ext
-                        let extract_dir = format!("/tmp/{}", asset_name.trim_end_matches(&format!(".{}", ext.trim_start_matches('.'))));
-                        println!("  Downloading {}...", asset_name);
-                        let dl = std::process::Command::new("curl")
-                            .args(["-sL", "-o", "/tmp/reliary-update.tar.gz", &download_url])
-                            .status();
-                        if dl.is_ok_and(|s| s.success()) {
-                            // Extract and install
-                            let extract = std::process::Command::new("tar")
-                                .args(["-xzf", "/tmp/reliary-update.tar.gz", "-C", "/tmp/"])
-                                .status();
-                            if extract.is_ok_and(|s| s.success()) {
-                                // FIX: was /tmp/reliary-agent (wrong). Tarball extracts into a subdirectory
-                                let extracted_bin = format!("{}/reliary-agent", extract_dir);
-                                let binary = std::env::current_exe().unwrap_or_default();
-                                // V60: cp over a running binary fails with ETXTBSY on Linux —
-                                // copy to a temp name then rename over the target.
-                                let tmp_bin = format!("{}.new", binary.display());
-                                let copy = std::process::Command::new("cp")
-                                    .args([&extracted_bin, &tmp_bin])
-                                    .status();
-                                let copy_ok = copy.as_ref().is_ok_and(|s| s.success());
-                                let install = if copy_ok {
-                                    std::process::Command::new("mv")
-                                        .args([&tmp_bin, binary.to_string_lossy().as_ref()])
-                                        .status()
-                                } else {
-                                    copy
-                                };
-                                let install_ok = install.is_ok_and(|s| s.success());
-                                if install_ok {
-                                    println!("{} Updated to v{}", color::green("✓"), latest);
-                                } else {
-                                    eprintln!("{} Install failed — try manually: cp {} {}", color::red("✗"), extracted_bin, binary.display());
-                                }
-                            } else {
-                                eprintln!("{} Extract failed", color::red("✗"));
-                            }
-                            let _ = std::fs::remove_file("/tmp/reliary-update.tar.gz");
-                        } else {
-                            eprintln!("{} Download failed", color::red("✗"));
-                        }
-                    }
+    let release: serde_json::Value = match client
+        .get(RELEASES_URL)
+        .header("User-Agent", "reliary")
+        .send()
+    {
+        Ok(resp) => match resp.text() {
+            Ok(body) => match serde_json::from_str(&body) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("{} Could not parse GitHub response: {}", color::red("✗"), e);
+                    return;
                 }
-            } else {
-                eprintln!("{} Could not parse GitHub response", color::red("✗"));
+            },
+            Err(e) => {
+                eprintln!("{} Could not read GitHub response: {}", color::red("✗"), e);
+                return;
             }
-        }
+        },
         Err(e) => {
             eprintln!("{} Could not check for updates: {}", color::red("✗"), e);
             eprintln!("  Install manually from: https://github.com/Reliary/reliary-agent/releases");
+            return;
+        }
+    };
+
+    let tag = release.get("tag_name").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let latest = tag.trim_start_matches('v');
+    if latest == current {
+        println!("{} Already up to date (v{})", color::green("✓"), current);
+        return;
+    }
+    println!("{} Update available: v{} → v{}", color::yellow("!"), current, latest);
+
+    // Show upgrade commands per detected install method, so package-manager
+    // users update through their manager rather than hand-replacing the binary.
+    let installs = ux::find_installs();
+    let mut seen_methods = std::collections::HashSet::new();
+    for inst in &installs {
+        if seen_methods.insert(inst.method) {
+            match inst.method {
+                "cargo" => println!("  cargo:  cargo install reliary-agent --force"),
+                "brew" => println!("  brew:   brew upgrade Reliary/homebrew-tap/reliary-agent"),
+                "npm" => println!("  npm:    npm update -g @reliary/agent"),
+                _ => {}
+            }
         }
     }
+    if check_only {
+        println!("  Run 'reliary update' to install");
+        return;
+    }
+
+    // Platform triple must match the asset names produced by
+    // .github/workflows/release.yml. Keep the two in sync.
+    let (os_name, arch_name) = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => ("linux", "x86_64"),
+        ("linux", "aarch64") => ("linux", "aarch64"),
+        ("macos", "x86_64") => ("darwin", "x86_64"),
+        ("macos", "aarch64") => ("darwin", "aarch64"),
+        (os, arch) => {
+            eprintln!("{} No prebuilt binary for {}-{}", color::red("✗"), os, arch);
+            eprintln!("  Build from source: cargo install reliary-agent");
+            return;
+        }
+    };
+    let asset_name = format!("reliary-agent-{}-{}-{}.tar.gz", tag, os_name, arch_name);
+    let download_url = format!(
+        "https://github.com/Reliary/reliary-agent/releases/download/{}/{}",
+        tag, asset_name
+    );
+
+    // The SHA-256 the release published. Without it we refuse to execute the
+    // download — an unverified self-replacing binary is a supply-chain hole.
+    let expected_digest = release
+        .get("assets")
+        .and_then(|a| a.as_array())
+        .and_then(|assets| assets.iter().find(|a| a.get("name").and_then(|n| n.as_str()) == Some(asset_name.as_str())))
+        .and_then(|a| a.get("digest"))
+        .and_then(|d| d.as_str())
+        .and_then(|d| d.strip_prefix("sha256:"))
+        .map(|s| s.to_ascii_lowercase());
+    let Some(expected_digest) = expected_digest else {
+        eprintln!("{} Release {} has no {} with a published digest", color::red("✗"), tag, asset_name);
+        eprintln!("  Install manually from: https://github.com/Reliary/reliary-agent/releases");
+        return;
+    };
+
+    // Private 0700 staging dir — never a shared /tmp path.
+    let tmp_dir = std::env::temp_dir().join(format!("reliary-update-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    #[cfg(unix)]
+    let mkdir = {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(&tmp_dir)
+    };
+    #[cfg(not(unix))]
+    let mkdir = std::fs::create_dir_all(&tmp_dir);
+    if let Err(e) = mkdir {
+        eprintln!("{} Could not create staging dir {}: {}", color::red("✗"), tmp_dir.display(), e);
+        return;
+    }
+    let cleanup = || { let _ = std::fs::remove_dir_all(&tmp_dir); };
+
+    println!("  Downloading {}...", asset_name);
+    let archive = tmp_dir.join(&asset_name);
+    let dl_ok: Result<(), String> = client
+        .get(&download_url)
+        .header("User-Agent", "reliary")
+        .send()
+        .map_err(|e| e.to_string())
+        .and_then(|resp| {
+            let resp = resp.error_for_status().map_err(|e| e.to_string())?;
+            let mut out = std::fs::File::create(&archive).map_err(|e| e.to_string())?;
+            std::io::copy(&mut { resp }, &mut out).map_err(|e| e.to_string())?;
+            Ok(())
+        });
+    if let Err(e) = dl_ok {
+        eprintln!("{} Download failed: {}", color::red("✗"), e);
+        cleanup();
+        return;
+    }
+
+    match sha256_file(&archive) {
+        Ok(actual) if actual.eq_ignore_ascii_case(&expected_digest) => {}
+        Ok(actual) => {
+            eprintln!("{} Checksum mismatch — refusing to install", color::red("✗"));
+            eprintln!("  expected sha256:{}", expected_digest);
+            eprintln!("  actual   sha256:{}", actual);
+            cleanup();
+            return;
+        }
+        Err(e) => {
+            eprintln!("{} Could not hash download: {}", color::red("✗"), e);
+            cleanup();
+            return;
+        }
+    }
+    println!("  {} checksum verified", color::green("✓"));
+
+    let extract = std::process::Command::new("tar")
+        .args(["-xzf", &archive.to_string_lossy(), "-C", &tmp_dir.to_string_lossy()])
+        .status();
+    if !extract.is_ok_and(|s| s.success()) {
+        eprintln!("{} Extract failed", color::red("✗"));
+        cleanup();
+        return;
+    }
+
+    // The tarball contains a single top-level file named without the .tar.gz.
+    let extracted_bin = tmp_dir.join(asset_name.trim_end_matches(".tar.gz"));
+    if !extracted_bin.is_file() {
+        eprintln!("{} Unexpected archive layout (no {})", color::red("✗"), extracted_bin.display());
+        cleanup();
+        return;
+    }
+
+    let binary = std::env::current_exe().unwrap_or_default();
+    // cp over a running binary fails with ETXTBSY on Linux — copy beside it,
+    // then rename over the target (rename is atomic on the same filesystem).
+    let tmp_bin = std::path::PathBuf::from(format!("{}.new", binary.display()));
+    let copy_ok = std::process::Command::new("cp")
+        .args([&extracted_bin.to_string_lossy().to_string(), &tmp_bin.to_string_lossy().to_string()])
+        .status()
+        .is_ok_and(|s| s.success());
+    #[cfg(unix)]
+    if copy_ok {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp_bin, std::fs::Permissions::from_mode(0o755));
+    }
+    let install_ok = copy_ok
+        && std::process::Command::new("mv")
+            .args([&tmp_bin.to_string_lossy().to_string(), &binary.to_string_lossy().to_string()])
+            .status()
+            .is_ok_and(|s| s.success());
+    if install_ok {
+        println!("{} Updated to v{}", color::green("✓"), latest);
+    } else {
+        eprintln!("{} Install failed — try manually:", color::red("✗"));
+        eprintln!("  cargo install reliary-agent --force");
+    }
+    cleanup();
 }
 
 fn main() {
@@ -2644,7 +2745,9 @@ fn main() {
                 let tag: Option<i64> = stmt.query_row(
                     rusqlite::params![stem_lower, stem_stemmed, file, *line],
                     |r| r.get(0)
-                ).ok();  // GUARDED: intentional
+                )
+                .inspect_err(|e| eprintln!("[parse-expr] occurrence tag lookup failed: {}", e))
+                .ok(); // GUARDED: intentional — error logged above; tag is best-effort
                 match tag {
                     Some(1) | Some(2) | Some(3) => "function_def",
                     Some(4) => "field_access",

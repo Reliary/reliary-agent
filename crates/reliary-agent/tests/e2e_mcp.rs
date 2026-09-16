@@ -39,18 +39,61 @@ fn e2e_mcp_initialize_handshake() {
 #[test]
 fn e2e_mcp_initialize_creates_index_when_absent() {
     let fx = Fixture::new();
+    let index = fx.path().join(".reliary/index.sqlite");
     assert!(
-        !fx.path().join(".reliary/index.sqlite").exists(),
+        !index.exists(),
         "fixture must start unindexed"
     );
 
     let mut mcp = Mcp::start(fx.path());
     let resp = mcp.initialize();
-    // Auto-trust is best-effort; when it runs it reports so.
-    if let Some(ta) = resp["result"].get("auto_trusted") {
-        assert!(ta.is_boolean(), "auto_trusted must be a bool: {}", resp);
-    }
     assert!(mcp.is_alive());
+
+    // The fixture is a git project, so auto-trust is required to run: the
+    // index must exist afterwards and the response must say it was created.
+    assert!(
+        index.exists(),
+        "initialize on an unindexed git project must auto-trust and create \
+         the index; response was {}",
+        resp
+    );
+    assert_eq!(
+        resp["result"]["serverInfo"]
+            .get("auto_trusted")
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "auto_trusted must be true when the index was just created: {}",
+        resp
+    );
+
+    // The freshly created index must actually be queryable.
+    let text = mcp.call_tool_text(
+        "reliary_find_references",
+        json!({ "name": "alpha", "def_only": true }),
+    );
+    assert!(
+        text.contains("alpha"),
+        "auto-created index must answer queries: {}",
+        text
+    );
+}
+
+/// The auto-trust must NOT fire for a non-git directory (no index is created).
+#[test]
+fn e2e_mcp_initialize_skips_autotrust_outside_git() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("loose.rs"), "pub fn loose() {}\n").unwrap();
+    let index = dir.path().join(".reliary/index.sqlite");
+
+    let mut mcp = Mcp::start(dir.path());
+    let resp = mcp.initialize();
+    assert!(mcp.is_alive());
+    assert!(
+        !index.exists(),
+        "a non-git directory must not be auto-trusted (would surprise users \
+         by creating indexes in arbitrary dirs); response was {}",
+        resp
+    );
 }
 
 // ── 2. tools/list conformance ─────────────────────────────────────────────
@@ -383,44 +426,99 @@ fn e2e_mcp_tool_with_wrong_arg_types_does_not_panic() {
 fn e2e_mcp_path_traversal_is_rejected() {
     let fx = Fixture::new();
     fx.trust();
+    let marker = fx.path().join("outside.rs");
+    std::fs::write(&marker, "pub fn outside() {}\n").unwrap();
     let mut mcp = Mcp::start(fx.path());
     mcp.initialize();
 
-    // Attempt to escape the workdir through a tool that accepts a path.
-    for escape in ["../", "../../", "../../../../etc", "/etc"] {
-        let resp = mcp.call_tool("reliary_search", json!({ "query": "passwd", "path": escape }));
-        if let Some(err) = resp.get("error") {
-            let msg = err["message"].as_str().unwrap_or("");
+    // Every path-accepting tool must reject an escape from the workdir with an
+    // explicit error — never silently answer from the escaped location.
+    let escapes = ["../", "../../", "../../../../etc", "/etc", "/tmp"];
+    for escape in escapes {
+        for (tool, arg) in [
+            ("reliary_search", json!({ "query": "outside", "path": escape })),
+            ("reliary_find_dead_code", json!({ "path": escape })),
+        ] {
+            let resp = mcp.call_tool(tool, arg.clone());
             assert!(
-                msg.contains("path") || msg.contains("escapes"),
-                "escape {} should be rejected with a path error, got: {}",
-                escape,
-                msg
+                mcp.is_alive(),
+                "{} died on escape {}",
+                tool,
+                escape
             );
+            // The escape must not silently produce results from outside the
+            // workdir: it must be an explicit error.
+            match resp.get("error") {
+                Some(err) => {
+                    let msg = err["message"].as_str().unwrap_or("");
+                    assert!(
+                        msg.contains("path") || msg.contains("escapes") || msg.contains("invalid"),
+                        "{} escape {} must be rejected with a path error, got: {}",
+                        tool,
+                        escape,
+                        msg
+                    );
+                }
+                None => {
+                    // /tmp is a valid absolute path but must still be refused
+                    // (outside the workdir). A success here is a real failure.
+                    let content = resp["result"]["content"][0]["text"]
+                        .as_str()
+                        .unwrap_or("");
+                    assert!(
+                        !content.contains("outside.rs") && !content.contains("/etc"),
+                        "{} escape {} returned data from outside the workdir: {}",
+                        tool,
+                        escape,
+                        content
+                    );
+                }
+            }
         }
-        assert!(mcp.is_alive(), "server died on escape {}", escape);
     }
 }
 
 #[test]
 fn e2e_mcp_no_index_degrades_gracefully() {
     // A directory that is not a git repo and has no index: tools must explain
-    // rather than crash.
+    // rather than crash. Auto-trust must not create an index here (not a git
+    // repo), so this exercises the genuine no-index path.
     let dir = tempfile::tempdir().unwrap();
+    assert!(
+        !dir.path().join(".reliary/index.sqlite").exists(),
+        "non-git fixture must stay unindexed"
+    );
     let mut mcp = Mcp::start(dir.path());
     mcp.initialize();
-
-    let resp = mcp.call_tool("reliary_find_references", json!({ "name": "anything" }));
     assert!(
-        resp.get("result").is_some() || resp.get("error").is_some(),
-        "no-index query must degrade gracefully: {}",
-        resp
+        !dir.path().join(".reliary/index.sqlite").exists(),
+        "initialize must not auto-trust a non-git directory"
     );
-    assert!(mcp.is_alive());
 
-    let resp = mcp.call_tool("reliary_search", json!({ "query": "anything" }));
-    assert!(resp.get("result").is_some() || resp.get("error").is_some());
-    assert!(mcp.is_alive());
+    // Each tool must return an informational result (or explicit error) whose
+    // text explains that no index exists — not an empty or confusing answer.
+    for (tool, args) in [
+        ("reliary_find_references", json!({ "name": "anything" })),
+        ("reliary_search", json!({ "query": "anything" })),
+    ] {
+        let resp = mcp.call_tool(tool, args.clone());
+        assert!(mcp.is_alive(), "{} died with no index", tool);
+        let text = resp["result"]["content"][0]["text"]
+            .as_str()
+            .or_else(|| resp["error"]["message"].as_str())
+            .unwrap_or("");
+        let lower = text.to_ascii_lowercase();
+        assert!(
+            lower.contains("no index")
+                || lower.contains("not indexed")
+                || lower.contains("trust")
+                || lower.contains("index first"),
+            "{} with no index must say so: {} -> {}",
+            tool,
+            args,
+            resp
+        );
+    }
 }
 
 #[test]
@@ -443,11 +541,38 @@ fn e2e_mcp_parallel_tool_calls_are_answered_in_order() {
     }
 
     let mut ids = Vec::new();
+    let mut texts = Vec::new();
     for _ in 0..names.len() {
         let resp = mcp.read_response(Duration::from_secs(30));
         ids.push(resp["id"].as_i64().unwrap_or(-1));
+        assert!(
+            resp.get("error").is_none(),
+            "batched call must succeed: {}",
+            resp
+        );
+        texts.push(
+            resp["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
+        );
     }
     assert_eq!(ids, vec![100, 101, 102], "responses must preserve request order");
+    // Each response must correspond to its own request (alpha/beta/alpha).
+    assert!(
+        texts[0].contains("alpha"),
+        "response 0 must answer the alpha query: {}",
+        texts[0]
+    );
+    assert!(
+        texts[1].contains("beta"),
+        "response 1 must answer the beta query: {}",
+        texts[1]
+    );
+    assert_eq!(
+        texts[0], texts[2],
+        "identical parallel requests must yield identical answers"
+    );
     assert!(mcp.is_alive());
 }
 

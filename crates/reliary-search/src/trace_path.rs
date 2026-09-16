@@ -124,7 +124,8 @@ pub fn trace_path(
         }
         let raw: Option<String> = path_stmt
             .query_row(rusqlite::params![fid], |r| r.get(0))
-            .ok();
+            .inspect_err(|e| eprintln!("[trace_path] file path lookup failed for id {}: {}", fid, e))
+            .ok(); // GUARDED: intentional — error logged above; unresolved path returns None
         let rel = raw.map(|p| match p.strip_prefix(&prefix) {
             Some(s) => s.to_string(),
             None => p,

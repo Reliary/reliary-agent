@@ -1,6 +1,8 @@
+#![forbid(unsafe_code)]
 /// Pre-edit risk analysis.
 /// Grammar-free: uses structural heuristics, not AST parsing.
 /// Risk categories a file or edit operation can fall into.
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RiskLevel {
     Low,

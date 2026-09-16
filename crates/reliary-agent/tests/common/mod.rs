@@ -104,6 +104,29 @@ pub fn run_cli(args: &[&str], cwd: &Path, envs: &[(&str, &str)]) -> std::process
     cmd.output().expect("spawn reliary")
 }
 
+/// Run the binary with explicit stdin (for interactive prompts).
+pub fn run_cli_stdin(args: &[&str], cwd: &Path, envs: &[(&str, &str)], input: &str) -> std::process::Output {
+    use std::io::Write;
+    let mut cmd = Command::new(binary_path());
+    cmd.args(args)
+        .current_dir(cwd)
+        .env("NO_RELIARY_WATCHER", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().expect("spawn reliary");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin piped")
+        .write_all(input.as_bytes())
+        .expect("write stdin");
+    child.wait_with_output().expect("wait reliary")
+}
+
 // ── MCP stdio client ──────────────────────────────────────────────────────
 
 /// A live `reliary mcp` subprocess speaking JSON-RPC over stdio.

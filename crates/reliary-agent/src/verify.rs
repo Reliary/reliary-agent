@@ -5,7 +5,7 @@
 //! bench/deterministic_verify.py with identical claim forms and ±1 tolerance.
 
 use regex::Regex;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -174,7 +174,9 @@ pub fn verify_claim(db: &Connection, claim: &Claim, tol: i32) -> Verdict {
                 params![format!("%/{}", claim.file)],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
             )
-            .ok(); // GUARDED: intentional — None means "file not indexed", a real FALSE
+            .optional()
+            .inspect_err(|e| eprintln!("[verify] file lookup failed: {}", e))
+            .unwrap_or(None); // None = file not indexed → a real FALSE
         let Some((path, content_len)) = file_info else {
             return Verdict::False { actual: None };
         };
@@ -188,6 +190,7 @@ pub fn verify_claim(db: &Connection, claim: &Claim, tol: i32) -> Verdict {
                     params![path, claim.line - 1 - tol, claim.line - 1 + tol],
                     |r| r.get(0),
                 )
+                .inspect_err(|e| eprintln!("[verify] line existence check failed: {}", e))
                 .unwrap_or(0);
             if line_exists == 0 && claim.line as i64 > content_len / 8 + 1000 {
                 return Verdict::False { actual: None };
@@ -248,7 +251,9 @@ pub fn verify_claim(db: &Connection, claim: &Claim, tol: i32) -> Verdict {
             ],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i32>(1)?)),
         )
-        .ok(); // GUARDED: intentional — miss means "no occurrence at this line", not an error
+        .optional()
+        .inspect_err(|e| eprintln!("[verify] occurrence lookup failed: {}", e))
+        .unwrap_or(None); // None = no occurrence at this line → FALSE
     match hit {
         Some((path, line0)) => Verdict::Verified {
             actual: Some((basename(&path), line0 + 1)),

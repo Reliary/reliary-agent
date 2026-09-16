@@ -1,4 +1,4 @@
-
+#![forbid(unsafe_code)]
 use std::sync::LazyLock;
 
 /// Cached fix-extraction regexes. Compiled once on first use.

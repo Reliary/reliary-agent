@@ -6,7 +6,7 @@
 // don't duplicate entries.
 
 fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
-    use rusqlite::params;
+    use rusqlite::{params, OptionalExtension};
     let db = match rusqlite::Connection::open(db_path) {
         Ok(d) => {
             // C2: watcher writer must use WAL+NORMAL to coexist with MCP readers.
@@ -193,9 +193,13 @@ fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
     // the same data trust uses (is_def_any, avg zone, occurrence count).
     for pid in &affected_ids {
         // Look up this pid's phrase text, then its locations.
-        let phrase_text: Option<String> = db
+        let phrase_text: Option<String> = match db
             .query_row("SELECT phrase FROM phrases WHERE id = ?1", params![pid], |r| r.get(0))
-            .ok(); // GUARDED: intentional — missing phrase means the token vanished; skip below
+            .optional()
+        {
+            Ok(v) => v,
+            Err(e) => { eprintln!("[reindex] phrase read failed for id {}: {}", pid, e); None }
+        };
         let phrase_text = match phrase_text {
             Some(t) => t,
             None => continue,

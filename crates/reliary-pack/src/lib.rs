@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Holographic codebase pack generator.
 //!
 //! Produces a cache-stable, model-readable representation of a codebase
@@ -27,6 +28,7 @@
 //! Uses skeleton-frequency analysis: lines whose aggressive_skeleton
 //! is rare across the codebase are "surprising"; lines whose skeleton
 //! is common are "expected" (the model's prior handles them).
+
 
 use std::collections::HashSet;
 use rustc_hash::FxHashMap;
@@ -1478,6 +1480,7 @@ fn is_noise_line(line: &str) -> bool {
     false
 }
 
+
 /// Extract surprise facts from a symbol's body using skeleton-frequency.
 ///
 /// A line is "surprising" if its aggressive_skeleton appears < RARE_THRESHOLD
@@ -2481,4 +2484,81 @@ fn render_entry(
 
     parts.push(String::new());
     parts.join("\n")
+}
+
+#[cfg(test)]
+mod noise_tests {
+    use super::is_noise_line;
+
+    /// Lines that must be filtered — each is a real noise class the S1 work
+    /// targeted. If the filter is weakened these assertions fail.
+    #[test]
+    fn noise_classes_are_filtered() {
+        let noise = [
+            // blank / structural closers
+            "",
+            "}",
+            "});",
+            "};",
+            "];",
+            ")",
+            // python assertions
+            "self.assertEqual(request.status, 200)",
+            "self.assertIsNotNone(request.body)",
+            "self.assertTrue(request.valid)",
+            // chained method calls of a collection
+            "block_phrases.append(request.text)",
+            "results.append(item)",
+            // log macros
+            "log::info!(\"starting engine\")",
+            "tracing::debug!(\"rpm = {}\", self.rpm)",
+            "println!(\"done\")",
+            "dbg!(value);",
+            // derive attributes
+            "#[derive(Debug, Clone, PartialEq)]",
+            "derive(Serialize, Deserialize)",
+            // break / continue
+            "break;",
+            "continue;",
+            // trivial returns
+            "return None;",
+            "return true;",
+            "return false;",
+            // discard bindings / option idioms
+            "let _ = do_thing();",
+            "value.ok()?;",
+            "thing.expect(\"must exist\");",
+            // simple bindings
+            "let x = y;",
+            "let mut count = 0;",
+        ];
+        for line in noise {
+            assert!(
+                is_noise_line(line),
+                "expected to be filtered as noise: {:?}",
+                line
+            );
+        }
+    }
+
+    /// Lines that must survive — filtering them would lose real signal.
+    #[test]
+    fn signal_lines_are_preserved() {
+        let signal = [
+            "hash = hash.wrapping_mul(33).wrapping_add(byte);",
+            "if total > threshold && !exhausted {",
+            "match response_kind {",
+            "let ratio = scored(matched, total) as f64;",
+            "return Some(compute_fallback(input));",
+            "buffer.extend_from_slice(&payload);",
+            "channel.send(Message::Shutdown).await;",
+        ];
+        for line in signal {
+            assert!(
+                !is_noise_line(line),
+                "expected to be preserved as signal: {:?}",
+                line
+            );
+        }
+    }
 }

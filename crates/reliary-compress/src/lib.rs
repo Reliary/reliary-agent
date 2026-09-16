@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use ahash::AHashMap;
 use std::sync::LazyLock;
 use regex::Regex;
