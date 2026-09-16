@@ -161,8 +161,13 @@ jobs:
 
       # V75: the bench cassette (record/replay determinism). Pure-Python unit
       # + harness-integration tests; no network, no API key, no corpus.
+      # The runner's system Python has no pytest and is PEP-668 managed, so
+      # use a throwaway venv instead of touching the system interpreter.
       - name: bench cassette tests
-        run: python3 -m pytest bench/tests/ -q
+        run: |
+          python3 -m venv /tmp/pytest-venv
+          /tmp/pytest-venv/bin/pip install --quiet pytest
+          /tmp/pytest-venv/bin/python -m pytest bench/tests/ -q
 
       - name: binary size
         run: ls -lh target/release/reliary
