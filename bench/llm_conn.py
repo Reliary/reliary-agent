@@ -90,19 +90,37 @@ _AUTH_FILE = os.path.expanduser("~/.local/share/opencode/auth.json")
 
 
 def load_deepseek_key() -> str:
-    """Load direct DeepSeek API key from opencode auth.json."""
+    """Load direct DeepSeek API key: DEEPSEEK_API_KEY env var, else opencode auth.
+
+    Resolved lazily at call time (not import time) so that importing this
+    module — e.g. to replay a cassette with zero network — does not require
+    credentials to be present.
+    """
+    key = os.environ.get("DEEPSEEK_API_KEY")
+    if key:
+        return key
     with open(_AUTH_FILE) as f:
         d = json.load(f)
     return d["deepseek"]["key"]
 
 
-# Key resolution: DEEPSEEK_API_KEY env var first, then opencode auth.json.
-# (The old hardcoded fallback was removed — SECURITY: the key was exposed in
-# repo history and revoked. See commit bb4c4e3.)
-DEEPSEEK_API_KEY_FALLBACK = (
-    os.environ.get("DEEPSEEK_API_KEY")
-    or load_deepseek_key()
-)
+def get_deepseek_key() -> str:
+    """Backward-compatible alias for the lazy resolver."""
+    return load_deepseek_key()
+
+
+def __getattr__(name):
+    """Lazily resolve the legacy `DEEPSEEK_API_KEY_FALLBACK` constant.
+
+    It used to be computed at import time, which made merely importing this
+    module require an API key — breaking cassette replay and any tooling that
+    only needs the non-network parts. PEP 562 module __getattr__ keeps
+    `from llm_conn import DEEPSEEK_API_KEY_FALLBACK` working while resolving
+    the key only when actually used.
+    """
+    if name == "DEEPSEEK_API_KEY_FALLBACK":
+        return load_deepseek_key()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def deepseek_chat(messages, model=DEEPSEEK_MODEL, max_tokens=200,
