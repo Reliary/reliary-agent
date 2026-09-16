@@ -18,16 +18,42 @@ The binary is built at `target/release/reliary`.
 
 - **Grammar-free** — no tree-sitter, no language-specific parsers in the core path. New modules must work on any text file.
 - **No keyword matching in scoring** — the structural detector (`crates/reliary-search/src/classify_structural`) uses block-boundary detection and last-identifier-before-delimiter rules, not language keywords. If you need language detection, use the file extension as a signal, not the grammar.
-- **Lazy tables** — derived tables (`occurrence`, `block`, `scope_binding`, `method_occurrence`) populate on first query. Don't block the trust path on populating them.
+- **Lazy tables** — derived tables (`occurrence`, `block`) populate on first query. Don't block the trust path on populating them.
 - **Idiomatic Rust** — uses `crates/reliary-output` for `compress_unified` and `compress_sift`. Uses `crates/reliary-core` for shared types. Uses `reliary-search`'s `find_references_*` family for symbol queries (don't reinvent).
 
 ## Running tests
 
 ```bash
-cargo test --workspace
+cargo test --workspace --release
 ```
 
-All 295+ tests must pass. Add tests for new functionality in the same module as the code (not in `tests/`).
+**Test layers.** Unit tests live beside the code in each crate. Integration and
+end-to-end tests live in `crates/*/tests/`:
+
+| File | What it covers |
+|------|----------------|
+| `reliary-agent/tests/e2e_mcp.rs` | Full MCP stdio protocol: handshake, `tools/list` schema, every tool callable, error codes, malformed-input survivability, parallel calls |
+| `reliary-agent/tests/e2e_cli.rs` | CLI subprocess behaviour: `trust`, `search`, `verify`, `status`, `doctor`, `wrap`, `init`/`uninstall` against a fake `HOME`, completions |
+| `reliary-agent/tests/e2e_adversarial.rs` | Hostile input: invalid UTF-8, NUL bytes, unterminated strings/comments, 200 KB lines, deep nesting, path traversal, SQL-injection-shaped symbol names, index integrity, determinism |
+
+The e2e tests spawn the real `reliary` binary and require `git` on `PATH`
+(they create throwaway repos). Skip them when iterating on a single module:
+
+```bash
+cargo test -p reliary-search            # one crate
+cargo test -- --skip e2e_               # unit tests only
+```
+
+**Adding tests.** New functionality gets a unit test in the same module. New
+*integrating* behaviour (a new MCP tool, a new CLI command, a new failure mode)
+gets an e2e test in the matching file above — the e2e layer is what catches
+protocol and process-boundary regressions that unit tests cannot see.
+
+**The OpenCode plugin** has its own suite:
+
+```bash
+cd opencode-plugin && npm ci && npm test
+```
 
 ## Bench scripts
 

@@ -29,7 +29,11 @@ fn blue() -> &'static str { "\x1b[34m" }
 fn red() -> &'static str { "\x1b[31m" }
 fn yellow() -> &'static str { "\x1b[33m" }
 
-/// Scan for multiple installations of reliary-agent
+/// Names the binary can be installed under: the shipped name (`reliary`) and
+/// the legacy crate/bin name (`reliary-agent`) that older releases used.
+const BINARY_NAMES: [&str; 2] = ["reliary", "reliary-agent"];
+
+/// Scan for multiple installations of the reliary binary.
 pub struct InstallInfo {
     pub path: String,
     pub version: String,
@@ -41,59 +45,66 @@ pub fn find_installs() -> Vec<InstallInfo> {
     let mut installs: Vec<InstallInfo> = Vec::new();
     let mut seen_paths = std::collections::HashSet::new();
 
-    // Find active binary via PATH
+    // Find active binary via PATH (either name).
     let which = if cfg!(target_os = "windows") { "where" } else { "which" };
-    if let Ok(output) = Command::new(which).arg("-a").arg("reliary-agent").output() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for path in stdout.lines() {
-            let p = path.trim();
-            if !p.is_empty() && seen_paths.insert(p.to_string()) {
-                let version = binary_version(p);
-                installs.push(InstallInfo {
-                    path: p.to_string(),
-                    version,
-                    method: "PATH",
-                    active: installs.is_empty(),
-                });
+    for bin_name in BINARY_NAMES {
+        if let Ok(output) = Command::new(which).arg("-a").arg(bin_name).output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for path in stdout.lines() {
+                let p = path.trim();
+                if !p.is_empty() && seen_paths.insert(p.to_string()) {
+                    let version = binary_version(p);
+                    installs.push(InstallInfo {
+                        path: p.to_string(),
+                        version,
+                        method: "PATH",
+                        active: installs.is_empty(),
+                    });
+                }
             }
         }
     }
 
     // Check cargo bin
     if let Some(home) = home_dir() {
-        let cargo_bin = home.join(".cargo/bin/reliary-agent");
-        let cargo_path = cargo_bin.to_string_lossy().to_string();
-        if cargo_bin.exists() && seen_paths.insert(cargo_path.clone()) {
-            let version = binary_version(&cargo_path);
-            installs.push(InstallInfo { path: cargo_path, version, method: "cargo", active: false });
-        }
+        for bin_name in BINARY_NAMES {
+            let cargo_bin = home.join(".cargo/bin").join(bin_name);
+            let cargo_path = cargo_bin.to_string_lossy().to_string();
+            if cargo_bin.exists() && seen_paths.insert(cargo_path.clone()) {
+                let version = binary_version(&cargo_path);
+                installs.push(InstallInfo { path: cargo_path, version, method: "cargo", active: false });
+            }
 
-        // Check npm global
-        let npm_bin = home.join(".local/share/io.npm/.npm-global/bin/reliary-agent");
-        let npm_path = npm_bin.to_string_lossy().to_string();
-        if npm_bin.exists() && seen_paths.insert(npm_path.clone()) {
-            let version = binary_version(&npm_path);
-            installs.push(InstallInfo { path: npm_path, version, method: "npm", active: false });
-        }
-        // Also check npm's common global dir
-        let npm_bin2 = home.join("node_modules/.bin/reliary-agent");
-        let npm_path2 = npm_bin2.to_string_lossy().to_string();
-        if npm_bin2.exists() && seen_paths.insert(npm_path2.clone()) {
-            let version = binary_version(&npm_path2);
-            installs.push(InstallInfo { path: npm_path2, version, method: "npm", active: false });
+            // Check npm global
+            let npm_bin = home.join(".local/share/io.npm/.npm-global/bin").join(bin_name);
+            let npm_path = npm_bin.to_string_lossy().to_string();
+            if npm_bin.exists() && seen_paths.insert(npm_path.clone()) {
+                let version = binary_version(&npm_path);
+                installs.push(InstallInfo { path: npm_path, version, method: "npm", active: false });
+            }
+            // Also check npm's common global dir
+            let npm_bin2 = home.join("node_modules/.bin").join(bin_name);
+            let npm_path2 = npm_bin2.to_string_lossy().to_string();
+            if npm_bin2.exists() && seen_paths.insert(npm_path2.clone()) {
+                let version = binary_version(&npm_path2);
+                installs.push(InstallInfo { path: npm_path2, version, method: "npm", active: false });
+            }
         }
     }
 
     // Check Homebrew paths
-    for brew_path in &[
-        "/opt/homebrew/bin/reliary-agent",
-        "/usr/local/bin/reliary-agent",
-        "/home/linuxbrew/.linuxbrew/bin/reliary-agent",
+    for dir in &[
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/home/linuxbrew/.linuxbrew/bin",
     ] {
-        let p = std::path::Path::new(brew_path);
-        if p.exists() && seen_paths.insert(brew_path.to_string()) {
-            let version = binary_version(brew_path);
-            installs.push(InstallInfo { path: brew_path.to_string(), version, method: "brew", active: false });
+        for bin_name in BINARY_NAMES {
+            let brew_path = format!("{}/{}", dir, bin_name);
+            let p = std::path::Path::new(&brew_path);
+            if p.exists() && seen_paths.insert(brew_path.clone()) {
+                let version = binary_version(&brew_path);
+                installs.push(InstallInfo { path: brew_path, version, method: "brew", active: false });
+            }
         }
     }
 
@@ -362,14 +373,14 @@ pub fn doctor(fix: bool, format: &str) {
     if all_good {
         println!("\n{}✓{} System ready.", color(), reset());
     } else if !fix {
-        println!("\n  {}Tip: run 'reliary-agent doctor --fix' to fix issues automatically.{}", dim(), reset());
+        println!("\n  {}Tip: run 'reliary doctor --fix' to fix issues automatically.{}", dim(), reset());
     } else {
         println!("\n{}✓{} System ready after fix.", color(), reset());
         // Show remaining non-optional failures with hints
         for c in &checks {
             if !c.ok && !c.optional {
                 let hint = match c.name {
-                    "index" => "Run 'reliary-agent index .' to view errors",
+                    "index" => "Run 'reliary index .' to view errors",
                     "installs" => "Remove stale binary paths manually",
                     _ => "Check the detail above",
                 };
@@ -467,7 +478,7 @@ pub fn status(format: &str) {
         println!("  {}•{} Memory: {} chronicle events", blue(), reset(), d.chronicle_events);
     } else {
         println!("  {}•{} Index: {}-{} No index found", blue(), reset(), yellow(), reset());
-        println!("    {}→ Run 'reliary-agent index .' to build it{}", dim(), reset());
+        println!("    {}→ Run 'reliary index .' to build it{}", dim(), reset());
     }
 }
 

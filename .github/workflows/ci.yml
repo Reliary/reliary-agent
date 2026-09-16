@@ -32,6 +32,15 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets --release -- -D warnings 2>&1 || { echo 'clippy FAIL'; exit 1; }
 
+      # The reliary-agent tests spawn the real binary as a subprocess, so the
+      # release build must exist before they run. `cargo test` builds it via
+      # CARGO_BIN_EXE_, but the OpenCode plugin tests below need node/npm.
+      - name: OpenCode plugin tests
+        run: |
+          cd opencode-plugin
+          npm ci --no-audit --no-fund
+          npm test
+
       - name: no openssl-sys (cross-compile sanity)
         run: |
           if cargo tree -e normal 2>/dev/null | grep -q "openssl-sys"; then

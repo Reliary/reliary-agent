@@ -201,8 +201,11 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
 
     if is_function_signature && paren_pos.is_some() {
         // P3-1 principled: the function name is the LAST identifier whose
-        // next non-whitespace char is `(` or `<`. delim_pos = right after the name.
-        if let Some((name_start, idx)) = find_function_name_pos(&delims) {
+        // next non-whitespace char is `(` or `<`, restricted to the part of
+        // the line before any inline body (`{`). Without that restriction a
+        // one-liner like `pub fn alpha() -> i32 { beta() + 1 }` would record
+        // the definition under the trailing call's name.
+        if let Some((name_start, idx)) = find_function_name_pos_before(&delims, delims.first_brace_pos()) {
             // V65: a bare call like `impl_target_identifier(before_brace)` is
             // NOT a definition. The name must be preceded by a declaration
             // keyword (`fn`, `pub`, `async`, `unsafe`, `extern`, `const`) or
@@ -734,11 +737,27 @@ pub fn scan_delimiters(line: &str) -> LineDelimiters {
 /// non-whitespace character is `(` or `<`. Principled grammar-free rule:
 /// "the function name is the last identifier followed by `(` or `<`".
 fn find_function_name_pos(delims: &LineDelimiters) -> Option<(usize, usize)> {
+    find_function_name_pos_before(delims, None)
+}
+
+/// P3-1: Find the function name, ignoring identifiers that appear inside an
+/// inline body.
+///
+/// `body_start` is the byte offset of the first `{` on the line (if any).
+/// A definition's name always precedes its body, so for
+/// `pub fn alpha() -> i32 { beta() + 1 }` the trailing `beta()` call must not
+/// win the "last `(`-match" rule — otherwise the definition is recorded under
+/// the callee's name (and the callee gains a phantom definition at this line).
+fn find_function_name_pos_before(delims: &LineDelimiters, body_start: Option<usize>) -> Option<(usize, usize)> {
     // P3-1 principled rule (grammar-free):
     // 1. If any identifier at angle_depth=0 is followed by `(`, use the LAST
     //    such identifier (skips pub(crate) wrapper, handles `fn poll_ready() -> Poll<()>`).
     // 2. If NO `(` match exists, use the FIRST identifier at depth=0 followed by `<`
     //    (the function name is first; return type `Option<B>` comes later).
+    //
+    // Candidates at or after `body_start` live inside an inline body and are
+    // calls, never the definition itself.
+    let before_body = |pos: usize| body_start.is_none_or(|b| pos < b);
     let mut paren_matches: Vec<(usize, usize)> = Vec::new();
     let mut lt_matches: Vec<(usize, usize)> = Vec::new();
     for idx in 0..delims.ident_count {
@@ -746,6 +765,7 @@ fn find_function_name_pos(delims: &LineDelimiters) -> Option<(usize, usize)> {
         let depth = delims.ident_angle_depth[idx];
         if depth > 0 { continue; }
         let pos = (delims.ident_starts[idx] as usize, idx);
+        if !before_body(pos.0) { continue; }
         if nc == b'(' {
             paren_matches.push(pos);
         } else if nc == b'<' {

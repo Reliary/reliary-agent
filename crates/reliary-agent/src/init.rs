@@ -103,7 +103,7 @@ pub fn run(dry_run: bool) {
     println!("{}  │       Reliary Agent Setup Wizard           │{}", bold, reset);
     println!("{}  ╰────────────────────────────────────────────╯{}", bold, reset);
     println!();
-    println!("{}  This will configure reliary-agent for your code agents.{}", dim, reset);
+    println!("{}  This will configure reliary for your code agents.{}", dim, reset);
     println!("{}  Each integration is optional -- say n to skip any.{}", dim, reset);
     if dry_run {
         println!("{}  \x1b[36m[dry-run]\x1b[0m{} Showing what would be installed, no changes will be made.", dim, reset);
@@ -270,8 +270,8 @@ pub fn run(dry_run: bool) {
     if configured_agents > 0 {
         println!("{}  │   {} agent(s) configured.       ✓          │{}", dim, configured_agents, reset);
     }
-    println!("{}  │   Next: {}reliary-agent doctor{}              │{}", dim, bold, dim, reset);
-    println!("{}  │   Then: {}reliary-agent trust .{}               │{}", dim, bold, dim, reset);
+    println!("{}  │   Next: {}reliary doctor{}              │{}", dim, bold, dim, reset);
+    println!("{}  │   Then: {}reliary trust .{}               │{}", dim, bold, dim, reset);
     println!("{}  ╰────────────────────────────────────────────╯{}", bold, reset);
     println!();
 }
