@@ -85,9 +85,10 @@ jobs:
           if [ -n "$bad" ]; then
             echo "FAIL: vendored/generated paths are tracked:"; echo "$bad"; exit 1
           fi
-          # bench/results is allowed to contain only the files referenced by
-          # README/docs (the deterministic bench inputs).
-          extra=$(git ls-files bench/results | grep -vE '^bench/results/(v64_final_3way|v70_3way|e1c_shipped_prompt_fixed)\.jsonl$' | head -5 || true)
+          # bench/results is allowed to contain only the durable bench inputs
+          # (the public_* question/GT fixtures public_bench.py reads). Ad-hoc
+          # run outputs, logs, and snapshots are not tracked.
+          extra=$(git ls-files bench/results | grep -vE '^bench/results/public_(gt|questions|harness_questions)\.json$' | head -5 || true)
           if [ -n "$extra" ]; then
             echo "FAIL: untracked-by-policy files under bench/results:"; echo "$extra"; exit 1
           fi
