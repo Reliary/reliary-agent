@@ -86,21 +86,33 @@ when the index changes.
 ## CLI
 
 ```
-reliary trust [PATH]      Index a project directory
-reliary index [PATH]      Build or refresh the index
-reliary search QUERY      BM25 search
-reliary mcp               Start the MCP server on stdio
-reliary wrap [CMD]        Run CMD and compress its output
-reliary sift [--stdin]    Pipe text through the compressor
-reliary dead [PATH]       Cross-file dead-code analysis
-reliary verify CLAIM      Verify a claim about the codebase
-reliary init              Auto-install agent integrations
-reliary uninstall         Remove agent integrations
-reliary doctor            Health check
-reliary status            Index and integration status
-reliary update            Self-update from GitHub releases (checksum-verified)
-reliary completions SHELL Emit a shell completion script
-reliary man               Emit the man page
+reliary trust [PATH]         Index a project directory
+reliary index [PATH]         Build or refresh the index
+reliary reindex-file PATH    Re-index one file after an edit (used by hooks)
+reliary search QUERY         BM25 search
+reliary mcp                  Start the MCP server on stdio
+reliary wrap [CMD]           Run CMD and compress its output
+reliary sift [--stdin]       Pipe text through the compressor
+reliary compress PATH        IR reasoning compression
+reliary dead [PATH]          Cross-file dead-code analysis
+reliary risk FILE            Pre-edit risk analysis
+reliary impact SYMBOL        Blast radius: callers, test files, risk verdict
+reliary test-plan            Which tests exercise the changed files/symbols
+reliary diff REV REV         Structural diff between two revisions
+reliary map                  Render a self-contained SVG map of the codebase
+reliary verify TEXT          Verify a claim about the codebase
+reliary fix TASK             Deterministic bug-fix recipes, LLM fallback
+reliary bench                Generate benchmark questions+GT and score results
+reliary init                 Auto-install agent integrations
+reliary uninstall            Remove agent integrations
+reliary doctor               Health check
+reliary status               Index and integration status
+reliary logs                 Tail the log output
+reliary config               Show resolved configuration
+reliary clean                Clean caches and state
+reliary update               Self-update from GitHub releases (checksum-verified)
+reliary completions SHELL    Emit a shell completion script
+reliary man                  Emit the man page
 ```
 
 Run `reliary --help` for the complete, current list.
