@@ -3,7 +3,7 @@
 
 Scores every answer with deepseek-v4-pro against mechanically-derived ground
 truth, so the comparison does not reward either backend's citation style.
-The claim-verified F1 rewards reliai's `symbol at file:line` shape; this does
+The claim-verified F1 rewards reliary's `symbol at file:line` shape; this does
 not.
 
 Usage:

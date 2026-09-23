@@ -1,10 +1,10 @@
-# Familiarity experiment — does reliai's advantage survive identifier obfuscation?
+# Familiarity experiment — does reliary's advantage survive identifier obfuscation?
 
-**Question.** Is reliai's comprehension advantage a *familiarity* effect — the
+**Question.** Is reliary's comprehension advantage a *familiarity* effect — the
 model has memorized public repos like tokio, so on those it overrides tool
 output with training priors, while on unseen/private code the tool's precise
 answers are the only signal? If so, obfuscating a public corpus should *flip*
-the comparison in reliai's favour.
+the comparison in reliary's favour.
 
 **Method.** Take tokio at a pinned commit, rename every user identifier to a
 deterministic pseudonym (`bench/obfuscate_corpus.py`), translate the exact same
@@ -18,9 +18,9 @@ are seeded by full relative path (fixing a 25-way `mod.rs` collision).
 
 | Arm | Condition | claim-F1 | LLM judge (mean /3) | billed (median) | wall | tool calls | tool bytes |
 |-----|-----------|----------|---------------------|-----------------|------|-----------|------------|
-| Original tokio | A reliai | **0.727** | **1.78** | **6,478** | **9s** | **4** | **3,866** |
+| Original tokio | A reliary | **0.727** | **1.78** | **6,478** | **9s** | **4** | **3,866** |
 | Original tokio | C grep | 0.668 | 1.53 | 11,632 | 17s | 6 | 12,544 |
-| Obfuscated tokio | A reliai | **0.693** | **1.88** | **11,798** | **12s** | **4** | **4,292** |
+| Obfuscated tokio | A reliary | **0.693** | **1.88** | **11,798** | **12s** | **4** | **4,292** |
 | Obfuscated tokio | C grep | 0.647 | 1.69 | 16,026 | 17s | 6 | 10,078 |
 
 (A−C delta: claim-F1 +0.059 original / +0.046 obfuscated; judge +0.25 / +0.19.)
@@ -62,7 +62,7 @@ result, so this experiment finds no support for the familiarity hypothesis.**
 
 ## What this means for the private-repo claim
 
-The earlier reasoning was: reliai wins on our corpus, loses on tokio (memorized),
+The earlier reasoning was: reliary wins on our corpus, loses on tokio (memorized),
 therefore the win is familiarity. This experiment tested that mechanism directly
 and **it did not hold** — obfuscation left the advantage roughly unchanged.
 
@@ -70,7 +70,7 @@ So the honest current position is narrower than "we win on private repos":
 
 - **Demonstrated, corpus-independent:** lower cost (2–4× lower billed), smaller
   tool output, fewer dead-ends. These reproduce on every arm.
-- **Observed but small and not significant:** reliai's accuracy edge survives
+- **Observed but small and not significant:** reliary's accuracy edge survives
   obfuscation, so it is *not explained by familiarity* — but at 1.1–1.4σ it is
   not established as a general accuracy advantage either.
 - The familiarity mechanism is **not supported** by this test.

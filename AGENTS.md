@@ -52,7 +52,7 @@ Deterministic claim verification (F1 = how many model claims `symbol at file:lin
 | altbackend | 0.461 | 0.893 | 23,064 | 3.5 | 32s |
 | grep | 0.615 | 0.881 | 36,967 | 0.0 | 39s |
 
-Wall is provider-latency bound (~90% cache hit on all three conditions); the spread is within noise. reliai's demonstrated edge is **cost and output size** (lowest billed cost, ~4× smaller tool output than grep, zero dead-ends) at comparable accuracy. Its F1 is ahead of altbackend and close to grep; a clear accuracy superiority over grep is **not** established on this corpus. A prompt-parity ablation (condition `M`, ~120-word minimal prompt vs A's ~300-word shipped prompt) scored F1 0.707 vs A's 0.816 — the tool contributes the majority of the gap.
+Wall is provider-latency bound (~90% cache hit on all three conditions); the spread is within noise. reliary's demonstrated edge is **cost and output size** (lowest billed cost, ~4× smaller tool output than grep, zero dead-ends) at comparable accuracy. Its F1 is ahead of altbackend and close to grep; a clear accuracy superiority over grep is **not** established on this corpus. A prompt-parity ablation (condition `M`, ~120-word minimal prompt vs A's ~300-word shipped prompt) scored F1 0.707 vs A's 0.816 — the tool contributes the majority of the gap.
 
 Do not cite the keyword-score rubric (`/30`) as an accuracy measure: it is substring
 matching and roughly doubles the real accuracy. Use F1 above.

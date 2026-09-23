@@ -4,7 +4,7 @@ Grammar-free code intelligence + bash compression for AI coding agents.
 
 A single Rust binary (~9 MB) that indexes any codebase via structural detection (no tree-sitter, no language-specific code) and exposes it to AI agents through the Model Context Protocol (MCP). Companion tool `reliary wrap` compresses verbose bash output (cargo test, git diff, pytest) before it reaches agent context — a grammar-free compressor with a hard no-inflation guarantee.
 
-**What it's for:** answering "where is X defined / who calls X / what methods does X have" in one small tool call instead of a grep-then-read cycle. On the benchmark below reliai is **roughly half the billed cost of grep and ~4× smaller in tool output, with comparable accuracy** (its accuracy edge is real-looking but within noise — see the honest note under Benchmarks).
+**What it's for:** answering "where is X defined / who calls X / what methods does X have" in one small tool call instead of a grep-then-read cycle. On the benchmark below reliary is **roughly half the billed cost of grep and ~4× smaller in tool output, with comparable accuracy** (its accuracy edge is real-looking but within noise — see the honest note under Benchmarks).
 
 ## Quick start
 
@@ -79,7 +79,7 @@ recoverable from a content-addressed tee file on the paths that compress.
 
 Deterministic claim-verification bench (10 questions on a reliary corpus snapshot, deepseek-v4-flash, 4 seeds 42/17/123/456). Record: `bench/cassettes/canonical-v4/record.jsonl`.
 
-**The demonstrated advantage is cost and speed at comparable accuracy.** reliai answers in fewer, smaller tool results at roughly half the billed cost of grep. Its accuracy is comparable to grep on this corpus (and ahead of altbackend); an accuracy *superiority* over grep is not established.
+**The demonstrated advantage is cost and speed at comparable accuracy.** reliary answers in fewer, smaller tool results at roughly half the billed cost of grep. Its accuracy is comparable to grep on this corpus (and ahead of altbackend); an accuracy *superiority* over grep is not established.
 
 | Metric | Reliary (A) | Altbackend (B) | Grep (C) |
 |--------|-------------|----------------|----------|
@@ -105,8 +105,8 @@ states is checked against the index, so invented locations are counted as errors
 Billed cost includes the provider's cache discount (≈94% cache hit on all three
 conditions).
 
-**Honest accuracy note.** reliai's F1 leads altbackend clearly and grep narrowly, but on
-a single small corpus the F1 and an independent LLM judge both put the reliai-vs-grep
+**Honest accuracy note.** reliary's F1 leads altbackend clearly and grep narrowly, but on
+a single small corpus the F1 and an independent LLM judge both put the reliary-vs-grep
 gap within noise (judge delta ≈1σ). Treat accuracy as **comparable to grep, ahead of
 altbackend**; the reproducible, corpus-independent wins are cost (≈45% lower billed
 than grep), tool-output size (≈4× smaller), wall time, and zero dead-ends. A test of
@@ -124,9 +124,9 @@ all three conditions scored f2p 100% on 6 tasks × 2 seeds — but a runnable fa
 test *is* the answer key, so the design was invalid. **Run 2** (the discriminating
 design: every test stripped from the agent's workspace, bare prose symptoms, hidden
 tests injected at scoring time): **again all three conditions scored 100%, zero
-wrong-file edits.** Pre-registered kill criterion (reliai ≥ both by +15pp) failed
+wrong-file edits.** Pre-registered kill criterion (reliary ≥ both by +15pp) failed
 both times. Honest reading: single-line defects in a ~500-file repo are greppable
-from symptom prose, so no index advantage exists to show. **reliai's edit-outcome
+from symptom prose, so no index advantage exists to show. **reliary's edit-outcome
 advantage is unproven; the demonstrated advantage is retrieval cost/precision.**
 Details: `bench/MUTATION_BENCH_V2_RESULTS.md`.
 

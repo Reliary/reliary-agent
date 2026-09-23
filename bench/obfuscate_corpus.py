@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Deterministically obfuscate every non-reserved identifier in a source tree.
 
-Purpose: test whether reliai's comprehension advantage is a *familiarity*
+Purpose: test whether reliary's comprehension advantage is a *familiarity*
 effect. Take a public repo the model has memorized (tokio), rename every
 user identifier to a stable pseudonym, and re-run the identical bench. If
 the advantage is familiarity-driven, the original corpus should favour grep
 (the model overrides tool output with priors) while the obfuscated corpus
-should favour reliai.
+should favour reliary.
 
 Grammar-free: a single `[A-Za-z_][A-Za-z0-9_]*` token scan over raw text,
 with a reserved set of language keywords + primitives so that Rust structure

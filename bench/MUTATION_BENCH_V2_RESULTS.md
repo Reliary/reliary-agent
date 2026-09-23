@@ -34,13 +34,13 @@ arithmetic). `grep` on the symptom's nouns reaches the primitive in a few calls,
 so no index advantage exists to demonstrate. The corpus is simply too small and
 the defects too local for retrieval quality to matter.
 
-This is a **fact about the benchmark**, not proof that reliai adds nothing.
+This is a **fact about the benchmark**, not proof that reliary adds nothing.
 The conditions under which an index should win — a corpus large enough that
 grep's candidate set explodes, or a symptom whose vocabulary diverges from the
 code's — were never created. But we have now run the discriminating experiment
 twice and it ties both times, so the honest position is:
 
-- **Demonstrated:** reliai's comprehension advantage (F1 0.949 vs 0.622 grep,
+- **Demonstrated:** reliary's comprehension advantage (F1 0.949 vs 0.622 grep,
   ~2× lower billed, 0 dead-ends) on the canonical benchmark.
 - **Not demonstrated:** any edit-outcome or hard-task advantage. Two
   pre-registered attempts failed to show one.
