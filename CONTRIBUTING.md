@@ -63,7 +63,7 @@ Bench scripts live in `bench/`. They aren't part of the default `cargo test` run
 python3 bench/long_session_bench.py --conditions A,B --seeds 42
 ```
 
-Reproducing benchmark results requires a `DEEP_SEEK_API_KEY` env var.
+Reproducing benchmark results requires a `DEEPSEEK_API_KEY` env var.
 
 ## Commit message style
 
@@ -80,7 +80,7 @@ One change per commit. Reference issue numbers at the end of the commit message 
 
 ## Pull request process
 
-1. Create a feature branch from `main`.
+1. Create a feature branch from `master-rebuild`.
 2. Make focused commits with clear messages.
 3. Run `cargo test --workspace` and `cargo clippy --workspace -- -D warnings`.
 4. Update `CHANGELOG.md` for any user-visible change.
@@ -101,4 +101,4 @@ Open a GitHub issue with the label `enhancement`. Explain the use case and the p
 
 ## License
 
-By contributing, you agree that your contributions will be dual-licensed under MIT OR Apache-2.0 (at the maintainer's option), matching the project's existing license.
+By contributing, you agree that your contributions will be licensed under the MIT License, matching the project's existing license.

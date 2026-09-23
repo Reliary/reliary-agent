@@ -1,11 +1,22 @@
 # Changelog
 
-All notable changes to Reliary Agent will be documented in this file.
+All notable changes to Reliary will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Changed
+
+- **Documentation rewritten around the product name, Reliary** — the working-directory name `reliary8` had leaked into the README, AGENTS.md, CONTRIBUTING, the OpenCode plugin README, and every crate README. The README is now a product document; benchmark methodology, the edit-outcome result, the familiarity experiment, and the cassette replay moved to `docs/BENCHMARKS.md`.
+- **Agent-config instructions corrected** to match `reliary init`: Claude Code uses `~/.claude.json`; OpenCode uses `opencode.json` (the `"mcp"` key, not `"mcpServers"`); Pi is installed as an extension, not an MCP JSON entry.
+- **Removed the stale "API proxy" description** from eight crate READMEs (the proxy was removed in 0.8.0).
+
+### Fixed
+
+- **Internal version tags removed from MCP tool descriptions** (`V37:`, `V53:`) — descriptions are shown to the model and should not carry changelog tags.
+- **CONTRIBUTING license corrected** to MIT (was stated as MIT OR Apache-2.0), branch name corrected to `master-rebuild`, and the `DEEP_SEEK_API_KEY` typo fixed.
 
 ## [0.8.2] - 2026-09-23
 
