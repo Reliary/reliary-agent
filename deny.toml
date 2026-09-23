@@ -25,6 +25,9 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",
+    # webpki-roots ships Mozilla's root-certificate data under the Community
+    # Data License Agreement (permissive, data-only crate).
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 

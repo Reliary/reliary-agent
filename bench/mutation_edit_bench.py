@@ -43,7 +43,7 @@ RELIARY_EXT = os.path.join(HERE, "reliary_mcp_pi_extension.js")
 ALTBACKEND_EXT = os.path.join(HERE, "altbackend_pi_extension.js")
 ALTBACKEND_BIN = os.environ.get("ALTBACKEND_BIN", os.path.expanduser("~/.local/bin/codebase-memory-mcp"))
 DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash"
-TASK_TIMEOUT = 900  # 15 min per task
+TASK_TIMEOUT = int(os.environ.get("MUT_TIMEOUT", "600"))  # bounded per task
 # Shared target dir so dependency compilation is amortized across runs.
 BENCH_TARGET = "/tmp/mutation_bench_target"
 # Clean, isolated Pi config dir: prevents the user's settings.json extensions
@@ -57,83 +57,128 @@ BENCH_PI_DIR = "/tmp/mutation_bench_pi"
 # NEVER shown to the agent).
 MUTATIONS = [
     {
-        "id": "m1_impact_tests",
+        "id": "m1_test_convention",
         "file": "crates/reliary-search/src/impact.rs",
         "old": '        || base.contains(".test.") || base.contains(".spec.")\n',
-        "new": '        || base.contains(".spec.")\n',
-        "target_test": "test_path_detection_positive",
-        "verify_args": ["-p", "reliary-search", "--lib", "impact::"],
-        "crate_args": ["-p", "reliary-search", "--lib"],
+        "new": '',
+        "target_test": "test_file_classification_covers_common_conventions",
+        "verify_args": ["-p", "reliary-search", "--test", "symptom_checks", "test_file_classification_covers_common_conventions"],
+        "crate_args": ["--workspace"],
+        # Bare symptom: no test command, no assertion vocabulary.
         "symptom": (
-            "Some test files are no longer detected by the pre-edit impact tool: "
-            "files following the JavaScript `foo.test.js` convention are classified as "
-            "production code, so impact reports miss them. "
-            "Find the cause and fix it. Run `cargo test -p reliary-search --lib impact::` "
-            "to verify, then run `cargo test -p reliary-search --lib` to make sure nothing "
-            "else broke. When done, commit with `git add -A && git commit -m fix`."
+            "The pre-edit impact report overstates risk: it counts review-only "
+            "support files as production surface, so blast radius and risk come out "
+            "too high. A reviewer looking at the same change would discount those "
+            "files. The classification of what counts as production is incomplete. "
+            "Fix it. This workspace has been stripped of tests — verify with "
+            "`cargo check` only, do not run tests. When done, stop editing."
         ),
         "target_files": ["crates/reliary-search/src/impact.rs"],
     },
     {
-        "id": "m2_verify_backticks",
-        "file": "crates/reliary-agent/src/verify.rs",
-        "old": '    let text = text.replace(\'`\', "");\n',
-        "new": "",
-        "target_test": "backticks_stripped",
-        "verify_args": ["-p", "reliary-agent", "--bin", "reliary", "verify::"],
-        "crate_args": ["-p", "reliary-agent", "--bin", "reliary"],
-        "symptom": (
-            "The claim verifier no longer recognises claims written with markdown "
-            "backticks, e.g. \"`foo_bar` at `structural.rs:31`\". It should extract the "
-            "same claims whether or not backticks are present. "
-            "Find the cause and fix it. Run `cargo test -p reliary-agent --bin reliary verify::` "
-            "to verify, then run `cargo test -p reliary-agent --bin reliary` to make sure "
-            "nothing else broke. When done, commit with `git add -A && git commit -m fix`."
+        "id": "m2_pascal_drop",
+        "file": "crates/reliary-search/src/keywords.rs",
+        "old": (
+            "    if raw_token.starts_with(|c: char| c.is_ascii_uppercase()) {\n"
+            "        return false;\n"
+            "    }\n"
+            "    keywords().contains(stemmed)\n"
         ),
-        "target_files": ["crates/reliary-agent/src/verify.rs"],
+        "new": "    keywords().contains(stemmed)\n",
+        "target_test": "test_symbol_names_round_trip_through_the_index",
+        "verify_args": ["-p", "reliary-search", "--test", "symptom_checks", "test_symbol_names_round_trip_through_the_index"],
+        "crate_args": ["--workspace"],
+        "symptom": (
+            "Looking a symbol up by its exact name sometimes returns nothing even "
+            "though that symbol is plainly defined in the source. It only happens "
+            "for a subset of names; most lookups work. Investigate why some defined "
+            "names are not reachable by lookup and fix it. This workspace has been "
+            "stripped of tests — verify with `cargo check` only, do not run tests. "
+            "When done, stop editing."
+        ),
+        "target_files": ["crates/reliary-search/src/keywords.rs"],
     },
     {
-        "id": "m3_pascal_def",
-        "file": "crates/reliary-search/src/structural.rs",
-        "old": "    name.as_bytes().first().map(|&b| b.is_ascii_uppercase()).unwrap_or(false)\n",
-        "new": "    name.as_bytes().first().map(|&b| b.is_ascii_alphabetic()).unwrap_or(false)\n",
-        "target_test": "test_python_class",
-        "verify_args": ["-p", "reliary-search", "--lib", "structural::tests"],
-        "crate_args": ["-p", "reliary-search", "--lib"],
+        "id": "m3_method_line",
+        "file": "crates/reliary-search/src/callgraph_v2.rs",
+        "old": "                        line: child.start_line,\n",
+        "new": "                        line: child.start_line + 1,\n",
+        "target_test": "test_reported_method_lines_point_at_the_declaration",
+        "verify_args": ["-p", "reliary-search", "--test", "symptom_checks", "test_reported_method_lines_point_at_the_declaration"],
+        "crate_args": ["--workspace"],
         "symptom": (
-            "Python function detection regressed: lowercase `def foo(...):` lines are "
-            "being classified as class/type definitions instead of functions. "
-            "Only names that are actually class-like (start with an uppercase letter) "
-            "should be typed as classes. "
-            "Find the cause and fix it. Run `cargo test -p reliary-search --lib structural::tests` "
-            "to verify, then run `cargo test -p reliary-search --lib` to make sure nothing "
-            "else broke. When done, commit with `git add -A && git commit -m fix`."
+            "Locations reported for members of a type are wrong: the line cited does "
+            "not actually contain the member's declaration — it lands on the line "
+            "below it. This makes every member location unusable for navigation. "
+            "Fix it. This workspace has been stripped of tests — verify with "
+            "`cargo check` only, do not run tests. When done, stop editing."
         ),
-        "target_files": ["crates/reliary-search/src/structural.rs"],
+        "target_files": ["crates/reliary-search/src/callgraph_v2.rs"],
     },
     {
-        "id": "m4_testplan_mirror",
-        "file": "crates/reliary-search/src/test_plan.rs",
-        "old": '        out.push(format!("tests/{}", tail_base));\n        out.push(format!("test/{}", tail_base));\n',
-        "new": '        out.push(format!("test/{}", tail_base));\n',
-        "target_test": "mirror_candidates_src_layout",
-        "verify_args": ["-p", "reliary-search", "--lib", "test_plan::"],
-        "crate_args": ["-p", "reliary-search", "--lib"],
+        "id": "m4_brace_line",
+        "file": "crates/reliary-search/src/brace_graph.rs",
+        "old": "        let line_no = (line_idx + 1) as i32;\n",
+        "new": "        let line_no = line_idx as i32;\n",
+        "target_test": "test_reported_method_lines_point_at_the_declaration",
+        "verify_args": ["-p", "reliary-search", "--test", "symptom_checks", "test_reported_method_lines_point_at_the_declaration"],
+        "crate_args": ["--workspace"],
         "symptom": (
-            "The test-plan tool misses the conventional tests location: for a source "
-            "file under `src/foo.rs`, it no longer suggests a mirror test file under "
-            "`tests/foo.rs` — only the less common `test/` directory is suggested. "
-            "Find the cause and fix it. Run `cargo test -p reliary-search --lib test_plan::` "
-            "to verify, then run `cargo test -p reliary-search --lib` to make sure nothing "
-            "else broke. When done, commit with `git add -A && git commit -m fix`."
+            "Structural locations are unreliable: the number the tool reports for a "
+            "construct is frequently lower than where the editor shows it, so "
+            "navigation lands on the wrong line. The error is systematic, not "
+            "random. Fix it. This workspace has been stripped of tests — verify "
+            "with `cargo check` only, do not run tests. When done, stop editing."
         ),
-        "target_files": ["crates/reliary-search/src/test_plan.rs"],
+        "target_files": ["crates/reliary-search/src/brace_graph.rs"],
+    },
+    {
+        "id": "m5_visibility",
+        "file": "crates/reliary-search/src/callgraph_v2.rs",
+        "old": "        && (b[3] == b' ' || b[3] == b'\\t' || b[3] == b'(')\n",
+        "new": "        && (b[3] == b' ' || b[3] == b'\\t')\n",
+        "target_test": "test_visibility_reflects_all_public_forms",
+        "verify_args": ["-p", "reliary-search", "--test", "symptom_checks", "test_visibility_reflects_all_public_forms"],
+        "crate_args": ["--workspace"],
+        "symptom": (
+            "The API listing mislabels accessibility: some members that are meant "
+            "to be usable from elsewhere are shown as internal, so the external "
+            "surface looks smaller than it is. Only some declaration spellings are "
+            "affected. Fix it. This workspace has been stripped of tests — verify "
+            "with `cargo check` only, do not run tests. When done, stop editing."
+        ),
+        "target_files": ["crates/reliary-search/src/callgraph_v2.rs"],
+    },
+    {
+        "id": "m6_dead_cross_file",
+        "file": "crates/reliary-dead/src/lib.rs",
+        "old": (
+            "        let total_occ = *all_counts.get(name).unwrap_or(&0);\n"
+            "        let def_occ = locations.len();\n"
+            "        if total_occ > def_occ { continue; }\n"
+        ),
+        "new": (
+            "        let total_occ = locations.len();\n"
+            "        let def_occ = locations.len();\n"
+            "        if total_occ > def_occ { continue; }\n"
+        ),
+        "target_test": "test_dead_function_cross_file",
+        "verify_args": ["-p", "reliary-dead", "test_dead_function_cross_file"],
+        "crate_args": ["--workspace"],
+        "symptom": (
+            "The unused-code report is not trustworthy: it lists things as unused "
+            "that are demonstrably used elsewhere in the project, so every result "
+            "needs manual re-checking. Fix the false positives. This workspace has "
+            "been stripped of tests — verify with `cargo check` only, do not run "
+            "tests. When done, stop editing."
+        ),
+        "target_files": ["crates/reliary-dead/src/lib.rs"],
     },
 ]
 
 
 # ---------------------------------------------------------------- workdir
-def setup_workdir(dest):
+def setup_workdir(dest, strip_tests=False):
     if os.path.exists(dest):
         shutil.rmtree(dest)
     shutil.copytree(
@@ -142,11 +187,42 @@ def setup_workdir(dest):
             "target", "node_modules", "dist", "build", ".git",
             "bench/results", ".reliary", "docs/archive"),
     )
+    if strip_tests:
+        strip_test_oracles(dest)
     subprocess.run(["git", "init", "-q"], cwd=dest, check=True)
     subprocess.run(["git", "config", "user.email", "bench@reliary"], cwd=dest, check=True)
     subprocess.run(["git", "config", "user.name", "bench"], cwd=dest, check=True)
     subprocess.run(["git", "add", "-A"], cwd=dest, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=dest, check=True)
+
+
+def strip_test_oracles(root):
+    """Remove every test from the agent's workspace — uniformly, all conditions.
+
+    A runnable failing test is a localization oracle: the assertion names the
+    subject and semantics, so `grep` on the assertion finds the fix site. To
+    measure localization from a prose symptom, the agent's workspace must
+    contain NO test that reveals the answer. The hidden scoring tests are
+    injected only after the agent stops.
+
+    Grammar-free: truncate each source file at its first `#[cfg(test)]` and
+    delete `crates/*/tests/` directories.
+    """
+    import glob as _glob
+    # `#[cfg(any())]` is always false: the test module is excluded from
+    # compilation but the file stays syntactically valid (truncating at the
+    # attribute can leave a dangling doc comment or break the module).
+    pat = re.compile(r'^([ \t]*)#\[cfg\(test\)\]', re.M)
+    for p in _glob.glob(os.path.join(root, "crates", "**", "*.rs"), recursive=True):
+        try:
+            s = open(p).read()
+        except OSError:
+            continue
+        s2 = pat.sub(r'\1#[cfg(any())]', s)
+        if s2 != s:
+            open(p, "w").write(s2)
+    for d in _glob.glob(os.path.join(root, "crates", "*", "tests")):
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def apply_mutation(workdir, mut):
@@ -286,8 +362,14 @@ def changed_files(workdir):
 def run_task(mut, cond, seed):
     # Fixed path per task: altbackend's index is keyed by path, so the workdir
     # location must be stable across conditions. Re-copied fresh each run.
+    #
+    # The agent's workdir has ALL tests stripped (uniformly, every condition):
+    # a runnable failing test is a localization oracle, so it is withheld. The
+    # symptom in the prompt is the only clue. Scoring runs on a separate
+    # pristine tree with the agent's source patch applied and the real tests
+    # restored.
     workdir = os.path.join(WORKDIR_BASE, f"work_{mut['id']}")
-    setup_workdir(workdir)
+    setup_workdir(workdir, strip_tests=True)
     if not apply_mutation(workdir, mut):
         return {"id": mut["id"], "cond": cond, "seed": seed, "score": 0,
                 "error": "mutation failed to apply"}
@@ -301,12 +383,6 @@ def run_task(mut, cond, seed):
     env["PI_CODING_AGENT_DIR"] = BENCH_PI_DIR
     if ALTBACKEND_PROJECT_FOR_TASK.get(mut["id"]):
         env["ALTBACKEND_PROJECT"] = ALTBACKEND_PROJECT_FOR_TASK[mut["id"]]
-
-    # Confirm the target test FAILS pre-fix (pipeline gate).
-    pre_passed, pre_out = run_tests(workdir, mut, env)
-    if pre_passed:
-        return {"id": mut["id"], "cond": cond, "seed": seed, "score": -1,
-                "error": "mutation did not break target test (harness bug)"}
 
     session_dir = os.path.join(WORKDIR_BASE, f"sessions_{mut['id']}_{cond}_{seed}")
     os.makedirs(session_dir, exist_ok=True)
@@ -325,15 +401,30 @@ def run_task(mut, cond, seed):
 
     usage = parse_session_usage(session_dir)
     calls = count_tool_calls(session_dir)
-    files_touched = changed_files(workdir) if not timed_out else []
 
-    # Auto-commit any uncommitted edits so tests see them.
-    subprocess.run(["git", "add", "-A"], cwd=workdir, capture_output=True)
-    subprocess.run(["git", "commit", "-q", "-m", "agent"], cwd=workdir, capture_output=True)
+    # Capture the agent's source patch (no tests exist in its workdir).
+    diff = subprocess.run(["git", "diff", "mutbase", "--no-color"],
+                          capture_output=True, text=True, cwd=workdir, timeout=60).stdout
+    files_touched = [l for l in subprocess.run(
+        ["git", "diff", "mutbase", "--name-only"], capture_output=True,
+        text=True, cwd=workdir, timeout=30).stdout.splitlines() if l.strip()]
 
-    post_passed, post_out = run_tests(workdir, mut, env)
+    # Score on a pristine tree: real tests present, mutation applied, then the
+    # agent's patch re-applied on top.
+    score_tree = os.path.join(WORKDIR_BASE, f"score_{mut['id']}")
+    setup_workdir(score_tree, strip_tests=False)
+    if not apply_mutation(score_tree, mut):
+        return {"id": mut["id"], "cond": cond, "seed": seed, "score": 0,
+                "error": "mutation failed to apply on score tree"}
+    patch_ok = True
+    if diff.strip():
+        p = subprocess.run(["git", "apply", "--3way", "-"],
+                           input=diff, capture_output=True, text=True, cwd=score_tree)
+        patch_ok = p.returncode == 0
+
+    post_passed, post_out = run_tests(score_tree, mut, env)
     compiles = "error[" not in (post_out or "") and "could not compile" not in (post_out or "")
-    crate_ok = crate_tests_pass(workdir, mut, env) if post_passed else False
+    crate_ok = crate_tests_pass(score_tree, mut, env) if post_passed else False
 
     if post_passed and crate_ok:
         score = 3
@@ -356,6 +447,7 @@ def run_task(mut, cond, seed):
         "target_test_passed": post_passed,
         "crate_tests_pass": crate_ok,
         "compiles": compiles,
+        "patch_applied": patch_ok,
         "timed_out": timed_out,
         "files_touched": files_touched,
         "wrong_file": wrong_file,

@@ -46,6 +46,20 @@ pub fn is_keyword(stemmed: &str) -> bool {
     keywords().contains(stemmed)
 }
 
+/// Grammar-free ingest gate: an identifier whose raw form starts with an
+/// ASCII uppercase letter is never noise, no matter what its porter stem
+/// matches. Language keywords are lowercase in every major language, while
+/// `Default`, `String`, `Box`, `Fn` are type/trait names the index must keep
+/// (`Default` stems to `default`, which is in the C keyword list — dropping
+/// it made every derive/impl-Default query unanswerable).
+#[inline]
+pub fn is_noise_token(raw_token: &str, stemmed: &str) -> bool {
+    if raw_token.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return false;
+    }
+    keywords().contains(stemmed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,5 +77,31 @@ mod tests {
         assert!(!is_keyword("hello"));
         assert!(!is_keyword("compute"));
         assert!(!is_keyword("runner"));
+    }
+
+    /// V77 negative control: without the uppercase exemption, `Default`
+    /// (stem `default` ∈ C keywords) and `String`/`Box`/`Fn` were dropped
+    /// at ingest — every derive/impl-Default query returned empty (q9 root cause).
+    #[test]
+    fn test_pascal_case_exempt_from_noise_filter() {
+        assert!(!is_noise_token("Default", "default"));
+        assert!(!is_noise_token("String", "string"));
+        assert!(!is_noise_token("Box", "box"));
+        assert!(!is_noise_token("Fn", "fn"));
+        assert!(!is_noise_token("None", "none"));
+    }
+
+    #[test]
+    fn test_lowercase_keywords_still_filtered() {
+        assert!(is_noise_token("default", "default"));
+        assert!(is_noise_token("pub", "pub"));
+        assert!(is_noise_token("let", "let"));
+        assert!(is_noise_token("string", "string"));
+    }
+
+    #[test]
+    fn test_lowercase_non_keywords_pass() {
+        assert!(!is_noise_token("compute", "comput"));
+        assert!(!is_noise_token("hello", "hello"));
     }
 }

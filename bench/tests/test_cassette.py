@@ -67,11 +67,11 @@ class FakeLive:
 
 def test_record_then_replay_is_byte_identical(tmp_path):
     live = FakeLive()
-    c1 = Cassette(str(tmp_path / "c.jsonl"), mode="record", live=live)
+    c1 = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=live)
     r1 = c1.respond(_req())
     assert r1["choices"][0]["message"]["content"] == "live-1"
 
-    c2 = Cassette(str(tmp_path / "c.jsonl"), mode="replay-strict")
+    c2 = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="replay-strict")
     r2 = c2.respond(_req())
     r3 = c2.respond(_req())
     assert json.dumps(r2, sort_keys=True) == json.dumps(r1, sort_keys=True)
@@ -84,7 +84,7 @@ def test_record_then_replay_is_byte_identical(tmp_path):
 
 def test_strict_miss_raises_and_never_goes_live(tmp_path):
     live = FakeLive()
-    c = Cassette(str(tmp_path / "c.jsonl"), mode="replay-strict", live=live)
+    c = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="replay-strict", live=live)
     with pytest.raises(CassetteError, match="strict replay miss"):
         c.respond(_req("something never recorded"))
     assert live.n == 0
@@ -94,11 +94,11 @@ def test_strict_miss_raises_and_never_goes_live(tmp_path):
 
 def test_message_mutation_is_a_miss(tmp_path):
     live = FakeLive()
-    c = Cassette(str(tmp_path / "c.jsonl"), mode="record", live=live)
+    c = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=live)
     c.respond(_req("hello"))
 
-    strict = Cassette(str(tmp_path / "c.jsonl"), mode="replay-strict")
-    with pytest.raises(CassetteError, match="messages\\[0\\] differs"):
+    strict = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="replay-strict")
+    with pytest.raises(CassetteError, match="diverges at message 0"):
         strict.respond(_req("hellp"))  # one byte
 
 
@@ -106,13 +106,13 @@ def test_message_mutation_is_a_miss(tmp_path):
 
 def test_index_gen_invalidates_on_reindex(tmp_path):
     live = FakeLive()
-    c = Cassette(str(tmp_path / "c.jsonl"), mode="record", index_gen=7, live=live)
+    c = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", index_gen=7, live=live)
     c.respond(_req())
 
-    same = Cassette(str(tmp_path / "c.jsonl"), mode="replay-strict", index_gen=7)
+    same = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="replay-strict", index_gen=7)
     assert same.respond(_req())["choices"][0]["message"]["content"] == "live-1"
 
-    reindexed = Cassette(str(tmp_path / "c.jsonl"), mode="replay-strict", index_gen=8)
+    reindexed = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="replay-strict", index_gen=8)
     with pytest.raises(CassetteError, match="index_gen"):
         reindexed.respond(_req())
 
@@ -131,10 +131,10 @@ def test_negative_control_index_gen():
 
 def test_temperature_change_is_a_miss(tmp_path):
     live = FakeLive()
-    c = Cassette(str(tmp_path / "c.jsonl"), mode="record", live=live)
+    c = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=live)
     c.respond(_req(temperature=0.0))
 
-    strict = Cassette(str(tmp_path / "c.jsonl"), mode="replay-strict")
+    strict = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="replay-strict")
     with pytest.raises(CassetteError, match="temperature"):
         strict.respond(_req(temperature=0.7))
 
@@ -163,7 +163,7 @@ def test_negative_control_sampling_params():
 
 def test_cassette_contains_no_secrets(tmp_path):
     live = FakeLive()
-    c = Cassette(str(tmp_path / "c.jsonl"), mode="record", live=live)
+    c = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=live)
     c.respond(_req())
     blob = (tmp_path / "c.jsonl").read_text()
     assert "sk-" not in blob
@@ -177,16 +177,16 @@ def test_identical_prefix_yields_identical_decisions(tmp_path):
     """Two "conditions" share a conversation prefix: the replayed decisions
     are literally the same entries until the prefix diverges."""
     live = FakeLive()
-    rec = Cassette(str(tmp_path / "c.jsonl"), mode="record", live=live)
+    rec = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=live)
     prefix = [{"role": "user", "content": "q1"}]
     rec.respond(_req(prefix))
 
-    a = Cassette(str(tmp_path / "c.jsonl"), mode="replay-strict").respond(_req(prefix))
-    b = Cassette(str(tmp_path / "c.jsonl"), mode="replay-strict").respond(_req(prefix))
+    a = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="replay-strict").respond(_req(prefix))
+    b = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="replay-strict").respond(_req(prefix))
     assert a == b
     # Divergence needs a new recording — strict cannot invent one.
     with pytest.raises(CassetteError):
-        Cassette(str(tmp_path / "c.jsonl"), mode="replay-strict").respond(
+        Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="replay-strict").respond(
             _req(prefix + [{"role": "assistant", "content": "extra"}]))
 
 
@@ -194,11 +194,11 @@ def test_identical_prefix_yields_identical_decisions(tmp_path):
 
 def test_system_fingerprint_preserved(tmp_path):
     live = FakeLive()
-    rec = Cassette(str(tmp_path / "c.jsonl"), mode="record", live=live)
+    rec = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=live)
     rec.respond(_req())
     entry = json.loads((tmp_path / "c.jsonl").read_text().splitlines()[0])
     assert entry["system_fingerprint"] == "fp-1"
-    replayed = Cassette(str(tmp_path / "c.jsonl"), mode="replay-strict").respond(_req())
+    replayed = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="replay-strict").respond(_req())
     assert replayed["system_fingerprint"] == "fp-1"
 
 
@@ -206,12 +206,12 @@ def test_system_fingerprint_preserved(tmp_path):
 
 def test_flip_risk_annotates_near_ties(tmp_path):
     live = FakeLive()
-    rec = Cassette(str(tmp_path / "c.jsonl"), mode="record", live=live)
+    rec = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=live)
 
     def tight(request, timeout=30):
         return _resp(text="maybe", margins=[0.05, 3.0])
 
-    rec = Cassette(str(tmp_path / "c.jsonl"), mode="record", live=tight)
+    rec = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=tight)
     rec.respond(_req())
     entry = json.loads((tmp_path / "c.jsonl").read_text().splitlines()[0])
     assert entry["flip_risk"]["worst_margin"] == pytest.approx(0.05)
@@ -225,7 +225,7 @@ def test_flip_risk_none_without_logprobs():
 # ── errors are never persisted ──────────────────────────────────────
 
 def test_transport_errors_not_persisted(tmp_path):
-    rec = Cassette(str(tmp_path / "c.jsonl"), mode="record", live=lambda r, t=30: {"error": "boom"})
+    rec = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=lambda r, t=30: {"error": "boom"})
     rec.respond(_req())
     assert rec.entries == {}
     rec.respond(_req())
@@ -254,12 +254,12 @@ def test_index_gen_for_reads_meta(tmp_path):
 
 def test_corrupt_lines_ignored(tmp_path):
     live = FakeLive()
-    rec = Cassette(str(tmp_path / "c.jsonl"), mode="record", live=live)
+    rec = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=live)
     rec.respond(_req())
     p = tmp_path / "c.jsonl"
     with open(p, "a") as f:
         f.write("{not json}\n\n")
-    strict = Cassette(str(p), mode="replay-strict")
+    strict = Cassette(str(p), sample="t", mode="replay-strict")
     assert strict.respond(_req())["choices"][0]["message"]["content"] == "live-1"
 
 
@@ -273,3 +273,139 @@ def test_key_is_stable_and_order_independent():
                  "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}],
                  "thinking": {"type": "disabled"}}
     assert request_key(reordered, 3) == a, "key must be order-independent"
+
+
+# ── gzip tapes ──────────────────────────────────────────────────────
+
+def test_gzip_dir_resolution_and_roundtrip(tmp_path):
+    """A bare directory resolves to cassette.jsonl.gz and roundtrips."""
+    import cassette as C
+    d = str(tmp_path / "tapes")
+    os.environ["RELIARY_CASSETTE"] = d
+    os.environ["RELIARY_CASSETTE_MODE"] = "record"
+    os.environ["RELIARY_CASSETTE_INDEX_GEN"] = "3"
+    try:
+        live = FakeLive()
+        cas = C.configure_from_env(live_override=live)
+        cas.set_sample("t")
+        assert cas.path.endswith("cassette.jsonl.gz")
+        cas.respond(_req())
+        os.environ["RELIARY_CASSETTE_MODE"] = "replay-strict"
+        cas2 = C.configure_from_env(live_override=lambda r, t=30: (_ for _ in ()).throw(
+            AssertionError("network during replay")))
+        cas2.set_sample("t")
+        assert cas2.respond(_req())["choices"][0]["message"]["content"] == "live-1"
+    finally:
+        for k in ("RELIARY_CASSETTE", "RELIARY_CASSETTE_MODE",
+                  "RELIARY_CASSETTE_INDEX_GEN"):
+            os.environ.pop(k, None)
+        C.install_env_wiring(default_index_gen=0, live=None)
+
+
+def test_gzip_is_deterministic(tmp_path):
+    """Identical entries produce byte-identical gzip (mtime=0, no filename drift).
+
+    Compares the framing, not wall-clock metadata: `recorded_at` legitimately
+    differs between two real recordings, so a fixed entry dict is written
+    through the same append path.
+    """
+    import cassette as C
+    entry = {"cassette_version": C.CASSETTE_VERSION, "key": "deadbeef",
+             "index_gen": 3, "request": {"model": "m"},
+             "response": {"choices": [{"message": {"content": "ok"}}]}}
+    a_path, b_path = str(tmp_path / "a.jsonl.gz"), str(tmp_path / "b.jsonl.gz")
+    C.Cassette(a_path, mode="auto", sample="t")._append(entry)
+    C.Cassette(b_path, mode="auto", sample="t")._append(entry)
+    assert open(a_path, "rb").read() == open(b_path, "rb").read(), \
+        "gzip output is not deterministic"
+
+
+# ── compact tapes ───────────────────────────────────────────────────
+
+def test_compact_tape_stores_no_message_bodies(tmp_path):
+    """Compact tapes must not embed the full conversation (size control)."""
+    live = FakeLive()
+    cas = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=live,
+                   compact=True)
+    big = _req(messages=[{"role": "user",
+                          "content": "x" * 50000}])
+    cas.respond(big)
+    entry = json.loads((tmp_path / "c.jsonl").read_text().splitlines()[0])
+    assert "messages" not in entry["request"]
+    assert entry["request"]["roles"] == ["user"]
+    blob = (tmp_path / "c.jsonl").read_text()
+    assert len(blob) < 3000, f"compact tape kept {len(blob)} bytes"
+
+
+def test_compact_tape_roundtrips(tmp_path):
+    live = FakeLive()
+    rec = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=live,
+                   compact=True)
+    rec.respond(_req())
+    strict = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="replay-strict",
+                      compact=True)
+    assert strict.respond(_req())["choices"][0]["message"]["content"] == "live-1"
+
+
+def test_compact_tape_diagnostics_name_the_divergence(tmp_path):
+    live = FakeLive()
+    rec = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=live,
+                   compact=True)
+    rec.respond(_req())
+    strict = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="replay-strict",
+                      compact=True)
+    with pytest.raises(CassetteError, match="message count differs"):
+        strict.respond(_req(messages=[{"role": "user", "content": "hi"},
+                                      {"role": "assistant", "content": "yo"}]))
+
+
+def test_compact_strips_logprobs_but_keeps_flip_risk(tmp_path):
+    live = FakeLive()
+
+    def tight(request, timeout=30):
+        return _resp(text="maybe", margins=[0.05, 3.0])
+
+    rec = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=tight,
+                   compact=True)
+    rec.respond(_req())
+    entry = json.loads((tmp_path / "c.jsonl").read_text().splitlines()[0])
+    assert "logprobs" not in entry["response"]["choices"][0]
+    assert entry["flip_risk"]["worst_margin"] == pytest.approx(0.05)
+
+
+def test_record_mode_always_goes_live(tmp_path):
+    """`record` re-records even when an entry exists (last write wins)."""
+    live = FakeLive()
+    rec = Cassette(str(tmp_path / "c.jsonl"), sample="t", mode="record", live=live)
+    rec.respond(_req())
+    rec.respond(_req())
+    assert live.n == 2
+
+
+def test_compact_diagnostic_names_the_exact_message(tmp_path):
+    """A compact tape must be able to say which message diverged."""
+    live = FakeLive()
+    rec = Cassette(str(tmp_path / "c.jsonl"), mode="record", live=live,
+                   compact=True, sample="t")
+    rec.respond(_req())
+    strict = Cassette(str(tmp_path / "c.jsonl"), mode="replay-strict",
+                      compact=True, sample="t")
+    # Same shape, different first message: the diagnostic must point at 0.
+    with pytest.raises(CassetteError, match="message 0"):
+        strict.respond(_req(content="changed"))
+
+
+def test_compact_diagnostic_names_a_later_message(tmp_path):
+    live = FakeLive()
+    rec = Cassette(str(tmp_path / "c.jsonl"), mode="record", live=live,
+                   compact=True, sample="t")
+    msgs = [{"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"}]
+    rec.respond(_req(messages=msgs))
+    msgs2 = list(msgs)
+    msgs2[2] = {"role": "user", "content": "THREE"}
+    strict = Cassette(str(tmp_path / "c.jsonl"), mode="replay-strict",
+                      compact=True, sample="t")
+    with pytest.raises(CassetteError, match="message 2"):
+        strict.respond(_req(messages=msgs2))

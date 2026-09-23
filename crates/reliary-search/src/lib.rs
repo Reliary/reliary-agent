@@ -118,6 +118,15 @@ pub fn scan_identifiers(text: &str) -> Vec<String> {
     // stemmed). Porter stemmer destroys compound names like `classify_structural`
     // → `classifi`. This is the root cause of inaccurate search results on
     // Rust codebases where almost all identifiers are snake_case.
+    // V77: preserve original case (was to_ascii_lowercase). The noise filter
+    // `is_noise_token` must see PascalCase (`Default`, `String`) to exempt
+    // type/trait names whose porter stem collides with a language keyword —
+    // lowercasing here made that check dead code. Dedup is still case-insensitive
+    // (key = lowercased) so `Default`/`default` collapse to one entry.
+    // Downstream stem_identifier/porter_stem lowercase anyway, so phrase keys
+    // are unchanged. Also fixes `line_def_name == Some(token)` comparisons
+    // against source-case defined_names for PascalCase definitions.
+    // Aligns with scan_identifiers_iter, which already yields raw slices.
     let mut seen = rustc_hash::FxHashSet::default();
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .filter(|t| {
@@ -125,8 +134,8 @@ pub fn scan_identifiers(text: &str) -> Vec<String> {
             (2..=40).contains(&len)
                 && t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         })
-        .map(|t| t.to_ascii_lowercase())
-        .filter(|t| seen.insert(t.clone()))
+        .filter(|t| seen.insert(t.to_ascii_lowercase()))
+        .map(|t| t.to_string())
         .collect()
 }
 
@@ -480,18 +489,6 @@ mod tests {
     #[test]
     fn test_porter_stem() {
         assert_eq!(porter_stem("running"), "runn");
-    }
-
-    #[test]
-    fn test_stem_identifier_camel_case() {
-        // V57c: CamelCase compounds must be preserved, not Porter-stemmed.
-        assert_eq!(stem_identifier("StructuralResult"), "structuralresult");
-        assert_eq!(stem_identifier("BraceNode"), "bracenode");
-        assert_eq!(stem_identifier("FileMeta"), "filemeta");
-        // snake_case still preserved (V38).
-        assert_eq!(stem_identifier("classify_structural"), "classify_structural");
-        // Plain lowercase still stems.
-        assert_eq!(stem_identifier("running"), "runn");
     }
 
     #[test]

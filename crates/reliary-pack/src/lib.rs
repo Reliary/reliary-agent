@@ -2397,7 +2397,7 @@ fn build_cochange_line(_name: &str, signature: &str, _body: &str, cross_refs: &[
     parts.join("; ")
 }
 
-fn expand_type_signature(signature: &str, body: &str) -> String {
+fn expand_type_signature(signature: &str, body: &str, def_line: i32) -> String {
     let sig_trimmed = signature.trim();
     let lower = sig_trimmed.to_ascii_lowercase();
     let is_enum = lower.contains(" enum ") || lower.starts_with("enum ") || lower.starts_with("pub enum ");
@@ -2406,18 +2406,41 @@ fn expand_type_signature(signature: &str, body: &str) -> String {
         return signature.to_string();
     }
     let mut names: Vec<String> = Vec::new();
-    for line in body.lines().skip(1) {
+    for (j, line) in body.lines().enumerate().skip(1) {
         let trimmed = line.trim();
         if trimmed == "}" || trimmed.is_empty() { continue; }
+        // Skip comments/attributes — a doc comment (`/// Tag: 0=...`) contains
+        // a colon but is not a field declaration.
+        if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with('*') {
+            continue;
+        }
+        // body line j is 0-indexed within the body, whose first line is the
+        // (0-indexed) definition line — so the 1-indexed source line is
+        // def_line + 1 + j.
+        let abs_line = def_line + 1 + j as i32;
         if is_enum {
             let name = trimmed.split([',', '{', '(', ':']).next().unwrap_or("").trim().trim_end_matches(',');
             if !name.is_empty() && name.len() > 1 && name.chars().next().is_some_and(|c| c.is_uppercase() || c == '_') {
-                names.push(name.to_string());
+                names.push(format!("{} (line {})", name, abs_line));
             }
         } else if is_struct {
             if let Some(colon_pos) = trimmed.find(':') {
-                let name = trimmed[..colon_pos].trim().trim_start_matches("pub ");
-                if !name.is_empty() && name.len() > 1 { names.push(name.to_string()); }
+                let name = trimmed[..colon_pos].trim().trim_start_matches("pub ").trim();
+                let ftype = trimmed[colon_pos + 1..]
+                    .trim()
+                    .trim_end_matches(',')
+                    .trim()
+                    .to_string();
+                if !name.is_empty() && name.len() > 1 {
+                    // Include the type and line so describe/pack answers
+                    // field-typed and field-located questions in one call.
+                    if ftype.is_empty() || ftype == "{" {
+                        names.push(format!("{} (line {})", name, abs_line));
+                    } else {
+                        let ft = ftype.split('{').next().unwrap_or(&ftype).trim();
+                        names.push(format!("{}: {} (line {})", name, ft, abs_line));
+                    }
+                }
             }
         }
     }
@@ -2460,8 +2483,10 @@ fn render_entry(
     }
 
     // L2: always present — expand enum/struct signatures to include variants/fields
-    let l2_line = expand_type_signature(&sym.signature, body);
-    parts.push(format!("L2: {}  [{}:{}]", l2_line, sym.file, sym.line));
+    let l2_line = expand_type_signature(&sym.signature, body, sym.line);
+    // sym.line is 0-indexed (read_signature_line indexes lines directly);
+    // display 1-indexed to match every other tool surface.
+    parts.push(format!("L2: {}  [{}:{}]", l2_line, sym.file, sym.line + 1));
 
     // L3: surprise
     if !body.is_empty() {

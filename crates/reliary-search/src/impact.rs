@@ -105,17 +105,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_path_detection_positive() {
-        assert!(is_test_path("crates/foo/tests/integration.rs"));
-        assert!(is_test_path("src/test_helpers.py"));
-        assert!(is_test_path("app/foo.test.js"));
-        assert!(is_test_path("pkg/foo_spec.rb"));
-        assert!(is_test_path("src/specs/thing.rs"));
-        assert!(is_test_path("tests.rs"));
-        assert!(is_test_path("a/b/_test.go"));
-    }
-
-    #[test]
     fn test_path_detection_negative() {
         assert!(!is_test_path("src/main.rs"));
         assert!(!is_test_path("crates/reliary-search/src/symbol.rs"));

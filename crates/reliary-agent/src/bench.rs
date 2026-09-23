@@ -318,16 +318,21 @@ pub fn generate(index_path: &str, seed: u64) -> Value {
                 continue;
             }
             if let Ok(mr) = reliary_search::callgraph_v2::find_methods_on(&db, ph) {
+                // V75: the question asks for PUBLIC methods, so the GT must
+                // contain only public ones. Private helpers in the GT made a
+                // correct answer look incomplete.
                 let methods: Vec<(String, i32)> = mr
                     .methods
                     .iter()
+                    .filter(|m| m.is_pub && !m.is_field)
                     .map(|m| (m.name.clone(), m.line))
                     .filter(|(n, _)| !STOP.contains(&n.to_lowercase().as_str()))
                     .take(8)
                     .collect();
                 if methods.len() >= 3 {
                     used.insert(ph.to_lowercase());
-                    let gt: Vec<Value> = methods.iter().map(|(m, l)| json!({"sym": m, "file": basename(fp), "line": l + 1})).collect();
+                    // V75: `MethodOn.line` is 1-indexed (brace graph) — no +1.
+                    let gt: Vec<Value> = methods.iter().map(|(m, l)| json!({"sym": m, "file": basename(fp), "line": l})).collect();
                     questions.push(json!({
                         "query_id": "q3_methods",
                         "question": format!("List the public methods defined on the type `{}` (its impl block is in {} around line {}).", ph, basename(fp), ln + 1),

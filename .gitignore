@@ -40,4 +40,9 @@ bench/results/*.jsonl
 
 # V75 bench cassettes: replay artifacts are local by default.
 # Public-corpus cassettes may be committed deliberately (see docs/plans/V75_CASSETTE_DETERMINISM.md).
-bench/cassettes/
+# `cassettes/*` (not `cassettes/`) so the canonical tape below can be re-included:
+# git cannot re-include a file if its parent directory is excluded.
+bench/cassettes/*
+# ...except the canonical public-corpus tape, which is committed so anyone can
+# reproduce the headline benchmark with zero API calls (bench/replay_canonical.sh).
+!bench/cassettes/canonical-v4/

@@ -31,8 +31,9 @@ GROUND_TRUTH = {
     "q2_classify_structural_callers":
         "classify_structural is called from (audited set): file_meta.rs:9 (use), "
         "ingest.rs:181, lib.rs:490, and the structural.rs test module at lines "
-        "944-1033. Other is_def=0 rows in lazy_occurrence/type_flow/full_file are "
-        "comment mentions, not calls (source-validated).",
+        "989, 999, 1008, 1016, 1024, 1032 (gt_audit fact_callers). Other is_def=0 "
+        "rows in lazy_occurrence/type_flow/full_file are comment mentions, not "
+        "calls (source-validated).",
     "q3_def_classify_structural":
         "pub fn classify_structural is at structural.rs:31. Signature: "
         "classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: bool, in_impl: bool) -> StructuralResult<'a>.",
@@ -46,7 +47,7 @@ GROUND_TRUTH = {
     "q5_brace_graph_callers":
         "build_brace_graph is called from (audited set): callgraph_v2.rs:19 (use), "
         "compat.rs:45 and :70, file_meta.rs:8 (use) / file_meta.rs:56 (call), "
-        "scope_types.rs:243, and brace_graph.rs:321 (get_brace_graph internals).",
+        "scope_types.rs:243, and brace_graph.rs:325 (get_brace_graph internals).",
     "q6_structural_struct_def":
         "StructuralResult is defined at structural.rs:16 — pub struct StructuralResult<'a> { "
         "pub tag: u8, pub is_def: bool, pub defined_name: Option<&'a str> }. "
@@ -64,12 +65,15 @@ GROUND_TRUTH = {
         "How does find_references resolve a symbol like classify_structural? "
         "Name the files it returns results from and explain why the primary "
         "definition (structural.rs:31) ranks first.",
+    # V77: q9 scoped to the question ("in crates/reliary-search") and written
+    # as a bare name list so scoring is symbol-level (sym_level). Every name
+    # source-audited against this tree: OpEntry impls Default (op_table.rs:27),
+    # OpTable derives (op_table.rs:34), FileInfo (full_file.rs:27),
+    # ScopeTypeMap (scope_types.rs:13), LineDelimiters (structural.rs:515).
+    # Out-of-crate types must NOT be named here — bare-symbol GT extraction
+    # would require them in every answer.
     "q9_consume_method_impls":
-        "Verified impls of Default in the workspace (source-audited): DeadConfig "
-        "(reliary-dead/src/lib.rs:17), OpEntry (reliary-search/src/op_table.rs:27), "
-        "MaxwellGate (reliary-sift/src/lib.rs:127). Any of these with file:line is a "
-        "fully correct answer; stale examples like LineDelimiters/ScopeType* no longer "
-        "derive(Default).",
+        "OpEntry, OpTable, FileInfo, ScopeTypeMap, LineDelimiters.",
     "q10_dead_code":
         "Any genuinely uncalled pub fn in reliary-search/src qualifies. Audited "
         "candidates (re-run bench/gt_audit.py after each reindex — the dead set "

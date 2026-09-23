@@ -1,0 +1,28 @@
+[
+  {
+    "id": "q1_def",
+    "question": "Where is the function `ggml_backend_cann_transform_back_q8_0` defined? Give the file path and line number.",
+    "rubric": {
+      "accept": [
+        "ggml_backend_cann_transform_back_q8_0"
+      ],
+      "accept_keywords": [
+        "ggml_backend_cann_transform_back_q8_0"
+      ],
+      "min_count": 1
+    }
+  },
+  {
+    "id": "q2_callers",
+    "question": "Which functions or modules call `write_vocab`? List each caller file:line site.",
+    "rubric": {
+      "accept": [
+        "write_vocab"
+      ],
+      "accept_keywords": [
+        "write_vocab"
+      ],
+      "min_count": 1
+    }
+  }
+]

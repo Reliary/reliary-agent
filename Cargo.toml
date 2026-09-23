@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.8.1"
+version = "0.8.2"
 edition = "2021"
 description = "Grammar-free symbol intelligence for all coding agents."
 license = "MIT"

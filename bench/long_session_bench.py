@@ -121,6 +121,17 @@ MAX_TURNS_PER_QUERY = 8
 
 def run_long_session(cond, model, seed, timeout_total=1800):
     """Run one long session: 10 chained queries with shared conversation history."""
+    # V75: label this run's stochastic draw. The bench builds the same first
+    # request for every seed (rng is only a label), so the cassette must key
+    # on (input, sample) — otherwise all seeds would share one recorded draw
+    # and the measured per-seed variance would be an artifact.
+    try:
+        from cassette import active as _cas_active
+        _cas = _cas_active()
+        if _cas is not None:
+            _cas.set_sample(f"{cond}-{seed}")
+    except Exception:
+        pass
     _sessions_keys = list(_sessions.keys())
     mth._ensure_sessions(cond)
     rng = random.Random(seed)
@@ -346,10 +357,16 @@ def main():
                             "misses": c.stats["misses"],
                             "recorded": c.stats["recorded"],
                             "index_gen": c.index_gen,
-                            "path": c.path,
+                            # Basename only: the result row is a published
+                            # artifact (committed beside the tape), and the
+                            # absolute path would embed the recording host's
+                            # home directory and corpus location.
+                            "path": os.path.basename(c.path),
                         }
-                except Exception:
-                    pass
+                except Exception as _e:
+                    # Never fail a whole benchmark run because accounting
+                    # could not be attached — but do say so loudly.
+                    print(f"[cassette] accounting unavailable: {_e!r}", file=sys.stderr)
                 all_runs.append(metrics)
             except Exception as e:
                 print(f"ERROR: {e}", file=sys.stderr)
@@ -388,7 +405,12 @@ def main():
         if len(scores) >= 2:
             std = statistics.stdev(scores)
             print(f"  Score:      {statistics.mean(scores):.1f} ± {std:.1f}/{10*3} (median {statistics.median(scores):.1f})")
-            print(f"  Score per seed: {[(s, scores[i]) for i, s in enumerate(args.seeds)]}")
+            # Pair each seed with ITS OWN run, not by position: errored runs are
+            # filtered out of `runs`, so the old `scores[i]` indexed a shorter
+            # list and raised IndexError whenever any run failed (e.g. a strict
+            # replay miss), killing the summary after the results were written.
+            _seed_scores = sorted((r.get("seed"), r["total_score"]) for r in runs)
+            print(f"  Score per seed: {_seed_scores}")
         else:
             print(f"  Score:      {statistics.median(scores):.1f}/{10*3} (mean {statistics.mean(scores):.1f})")
         print(f"  WC:         median={statistics.median(wcs):.0f} mean={statistics.mean(wcs):.0f}")

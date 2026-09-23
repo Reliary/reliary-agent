@@ -183,10 +183,12 @@ pub fn extract_file_phrases(
         let line_tag = line_tags[li];
         let line_is_def = lines_is_def.get(li).copied().unwrap_or(false);
         let line_def_name: Option<&str> = defined_names.get(li).and_then(|n| n.as_deref());
-        let code = crate::structural::strip_line_comment(line);
-        for (col, token) in scan_identifiers(code).into_iter().enumerate() {
+        // Strip comments AND string-literal contents before tokenizing: a
+        // name inside `panic!("call_me()")` is not a call site.
+        let code = crate::structural::strip_strings_and_comments(line);
+        for (col, token) in scan_identifiers(&code).into_iter().enumerate() {
             let stemmed = stem_identifier(&token);
-            if crate::keywords::is_keyword(&stemmed) {
+            if crate::keywords::is_noise_token(&token, &stemmed) {
                 continue;
             }
             let id_tag = if (col == 0 && line_tag >= 5)
@@ -421,14 +423,15 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
             // Path B: strip trailing // comments before scanning identifiers.
             // Without this, doc-comment prose like "consume" gets indexed as
             // a real identifier and pollutes find_references with false call sites.
-            let code = crate::structural::strip_line_comment(line);
-            for (col, token) in scan_identifiers(code).into_iter().enumerate() {
+            let code = crate::structural::strip_strings_and_comments(line);
+            for (col, token) in scan_identifiers(&code).into_iter().enumerate() {
                 let stemmed = crate::stem_identifier(&token);
 
                 // Arc 33 Phase B Trick #1: skip noise keywords. ~30% of
                 // occurrence rows are `int`, `void`, `let`, `mut`, `pub` — they
                 // don't carry discriminative meaning and bloat the DB.
-                if crate::keywords::is_keyword(&stemmed) {
+                // PascalCase raw tokens are exempt (is_noise_token).
+                if crate::keywords::is_noise_token(&token, &stemmed) {
                     continue;
                 }
 

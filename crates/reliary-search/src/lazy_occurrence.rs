@@ -396,6 +396,14 @@ pub fn ensure_occurrence_for_phrase(
 
             // Pre-compute line_tags (small array, reused).
             let mut line_tags: Vec<u8> = Vec::with_capacity(lines.len());
+            // V75: carry the classifier's is_def BOOL verbatim, exactly like
+            // `extract_file_phrases` does. Re-deriving it from the tag makes
+            // this path disagree with ingest: the rule used to admit tags
+            // 1..=6, but tag 6 is `local_binding`, which V66c deliberately made
+            // is_def=false — so a `let x = ...` line was a definition here and
+            // a usage at trust time. Same input, two answers depending on
+            // whether the row was written by JIT or by ingest.
+            let mut line_is_def: Vec<bool> = Vec::with_capacity(lines.len());
             let mut brace_depth: i32 = 0;
             // V59: capture the DEFINED NAME per line, not just a bool. The old
             // code marked every identifier on a def-line as is_def=1 — so
@@ -409,26 +417,29 @@ pub fn ensure_occurrence_for_phrase(
                 if brace_depth < 0 { brace_depth = 0; }
                 let result = crate::structural::classify_structural(line, prev_depth, open_count > 0, false);
                 line_tags.push(result.tag);
+                line_is_def.push(result.is_def);
                 line_def_names.push(result.defined_name.map(|s| s.to_string()));
             }
 
-            for (li, line) in lines.iter().enumerate() {
-                let line_tag = line_tags.get(li).copied().unwrap_or(0);
-                let line_def_name = line_def_names.get(li).cloned().flatten();
+        for (li, line) in lines.iter().enumerate() {
+            let line_tag = line_tags.get(li).copied().unwrap_or(0);
+            let line_def = line_is_def.get(li).copied().unwrap_or(false);
+            let line_def_name = line_def_names.get(li).cloned().flatten();
                 for (col, token) in crate::scan_identifiers(line).into_iter().enumerate() {
                     let stemmed = crate::stem_identifier(&token);
                     if stemmed != phrase_text {
                         continue;
                     }
-                    if crate::keywords::is_keyword(&stemmed) {
+                    if crate::keywords::is_noise_token(&token, &stemmed) {
                         continue;
                     }
                     let col_idx = col as i32;
                     let line_no = li as i32;  // 0-based, matches MCP `+1` convention
-                    // V59: is_def iff this token IS the line's defined name.
-                    // Case-insensitive: scan_identifiers lowercases, the
-                    // classifier returns source-case names.
-                    let is_def_int = if (1..=4).contains(&line_tag)
+                    // V59/V75: is_def iff the classifier said so AND this token
+                    // IS the line's defined name. Case-insensitive:
+                    // scan_identifiers lowercases, the classifier returns
+                    // source-case names.
+                    let is_def_int = if line_def
                         && line_def_name.as_deref().map(|d| d.eq_ignore_ascii_case(&token)).unwrap_or(false)
                     { 1 } else { 0 };
                     let tag = if is_def_int == 1 { line_tag } else { 0 };
@@ -573,11 +584,16 @@ fn ensure_occurrence_for_file_impl(
 
     let lines: Vec<&str> = content.lines().collect();
 
-    // Pre-compute line_tags and DEFINED NAMES (brace-depth tracking).
+    // Pre-compute line_tags, is_def and DEFINED NAMES (brace-depth tracking).
     // V73: capture the defined name per line — marking every token on a def
     // line as is_def=1 made return-type/parameter identifiers look like
     // definitions (the V59 bug), and this path was missed by that fix.
+    // V75: carry the classifier's is_def VERBATIM. Re-deriving it from the tag
+    // (the old `matches!(line_tag, 1..=6)`) admitted tag 6 `local_binding`,
+    // which V66c made is_def=false — so this path called a `let` binding a
+    // definition while ingest called it a usage.
     let mut line_tags: Vec<u8> = Vec::with_capacity(lines.len());
+    let mut line_is_def: Vec<bool> = Vec::with_capacity(lines.len());
     let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
     let mut brace_depth: i32 = 0;
     for line in &lines {
@@ -587,6 +603,7 @@ fn ensure_occurrence_for_file_impl(
         if brace_depth < 0 { brace_depth = 0; }
         let result = crate::structural::classify_structural(line, prev_depth, open_count > 0, false);
         line_tags.push(result.tag);
+        line_is_def.push(result.is_def);
         line_def_names.push(result.defined_name.map(|s| s.to_string()));
     }
 
@@ -645,20 +662,22 @@ fn ensure_occurrence_for_file_impl(
 
         for (li, line) in lines.iter().enumerate() {
             let line_tag = line_tags.get(li).copied().unwrap_or(0);
+            let line_def = line_is_def.get(li).copied().unwrap_or(false);
             let line_def_name = line_def_names.get(li).cloned().flatten();
 
             // Use pre-built block_id lookup (O(1) instead of per-line SQL).
             let block_id: i64 = *block_ids.get(li).unwrap_or(&0);
 
-            // Path B: strip trailing // comments before scanning identifiers.
-            let code = crate::structural::strip_line_comment(line);
+            // Path B: strip trailing // comments and string-literal contents
+            // before scanning identifiers (a name in a string is not a call site).
+            let code = crate::structural::strip_strings_and_comments(line);
 
-            for (col, token) in crate::scan_identifiers(code).into_iter().enumerate() {
+            for (col, token) in crate::scan_identifiers(&code).into_iter().enumerate() {
                 // V39: use stem_identifier to preserve snake_case identifiers.
                 // porter_stem strips the `al` suffix from `structural` → `structur`,
                 // destroying compound names like `classify_structural`.
                 let stemmed = crate::stem_identifier(&token);
-                if crate::keywords::is_keyword(&stemmed) {
+                if crate::keywords::is_noise_token(&token, &stemmed) {
                     continue;
                 }
                 // Lookup or insert phrase_id.
@@ -682,12 +701,13 @@ fn ensure_occurrence_for_file_impl(
                     }
                 };
 
-                // V73: per-token definition flag — only the token that IS the
-                // defined name gets is_def/tag; other identifiers on the same
-                // line stay usages.
-                let is_def_int = if (matches!(line_tag, 1..=6)
-                    && line_def_name.as_deref() == Some(token.as_str()))
-                    || (col == 0 && line_tag >= 5)
+                // V73/V75: per-token definition flag — the classifier must have
+                // marked the LINE as a definition, and only the token that IS
+                // the defined name gets is_def/tag. Other identifiers on the
+                // same line stay usages. (`col == 0 && line_tag >= 5` was a
+                // tag-derived rule that disagreed with ingest; it is gone.)
+                let is_def_int = if line_def
+                    && line_def_name.as_deref() == Some(token.as_str())
                 {
                     1
                 } else {
@@ -812,7 +832,9 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
 
     let lines: Vec<&str> = content.lines().collect();
 
+    // V75: carry the classifier's is_def VERBATIM (see ensure_occurrence_for_phrase).
     let mut line_tags: Vec<u8> = Vec::with_capacity(lines.len());
+    let mut line_is_def: Vec<bool> = Vec::with_capacity(lines.len());
     let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
     let mut brace_depth: i32 = 0;
     for line in &lines {
@@ -822,6 +844,7 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
         if brace_depth < 0 { brace_depth = 0; }
         let result = crate::structural::classify_structural(line, prev_depth, open_count > 0, false);
         line_tags.push(result.tag);
+        line_is_def.push(result.is_def);
         line_def_names.push(result.defined_name.map(|s| s.to_string()));
     }
 
@@ -872,6 +895,7 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
 
         for (li, line) in lines.iter().enumerate() {
             let line_tag = line_tags.get(li).copied().unwrap_or(0);
+            let line_def = line_is_def.get(li).copied().unwrap_or(false);
             let line_def_name = line_def_names.get(li).cloned().flatten();
 
             // P4-3: use pre-built block_ids array (hoisted out of the loop).
@@ -883,7 +907,7 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
                 // which makes `classify_structural` unsearchable. stem_identifier
                 // preserves the full identifier when it contains underscores.
                 let stemmed = crate::stem_identifier(&token);
-                if crate::keywords::is_keyword(&stemmed) {
+                if crate::keywords::is_noise_token(&token, &stemmed) {
                     continue;
                 }
                 let phrase_id = match phrase_cache.get(&stemmed) {
@@ -908,10 +932,12 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
 
                 let col_idx = col as i32;
                 let line_no = li as i32;
-                // V73: only the token that IS the defined name gets is_def/tag.
-                let is_def_int = if (matches!(line_tag, 1..=6)
-                    && line_def_name.as_deref() == Some(token.as_str()))
-                    || (col == 0 && line_tag >= 5)
+                // V73/V75: only the token that IS the defined name gets
+                // is_def/tag, and only when the classifier called the line a
+                // definition. (`col == 0 && line_tag >= 5` was tag-derived and
+                // disagreed with ingest — removed.)
+                let is_def_int = if line_def
+                    && line_def_name.as_deref() == Some(token.as_str())
                 {
                     1
                 } else {

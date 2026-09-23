@@ -930,8 +930,21 @@ fn build_callers(
 pub struct MethodOn {
     pub name: String,
     pub file: String,
+    /// 1-indexed source line, matching `BraceNode.start_line` (see
+    /// `build_brace_graph`: `line_no = line_idx + 1`). Display sites must print
+    /// this value UNCHANGED — the occurrence table is 0-indexed, and adding one
+    /// here produced a systematic +1 on every reported method line (V75).
     pub line: i32,
     pub source: String,
+    /// Whether the declaration line carries a visibility qualifier (`pub`,
+    /// `pub(crate)`, `pub(super)`, `pub(in ...)`). Grammar-free: derived from
+    /// the leading token(s) of the source line, not a language keyword list.
+    #[serde(default)]
+    pub is_pub: bool,
+    /// True when this entry is a struct field (the no-impl-methods fallback),
+    /// so callers render it as `name: Type` rather than `fn name`.
+    #[serde(default)]
+    pub is_field: bool,
 }
 
 #[derive(Serialize)]
@@ -959,11 +972,12 @@ pub struct MethodsResult {
 /// and the target type. If either matches, the methods are returned.
 ///
 /// Also finds sibling types in the same file whose name contains the requested
-/// type as a stem (e.g., `OwnedSemaphorePermit` when asking for `SemaphorePermit`).
-/// V59 B1: find types implementing a trait (`impl Trait for X`).
+/// V59 B1: find types implementing a trait (`impl Trait for X`) OR
+/// deriving it (`#[derive(..., Trait, ...)]`).
 /// Grammar-free: scans brace-graph root lines of indexed .rs files for the
-/// pattern `impl <Trait> for <Type>` (optionally generic `impl<T> Trait for X`).
-/// Bounded at 400 files like find_methods_on's fallback.
+/// pattern `impl <Trait> for <Type>` (optionally generic `impl<T> Trait for X`)
+/// and `#[derive(..., Trait, ...)]` followed by a `struct`/`enum`/`union`
+/// declaration. Bounded at 400 files like find_methods_on's fallback.
 pub struct TraitImpl {
     pub type_name: String,
     pub file: String,
@@ -971,6 +985,18 @@ pub struct TraitImpl {
 }
 
 pub fn find_trait_impls(db: &Connection, trait_name: &str) -> Vec<TraitImpl> {
+    find_trait_impls_scoped(db, trait_name, None)
+}
+
+/// Same as [`find_trait_impls`] but restricts results to files whose path
+/// contains `path_filter` (when provided). This prevents the trait-impl
+/// fallback from leaking types from unrelated crates when the caller
+/// supplied a `path_filter`.
+pub fn find_trait_impls_scoped(
+    db: &Connection,
+    trait_name: &str,
+    path_filter: Option<&str>,
+) -> Vec<TraitImpl> {
     let mut out = Vec::new();
     // Needle excludes the leading `impl` — we locate the trait name then
     // verify what precedes it (`impl ` or `impl<...> `). Including "impl "
@@ -993,35 +1019,102 @@ pub fn find_trait_impls(db: &Connection, trait_name: &str) -> Vec<TraitImpl> {
         }
     }
     for fp in candidates {
+        // Scope filter: skip files outside the caller's path_filter.
+        if let Some(pf) = path_filter {
+            if !pf.is_empty() && !fp.contains(pf) {
+                continue;
+            }
+        }
         let meta = match crate::file_meta::get(&fp) {
             Some(m) => m,
             None => continue,
         };
         // Scan raw lines — impl headers are single-line in ~all Rust code and
         // this avoids walking every brace node.
-        for (i, line) in meta.lines.iter().enumerate() {
+        let mut i = 0;
+        while i < meta.lines.len() {
+            let line = &meta.lines[i];
             let t = line.trim_start();
-            if !t.starts_with("impl ") && !t.starts_with("impl<") { continue; }
-            if let Some(pos) = t.find(&needle) {
-                let before = t[..pos].trim_end();
-                let ok = before == "impl"
-                    || (before.starts_with("impl<") && before.ends_with(">"));
-                if ok {
-                    let rest = &t[pos + needle.len()..];
-                    // Type name = first identifier of rest
-                    let ty: String = rest.chars()
-                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '<')
-                        .collect();
-                    let ty = ty.split('<').next().unwrap_or("").trim().to_string();
-                    if !ty.is_empty() {
-                        out.push(TraitImpl { type_name: ty, file: fp.clone(), line: i as i32 + 1 });
+            // Pattern 1: `impl Trait for Type` (existing).
+            if t.starts_with("impl ") || t.starts_with("impl<") {
+                if let Some(pos) = t.find(&needle) {
+                    let before = t[..pos].trim_end();
+                    let ok = before == "impl"
+                        || (before.starts_with("impl<") && before.ends_with(">"));
+                    if ok {
+                        let rest = &t[pos + needle.len()..];
+                        // Type name = first identifier of rest
+                        let ty: String = rest
+                            .chars()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '<')
+                            .collect();
+                        let ty = ty.split('<').next().unwrap_or("").trim().to_string();
+                        if !ty.is_empty() {
+                            out.push(TraitImpl {
+                                type_name: ty,
+                                file: fp.clone(),
+                                line: i as i32 + 1,
+                            });
+                        }
+                    }
+                    i += 1;
+                    continue;
+                }
+            }
+            // Pattern 2: `#[derive(..., Trait, ...)]` followed by struct/enum/union.
+            if t.starts_with("#[derive(") {
+                if let Some(close) = t.find(')') {
+                    let inner = &t[t.len().min(t.find("#[derive(").unwrap() + 9)..close.max(9)];
+                    // Split the derive list on commas and look for an exact
+                    // token match on trait_name (grammar-free: no keyword list).
+                    let matched = inner
+                        .split(',')
+                        .any(|s| s.trim() == trait_name);
+                    if matched {
+                        // The type declaration is on a subsequent non-attribute,
+                        // non-blank line. Look ahead up to 4 lines.
+                        for j in (i + 1)..meta.lines.len().min(i + 5) {
+                            let nt = meta.lines[j].trim_start();
+                            if nt.is_empty() || nt.starts_with('#') || nt.starts_with("//") {
+                                continue;
+                            }
+                            if let Some(ty) = decl_type_name(nt) {
+                                out.push(TraitImpl {
+                                    type_name: ty,
+                                    file: fp.clone(),
+                                    line: j as i32 + 1,
+                                });
+                            }
+                            break; // first non-attribute line decides
+                        }
                     }
                 }
             }
+            i += 1;
         }
-        if out.len() >= 20 { break; }
+        if out.len() >= 20 {
+            break;
+        }
     }
     out
+}
+
+/// Grammar-free: extract the identifier following `struct`/`enum`/`union`
+/// on a declaration line. Returns None if the line is not a type declaration.
+fn decl_type_name(line: &str) -> Option<String> {
+    for kw in ["struct ", "enum ", "union "] {
+        if let Some(pos) = line.find(kw) {
+            let rest = &line[pos + kw.len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
 }
 
 pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<MethodsResult> {
@@ -1100,7 +1193,7 @@ pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<Met
     // V57: fallback — if a type has no impl methods, list its struct FIELDS
     // (grammar-free: lines of `name: Type` inside the type's definition block).
     if methods.is_empty() {
-        let mut fields: Vec<(String, String, String, i64)> = Vec::new();
+        let mut fields: Vec<(String, String, String, i64, bool)> = Vec::new();
         for fp in &files {
             // Direct line scan — no brace-graph dependency (the graph can be
             // stale/empty from the file_meta cache for freshly-added files).
@@ -1148,10 +1241,11 @@ pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<Met
                         // Strip visibility prefix: `pub name: T`, `pub(crate) name: T`.
                         let mut toks = before.split_whitespace();
                         let first = toks.next().unwrap_or("");
-                        let name = if first == "pub"
+                        let vis = first == "pub"
                             || first == "pub(crate)"
                             || first == "pub(super)"
-                        {
+                            || first.starts_with("pub(");
+                        let name = if vis {
                             toks.next().unwrap_or("")
                         } else {
                             first
@@ -1161,16 +1255,21 @@ pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<Met
                         {
                             // V59g: capture the field TYPE for evidence output.
                             let ftype = t[colon + 1..].trim().trim_end_matches(',').to_string();
-                            fields.push((name.to_string(), ftype, fp.clone(), (li + 1) as i64));
+                            fields.push((name.to_string(), ftype, fp.clone(), (li + 1) as i64, vis));
                         }
                     }
                 }
             }
         }
-        fields.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));
-        fields.dedup_by(|a, b| a.1 == b.1 && a.2 == b.2);
-        for (fname, ftype, ffile, fline) in fields {
-            methods.push(MethodOn { name: fname, file: ffile, line: fline as i32, source: ftype });
+        // Dedupe by (name, file): a struct scan can see the same block twice
+        // (multiple type-name matches), but two DISTINCT fields that happen to
+        // share a type (`x: i32` and `y: i32`) must both survive. The old key
+        // was (type, file), which silently dropped every same-typed field after
+        // the first.
+        fields.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
+        fields.dedup_by(|a, b| a.0 == b.0 && a.2 == b.2);
+        for (fname, ftype, ffile, fline, fpub) in fields {
+            methods.push(MethodOn { name: fname, file: ffile, line: fline as i32, source: ftype, is_pub: fpub, is_field: true });
         }
     }
 
@@ -1351,6 +1450,8 @@ if is_impl {
                         name,
                         file: file_path.to_string(),
                         line: child.start_line,
+                        is_pub: is_pub_decl(&child_lft),
+                        is_field: false,
                         source: child_lft,
                     });
                 }
@@ -1361,6 +1462,19 @@ if is_impl {
     for child in &node.children {
         collect_methods_in_impl_blocks(child, file_path, type_name, out, count, impl_loc);
     }
+}
+
+/// Does this declaration line carry a visibility qualifier?
+///
+/// Grammar-free: we look at the leading token(s) only. `pub`, `pub(crate)`,
+/// `pub(super)`, `pub(in path)` all start with the 3 bytes `pub` followed by
+/// whitespace or `(`. No language keyword list, no per-language branching.
+fn is_pub_decl(text: &str) -> bool {
+    let t = text.trim_start();
+    let b = t.as_bytes();
+    b.len() >= 4
+        && &b[..3] == b"pub"
+        && (b[3] == b' ' || b[3] == b'\t' || b[3] == b'(')
 }
 
 fn extract_fn_name(text: &str) -> String {
@@ -1471,4 +1585,50 @@ fn read_all_lines(file_path: &str) -> Option<Vec<String>> {
         return Some(m.lines.clone());
     }
     std::fs::read_to_string(file_path).ok().map(|s| s.lines().map(String::from).collect())
+}
+#[cfg(test)]
+mod v75_tests {
+    use super::*;
+
+    #[test]
+    fn pub_decl_rejects_private_and_non_declarations() {
+        assert!(!is_pub_decl("fn new(start_line: i32) -> Self {"));
+        assert!(!is_pub_decl("    fn collect_method_calls(&self) {"));
+        assert!(!is_pub_decl("let s = \"pub fn foo()\";"));
+        assert!(!is_pub_decl("publish();"));
+        assert!(!is_pub_decl("pubz fn x() {}"));
+        assert!(!is_pub_decl("pub"));
+    }
+
+    #[test]
+    fn struct_field_fallback_keeps_same_typed_fields() {
+        // Two fields sharing a type must BOTH survive the fallback (the old
+        // dedup key was (type, file) and dropped the second).
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("reliary_v75f_{}", nanos));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = "pub struct Point {\n    pub x: i32,\n    y: i32,\n}\n";
+        std::fs::write(dir.join("point.rs"), src).unwrap();
+
+        let db = rusqlite::Connection::open(dir.join("idx.sqlite")).unwrap();
+        crate::schema::create_new_db(&db).unwrap();
+        crate::ingest::index_directory(&db, dir.to_str().unwrap()).unwrap();
+        if let Some(pid) = phrase_id_for(&db, "point").ok().flatten() {
+            let _ = crate::lazy_occurrence::ensure_occurrence_for_phrase(&db, pid);
+        }
+        let mr = find_methods_on(&db, "Point").expect("find_methods_on ok");
+
+        let x = mr.methods.iter().find(|m| m.name == "x").expect("field x survived");
+        assert!(x.is_field, "x must be flagged as a field");
+        assert_eq!(x.line, 2, "field x is on line 2, got {}", x.line);
+        assert!(x.is_pub, "pub x");
+        let y = mr.methods.iter().find(|m| m.name == "y").expect("field y survived (same type as x)");
+        assert_eq!(y.line, 3, "field y is on line 3, got {}", y.line);
+        assert!(!y.is_pub, "y is private");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

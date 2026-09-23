@@ -36,18 +36,29 @@ def main():
     ap.add_argument("--out", default="results/public.jsonl")
     ap.add_argument("--altbackend-project", default=None)
     ap.add_argument("--seed", type=int, default=42, help="question-gen seed")
+    ap.add_argument("--questions", default=None,
+                    help="use this auto_questions-format JSON instead of generating "
+                         "(for corpus pairs that must receive identical tasks)")
+    ap.add_argument("--gt", default=None,
+                    help="GT file for the verifier (default: the generated one)")
     ap.add_argument("--no-bench", action="store_true", help="only generate questions + verify existing out")
     args = ap.parse_args()
 
-    # 1. generate questions
+    # 1. generate questions (or take a pre-built, translated set)
     q_json = os.path.join(HERE, "results", "public_questions.json")
     os.makedirs(os.path.dirname(q_json), exist_ok=True)
-    subprocess.run(
-        [sys.executable, os.path.join(HERE, "auto_questions.py"), args.index, str(args.seed)],
-        check=True, stdout=open(q_json, "w"),
-    )
-    with open(q_json) as fh:
-        qdata = json.load(fh)
+    if args.questions:
+        with open(args.questions) as fh:
+            qdata = json.load(fh)
+        with open(q_json, "w") as fh:
+            json.dump(qdata, fh, indent=2)
+    else:
+        subprocess.run(
+            [sys.executable, os.path.join(HERE, "auto_questions.py"), args.index, str(args.seed)],
+            check=True, stdout=open(q_json, "w"),
+        )
+        with open(q_json) as fh:
+            qdata = json.load(fh)
     questions = qdata["questions"]
     print(f"[public_bench] {len(questions)} questions generated from {qdata['repo']} "
           f"({qdata.get('n_files', '?')} files)")
@@ -81,8 +92,13 @@ def main():
 
     # write GT facts for the verifier
     gt_path = os.path.join(HERE, "results", "public_gt.json")
+    if args.gt and os.path.abspath(args.gt) != os.path.abspath(gt_path):
+        with open(args.gt) as fh:
+            gt_data = json.load(fh)
+    else:
+        gt_data = {"repo": qdata["repo"], "questions": questions}
     with open(gt_path, "w") as fh:
-        json.dump({"repo": qdata["repo"], "questions": questions}, fh, indent=2)
+        json.dump(gt_data, fh, indent=2)
     print(f"[public_bench] GT facts -> {gt_path}")
 
     if args.no_bench:
@@ -107,9 +123,14 @@ def main():
     # 4. verify deterministically (use auto GT — deterministic_verify reads
     #    bench/reliary_judge_gt.py by default; we pass the GT via --gt)
     print("[public_bench] run deterministic_verify.py on", args.out)
+    # `--out` is relative to the repo root (parent of bench/), matching how
+    # run_snapshot_bench receives it. Resolve it the same way; joining HERE
+    # again produced bench/bench/results/... and broke the verify step.
+    out_path = args.out if os.path.isabs(args.out) else os.path.join(
+        os.path.dirname(HERE), args.out)
     subprocess.run(
         [sys.executable, os.path.join(HERE, "deterministic_verify.py"),
-         "--input", os.path.join(HERE, args.out), "--corpus", args.corpus,
+         "--input", out_path, "--corpus", args.corpus,
          "--gt", gt_path],
         check=True, cwd=HERE,
     )

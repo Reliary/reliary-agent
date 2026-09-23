@@ -144,7 +144,7 @@ def struct_fields(path, type_name, def_line0):
     if start is None:
         return []
     indent = len(lines[start]) - len(lines[start].lstrip())
-    end, _ = brace_blocks(lines, start, indent)
+    _, end = brace_blocks(lines, start, indent)
     fields = []
     for i in range(start + 1, end):
         t = lines[i].strip()
@@ -161,37 +161,122 @@ def struct_fields(path, type_name, def_line0):
 
 def impl_methods(path, type_name):
     """Grammar-free: find `impl <Type> {` blocks in the file, collect `fn` lines
-    inside them (their 1-indexed line + name)."""
+    inside them as (1-indexed line, name, is_pub).
+
+    `is_pub` is the leading-token test (`pub` followed by space or `(`), matching
+    the Rust-side `is_pub_decl` — no language keyword list."""
     lines = read_lines(path)
     out = []
     i = 0
     while i < len(lines):
         t = lines[i]
         if re.search(r"\bimpl\b[^{]*\b" + re.escape(type_name) + r"\b[^{]*\{", t):
-            end, _ = brace_blocks(lines, i, 0)
+            _, end = brace_blocks(lines, i, 0)
             for j in range(i + 1, min(end, len(lines))):
-                m = re.match(r"\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)", lines[j])
+                m = re.match(r"\s*((?:pub\s+)?)(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)", lines[j])
                 if m:
-                    out.append((m.group(1), j + 1))
+                    out.append((m.group(2), j + 1, bool(m.group(1))))
             i = end
         i += 1
     return out
 
 
+def public_methods(path, type_name):
+    """Public, non-stopword methods as `(name, line)` — the q3 ground truth.
+
+    The question asks for PUBLIC methods, so private helpers and struct fields
+    must not enter the GT (a correct answer that omitted them previously looked
+    incomplete). Extracted here so the test guards the production path rather
+    than reimplementing the filter.
+    """
+    return [
+        (m, l)
+        for (m, l, is_pub) in impl_methods(path, type_name)
+        if is_pub and m.lower() not in STOP
+    ]
+
+
 def symbols(db, files, tag=None):
+    """All definitions in `files` as (phrase, file_path, line_1idx, tag).
+
+    One query + grouping in Python: the per-file `WHERE fm.file_path = ?`
+    form has no supporting index (occurrence is indexed by phrase_id, not
+    file_id) and takes ~1s per file on a 2.8k-file corpus.
+    """
+    fs = set(files)
     out = []
-    for f in files:
-        cur = db.execute(
-            """SELECT p.phrase, o.line, o.tag FROM occurrence o
-               JOIN phrases p ON p.id = o.phrase_id
-               JOIN file_map fm ON fm.id = o.file_id
-               WHERE o.is_def = 1 AND fm.file_path = ?""",
-            (f,),
-        )
-        for ph, line, t in cur:
-            if tag is None or t == tag:
-                out.append((ph, f, line, t))
+    cur = db.execute(
+        """SELECT p.phrase, fm.file_path, o.line, o.tag FROM occurrence o
+           JOIN phrases p ON p.id = o.phrase_id
+           JOIN file_map fm ON fm.id = o.file_id
+           WHERE o.is_def = 1 AND fm.is_source = 1"""
+    )
+    for ph, f, line, t in cur:
+        if f not in fs:
+            continue
+        if tag is None or t == tag:
+            # o.line is 0-indexed; every tool and consumer uses 1-indexed.
+            out.append((ph, f, line + 1, t))
     return out
+
+
+_FILE_CACHE = {}
+
+
+def _read_cached_lines(file_path):
+    if file_path not in _FILE_CACHE:
+        try:
+            with open(file_path, encoding="utf-8", errors="replace") as fh:
+                _FILE_CACHE[file_path] = fh.read().splitlines()
+        except OSError:
+            _FILE_CACHE[file_path] = []
+    return _FILE_CACHE[file_path]
+
+
+def _strip_strings_and_comments(line):
+    """Remove string literals and line comments from a source line.
+
+    A symbol mentioned only inside a string ("... write_vocab() must be ...")
+    is not a call site. Grammar-free: byte scan with quote/escape tracking.
+    """
+    out = []
+    i = 0
+    n = len(line)
+    in_str = None  # quote char or None
+    while i < n:
+        c = line[i]
+        if in_str:
+            if c == "\\":
+                i += 2
+                continue
+            if c == in_str:
+                in_str = None
+            i += 1
+            continue
+        if c in ("'", '"'):
+            in_str = c
+            i += 1
+            continue
+        if c == "#":
+            break
+        if c == "/" and i + 1 < n and line[i + 1] == "/":
+            break
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _is_real_call(file_path, line_0idx, phrase):
+    """True if `phrase` appears as a code token (not in a string/comment).
+
+    Case-insensitive: phrases are stored lowercased (`getfiletypecategoryby...`)
+    while the source may be camelCase (`getFileTypeCategoryByExtension`).
+    """
+    lines = _read_cached_lines(file_path)
+    if line_0idx >= len(lines):
+        return False
+    code = _strip_strings_and_comments(lines[line_0idx])
+    return bool(re.search(rf"(?<![A-Za-z0-9_]){re.escape(phrase)}(?![A-Za-z0-9_])", code, re.I))
 
 
 def callers_of(db, phrase, files):
@@ -204,19 +289,25 @@ def callers_of(db, phrase, files):
         (phrase,),
     )
     for f, line in cur:
-        if f in files:
-            out.append((f, line))
+        if f in files and _is_real_call(f, line, phrase):
+            out.append((f, line + 1))  # 0-indexed -> 1-indexed
     return out
 
 
 def nondef_count(db, phrase):
-    return db.execute(
-        """SELECT COUNT(*) FROM occurrence o
+    """Count real (non-string) call sites of `phrase`."""
+    n = 0
+    cur = db.execute(
+        """SELECT fm.file_path, o.line FROM occurrence o
            JOIN phrases p ON p.id = o.phrase_id
            JOIN file_map fm ON fm.id = o.file_id
            WHERE p.phrase = ? AND o.is_def = 0 AND fm.is_source = 1""",
         (phrase,),
-    ).fetchone()[0]
+    )
+    for f, line in cur:
+        if _is_real_call(f, line, phrase):
+            n += 1
+    return n
 
 
 def def_sites(db, phrase, files):
@@ -288,8 +379,7 @@ def generate(index_path, seed=42, rust_only=True, skip=("bench", "scripts", "fix
     for (ph, f, line, tag) in type_syms:
         if ph.lower() in used or not re.match(r"^[A-Z]", ph):
             continue
-        methods = impl_methods(f, ph)
-        methods = [(m, l) for (m, l) in methods if m.lower() not in STOP]
+        methods = public_methods(f, ph)
         if len(methods) >= 3:
             used.add(ph.lower())
             add("q3_methods",
@@ -309,7 +399,12 @@ def generate(index_path, seed=42, rust_only=True, skip=("bench", "scripts", "fix
                 [{"sym": nm, "file": f, "line": ln} for (nm, ln) in fields])
             break
 
-    # q5: dead code in a module
+    # q5: dead code in a module.
+    # Only emitted when the tool itself reports dead candidates in a module whose
+    # definitions carry a visibility marker — otherwise the question asks for
+    # something the corpus cannot express (e.g. "pub functions" in a TypeScript
+    # or C++ tree). The answer is still derived from the same occurrence data the
+    # tool uses, so it is verifiable, not Rust-specific.
     mods = {}
     for (ph, f, line, tag) in func_syms:
         if nondef_count(db, ph) == 0:
@@ -318,9 +413,21 @@ def generate(index_path, seed=42, rust_only=True, skip=("bench", "scripts", "fix
     if mods:
         mod = max(mods, key=lambda m: len(mods[m]))
         sample = mods[mod][:5]
-        if sample:
+        visible = 0
+        for (_s, fl, ln) in sample:
+            try:
+                src = _read_cached_lines(fl)[ln - 1]
+            except IndexError:
+                continue
+            # A declaration carrying `pub`/`export`/`public` (any language's
+            # visibility spelling) — grammar-free substring test on the
+            # definition line only.
+            if re.search(r"\b(pub|export|public)\b", _strip_strings_and_comments(src)):
+                visible += 1
+        if sample and visible >= 1:
             add("q5_dead",
-                f"Find pub functions in `{mod}/` that are never called anywhere in the workspace. List name + file:line for any you find.",
+                f"Find unused exported/public functions in `{mod}/`. "
+                f"List name + file:line for any you find.",
                 [{"sym": s, "file": fl, "line": ln} for (s, fl, ln) in sample])
 
     # q6: which struct implements Default (derived)

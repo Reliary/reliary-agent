@@ -118,7 +118,8 @@ fn run_terms_query(db: &Connection, terms: &[String], mode: JoinMode, top_n: usi
     let sql = format!(
         "SELECT p.id as phrase_id, occ.file_blob
          FROM phrases p JOIN phrase_occ occ ON occ.phrase_id = p.id
-         WHERE {}",
+         WHERE {}
+         ORDER BY p.id",
         conditions
     );
     let mut stmt = match db.prepare(&sql) {

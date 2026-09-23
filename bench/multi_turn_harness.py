@@ -249,15 +249,30 @@ def tool_reliary_methods_on(args):
         return f"(methods_on error: {e})"
 
 
+def _strip_index_stamp(text):
+    """Remove the trailing `[idx:xxxxxxxx]` freshness stamp from tool output.
+
+    The MCP server appends the stamp to every response (M4). Parsers must
+    strip it before treating the payload as JSON — otherwise `json.loads`
+    fails with "Extra data" and the tool appears broken.
+    """
+    if not text:
+        return text
+    lines = text.rstrip().split("\n")
+    while lines and lines[-1].strip().startswith("[idx:"):
+        lines.pop()
+    return "\n".join(lines).rstrip()
+
+
 def tool_reliary_search(args):
     """Reliary BM25 search."""
     query = args.get("query", "")
     try:
         text = _sessions[_reliary_session_key()].call("reliary_search", {"query": query, "path": "."})
-        if text.startswith("["):
-            results = json.loads(text)
-        else:
+        payload = _strip_index_stamp(text)
+        if not payload.startswith("["):
             return "(no search results)"
+        results = json.loads(payload)
         lines = []
         for r in results[:10]:
             f = r.get("file", "").replace(TOKIO_CORPUS + "/", "")
@@ -265,6 +280,26 @@ def tool_reliary_search(args):
         return "\n".join(lines) if lines else "(no search results)"
     except Exception as e:
         return f"(search error: {e})"
+
+
+def _normalize_tool_paths(text):
+    """Strip machine-specific path prefixes from tool output.
+
+    altbackend embeds absolute paths (`/tmp/rel8-corpus/...`) and its derived
+    project name (`tmp-rel8-corpus`) in results. Conditions A and C already
+    emit corpus-relative paths, so normalizing here is both a fairness fix
+    (every condition reports the same paths) and a portability requirement:
+    without it a recorded tape only replays on the machine that recorded it,
+    because those strings are part of the hashed conversation.
+    """
+    if not text:
+        return text
+    text = text.replace(TOKIO_CORPUS + "/", "")
+    text = text.replace(TOKIO_CORPUS, ".")
+    if ALTBACKEND_PROJECT:
+        text = text.replace(ALTBACKEND_PROJECT + ".", "")
+        text = text.replace(ALTBACKEND_PROJECT, ".")
+    return text
 
 
 def tool_altbackend_search_graph(args):
@@ -279,14 +314,33 @@ def tool_altbackend_search_graph(args):
         results = data.get("results", [])
         out = []
         for h in results[:20]:
+            # Only name/label/file/line are presented to the model. `rank` is a
+            # corpus-statistics-derived float that differs between two indexes
+            # of identical content (it is not consumed downstream), so emitting
+            # it would make the conversation content depend on which machine
+            # built the index.
             out.append(f"{h.get('name','')}:{h.get('label','')} {h.get('file_path','')}:{h.get('start_line',0)}")
-        return "\n".join(out) if out else "(no search results)"
+        # V75: sort, for the same reason `rank` is dropped. altbackend returns
+        # the identical SET of hits in a DIFFERENT order from two indexes of
+        # identical bytes (verified: 20/20 lines equal, order differs) because
+        # its pipeline ranks through hash-ordered traversal. A hit order that
+        # two of altbackend's own indexes disagree on is not a property of the
+        # source, and leaving it in makes the conversation hash — and therefore
+        # the tape — unreplayable anywhere but the machine that recorded it.
+        return _normalize_tool_paths("\n".join(sorted(out))) if out else "(no search results)"
     except Exception as e:
         return f"(altbackend error: {e})"
 
 
 def tool_altbackend_get_code_snippet(args):
-    """ALTBACKEND get_code_snippet via CLI."""
+    """ALTBACKEND get_code_snippet via CLI.
+
+    Present the source and the identifying fields — the same information
+    reliary's with-source mode gives the A condition. The raw response also
+    carries absolute paths and project-qualified names; normalize BEFORE any
+    length truncation, because truncating first makes the cut point depend on
+    how long the machine-specific prefix happens to be.
+    """
     try:
         r = subprocess.run(
             [ALTBACKEND_BIN, "cli", "get_code_snippet",
@@ -295,9 +349,19 @@ def tool_altbackend_get_code_snippet(args):
                          "show_lines": args.get("show_lines", 3)})],
             capture_output=True, text=True, timeout=30)
         data = json.loads(r.stdout)
-        if isinstance(data, dict) and "content" in data:
-            return data["content"][:2000]
-        return json.dumps(data)[:2000]
+        src = data.get("source") or data.get("content") or ""
+        head = {
+            "name": data.get("name"),
+            "label": data.get("label"),
+            "file_path": data.get("file_path"),
+            "start_line": data.get("start_line"),
+            "end_line": data.get("end_line"),
+        }
+        rendered = json.dumps(head)[:-1] + ', "source": ' + json.dumps(src) + "}"
+        # Normalize BEFORE truncating: truncating first makes the cut point
+        # depend on how long the machine-specific prefix is, so identical
+        # content produces different tails on differently-named checkouts.
+        return _normalize_tool_paths(rendered)[:2000]
     except Exception as e:
         return f"(altbackend error: {e})"
 
@@ -319,20 +383,38 @@ def tool_altbackend_trace_path(args):
             lines.append(f"Callers: {', '.join(c.get('name','?') for c in callers[:10])}")
         if callees:
             lines.append(f"Callees: {', '.join(c.get('name','?') for c in callees[:10])}")
-        return "\n".join(lines) if lines else "(no trace results)"
+        return _normalize_tool_paths("\n".join(lines)) if lines else "(no trace results)"
     except Exception as e:
         return f"(altbackend error: {e})"
 
 
 def tool_altbackend_get_architecture(args):
-    """ALTBACKEND get_architecture via CLI."""
+    """ALTBACKEND get_architecture via CLI.
+
+    Presents the graph shape and label/edge vocabulary. Node and edge COUNTS
+    are deliberately omitted: they are not reproducible by altbackend itself.
+    Verified with two fresh indexes of the same commit at different paths —
+    identical source produced 10,767 nodes with 15,070 vs 14,937 edges, and
+    File/Module counts differing by one — because its pipeline deduplicates
+    in a hash-ordered walk. A stat that changes between two indexes of the
+    same bytes is not a property of the source, so it is not a fact this
+    bench should compare on; including it would make the conversation depend
+    on altbackend's traversal order and the tape could never be replayed.
+    """
     try:
         r = subprocess.run(
             [ALTBACKEND_BIN, "cli", "get_architecture",
              json.dumps({"project": ALTBACKEND_PROJECT})],
             capture_output=True, text=True, timeout=30)
         data = json.loads(r.stdout)
-        return json.dumps(data, indent=2)[:3000]
+        stable = {
+            "project": ".",
+            "node_labels": sorted(
+                str(x.get("label")) for x in (data.get("node_labels") or [])),
+            "edge_types": sorted(
+                str(x.get("type")) for x in (data.get("edge_types") or [])),
+        }
+        return _normalize_tool_paths(json.dumps(stable, indent=2))[:3000]
     except Exception as e:
         return f"(altbackend error: {e})"
 
@@ -405,7 +487,9 @@ def tool_reliary_pack_query(args):
     try:
         text = _sessions[_reliary_session_key()].call("reliary_pack_query",
             {"name": name, "path": path})
-        return text[:5000] if text else "(no pack slice)"
+        # Normalize before truncating (see get_code_snippet): the cut point
+        # must not depend on the length of a machine-specific path prefix.
+        return _normalize_tool_paths(text)[:5000] if text else "(no pack slice)"
     except Exception as e:
         return f"(pack_query error: {e})"
 
@@ -762,6 +846,13 @@ def execute_tool(cond, tool_name, tool_args):
     except Exception as e:
         result = f"(tool error: {e})"
     elapsed = time.time() - t0
+    # V75: normalize machine-specific paths at the one place every condition's
+    # output passes through. The MCP server and altbackend both embed absolute
+    # paths; leaving them in makes the conversation machine-dependent (tapes
+    # would only replay on the recording host) and asymmetrically informative
+    # (A would see /tmp/v75-corpus/... while C sees relative paths).
+    if isinstance(result, str):
+        result = _normalize_tool_paths(result)
     return result, elapsed
 
 

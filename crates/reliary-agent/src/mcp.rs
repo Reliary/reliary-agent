@@ -581,6 +581,31 @@ fn corpus_rel_path(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
 }
 
+/// V75: render one `MethodOn` as a self-describing evidence token:
+///   `pub fn find_enclosing (brace_graph.rs:37)`
+///   `pub name: String (op_table.rs:27)`   (struct-field fallback)
+/// The `pub`/`fn`/`: Type` parts are the declaration's own shape, so the text
+/// is a true statement about the source rather than decoration. Line numbers
+/// are printed verbatim — `MethodOn.line` is already 1-indexed.
+fn format_method_entry(m: &reliary_search::callgraph_v2::MethodOn) -> String {
+    let fname = std::path::Path::new(&m.file)
+        .file_name()
+        .map(|x| x.to_string_lossy().to_string())
+        .unwrap_or_else(|| m.file.clone());
+    let vis = if m.is_pub { "pub " } else { "" };
+    let head = if m.is_field {
+        // `source` holds the field type for the fallback path.
+        if m.source.is_empty() { format!("{}{}", vis, m.name) }
+        else { format!("{}{}: {}", vis, m.name, m.source) }
+    } else {
+        // Compact, true declaration shape. Not the full signature line: the
+        // question is "which methods, and are they public", and a parameter
+        // list costs tokens per method without adding an answer.
+        format!("{}fn {}", vis, m.name)
+    };
+    format!("{} ({}:{})", head, fname, m.line)
+}
+
 /// W4: one-line signature for a callee at (file, line). Reads from the
 /// file_meta cache; truncates to 100 chars; empty when unavailable.
 /// 1-indexed line (matches Callee.def_line display convention).
@@ -1246,7 +1271,12 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
 
             // First, find the target entry to discover L4 callers.
             // V28 Fix 5: case-insensitive lookup — pack stores lowercase, query may be PascalCase.
-            let mut callers_to_include: std::collections::HashSet<String> = std::collections::HashSet::new();
+            // V75: FxHashSet, not std HashSet — std hashes strings with a
+            // per-process random seed, so the rendered caller list changed
+            // order on every run. That made `describe` non-deterministic
+            // (same input, different bytes), which breaks replay verification
+            // and any downstream diff of tool output.
+            let mut callers_to_include: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
             let target_entry = entries.get(target_name)
                 .or_else(|| entries.get(&target_lower));
             if let Some(target_lines) = target_entry {
@@ -1497,15 +1527,14 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                             let impl_loc = mr.impl_file.as_ref().map(|f| {
                                 format!(" (impl at {}:{})",
                                     std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.clone()),
-                                    mr.impl_line.unwrap_or(0) + 1)
+                                    mr.impl_line.unwrap_or(1))
                             }).unwrap_or_default();
                             let entries: Vec<String> = mr.methods.iter().take(8)
                                 .map(|m| {
-                                    let loc = format!("{}:{}",
-                                        std::path::Path::new(&m.file).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| m.file.clone()),
-                                        m.line + 1);
-                                    if m.source.is_empty() { format!("{} ({})", m.name, loc) }
-                                    else { format!("{}: {} ({})", m.name, m.source, loc) }
+                                    // V75: print `m.line` UNCHANGED. Brace-graph
+                                    // start_line is already 1-indexed; the old
+                                    // `+ 1` reported every method one line late.
+                                    format_method_entry(m)
                                 })
                                 .collect();
                             format!("Methods on {}{}: {}.\n", sym, impl_loc, entries.join(", "))
@@ -1729,7 +1758,8 @@ if def_only {
         }));
     }
     // V59 B1: maybe it's a trait being implemented — return implementors.
-    let impls = reliary_search::callgraph_v2::find_trait_impls(db, sym);
+    let pf_opt: Option<&str> = if path_filter.is_empty() { None } else { Some(path_filter.as_str()) };
+    let impls = reliary_search::callgraph_v2::find_trait_impls_scoped(db, sym, pf_opt);
     if !impls.is_empty() {
         let items: Vec<String> = impls.iter().take(8)
             .map(|i| format!("{} ({}:{})", i.type_name,
@@ -1754,12 +1784,17 @@ if def_only {
     }));
 }
 
-            // V40: usage_only → one-line callers answer (max 5, test files excluded)
-            // V62: judge flagged incomplete caller sets (missing
-            // lazy_occurrence.rs, scope_types.rs) — the .take(5) truncated
-            // the full caller list. Bump to 12; still compact.
+            // V40: usage_only → one-line callers answer (max 12, test dirs excluded)
+            // V62: bumped from .take(5) — truncated caller sets lost recall.
+            // V78: do NOT let line ASC + take(12) silently drop same-file
+            // callers (e.g. `#[cfg(test)] mod tests` in the definition file).
+            // Partition: cross-file first, then fill from same-file-as-def.
+            // Also emit "+N more" when truncated so the model knows to refine.
             if usage_only {
-                let callers: Vec<_> = hits.iter()
+                let def_file: Option<String> = hits.iter()
+                    .find(|h| h.is_def)
+                    .map(|h| h.file_path.clone());
+                let non_def: Vec<_> = hits.iter()
                     .filter(|h| !h.is_def)
                     .filter(|h| {
                         let fp = &h.file_path;
@@ -1767,15 +1802,34 @@ if def_only {
                         // V66c: bench dirs with or without leading slash (relative paths)
                         && !fp.contains("/bench/") && !fp.starts_with("bench/") && !fp.starts_with("/bench/")
                     })
-                    .take(12)
+                    .cloned()
                     .collect();
+                let same_file: Vec<_> = non_def.iter()
+                    .filter(|h| def_file.as_deref().map(|d| h.file_path == d).unwrap_or(false))
+                    .cloned()
+                    .collect();
+                let cross: Vec<_> = non_def.iter()
+                    .filter(|h| !def_file.as_deref().map(|d| h.file_path == d).unwrap_or(false))
+                    .cloned()
+                    .collect();
+                let total = non_def.len();
+                // Reserve up to 6 slots for same-file callers (tests, helpers);
+                // the rest go to cross-file. Cap still 12 for token budget.
+                let same_budget = same_file.len().min(6);
+                let callers: Vec<_> = cross.into_iter()
+                    .take(12usize.saturating_sub(same_budget))
+                    .chain(same_file.into_iter().take(same_budget))
+                    .collect();
+                // Keep deterministic order: cross-file then same-file, line ASC within group
+                // (already ordered by SQL line ASC within each partition).
                 if callers.is_empty() {
                     // V59 B1b + V59e guard: trait fallback only for TYPE
                     // names — lowercase method queries must not get impls.
                     let looks_type_t = sym.chars().next()
                         .map(|c| c.is_ascii_uppercase()).unwrap_or(false);
+                    let pf_opt: Option<&str> = if path_filter.is_empty() { None } else { Some(path_filter.as_str()) };
                     let impls = if looks_type_t {
-                        reliary_search::callgraph_v2::find_trait_impls(db, sym)
+                        reliary_search::callgraph_v2::find_trait_impls_scoped(db, sym, pf_opt)
                     } else { Vec::new() };
                     if !impls.is_empty() {
                         let items: Vec<String> = impls.iter().take(8)
@@ -1817,7 +1871,12 @@ if def_only {
                         .and_then(|meta| meta.lines.get(h.line as usize).cloned())
                 });
                 let code_evidence = first_code.map(|s| format!("\n  {}", s.trim())).unwrap_or_default();
-                let text = format!("{} is called from {}{}\n", sym, parts.join(", "), code_evidence);
+                let more = if total > callers.len() {
+                    format!(" (+{} more)", total - callers.len())
+                } else {
+                    String::new()
+                };
+                let text = format!("{} is called from {}{}{}\n", sym, parts.join(", "), more, code_evidence);
                 return DispatchResult::Success(serde_json::json!({
                     "content": [{ "type": "text", "text": text }]
                 }));
@@ -1841,11 +1900,21 @@ if def_only {
                     let f_short = std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.to_string());
                     parts.push((qn, f_short, ln as i32));
                 }
-                if parts.is_empty() {
-                    let text = format!("No implementations of \"{}\" found in {}\n", sym, module);
-                    return DispatchResult::Success(serde_json::json!({
-                        "content": [{ "type": "text", "text": text }]
-                    }));
+                // V77: PascalCase + path_filter → also include scoped trait
+                // implementors (impl/derive). Without this, trait queries
+                // like `Default` with path_filter only return qualified-name
+                // matches (e.g. `test_env_var_default_off`) and miss the
+                // actual `impl Default for` / `#[derive(Default)]` types.
+                let is_type_name = sym.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false);
+                if is_type_name {
+                    let trait_impls = reliary_search::callgraph_v2::find_trait_impls_scoped(db, sym, Some(path_filter.as_str()));
+                    for ti in trait_impls.iter().take(8) {
+                        let qn = ti.type_name.clone();
+                        if !seen.insert(qn.clone()) { continue; }
+                        let f_short = std::path::Path::new(&ti.file).file_name()
+                            .map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| ti.file.clone());
+                        parts.push((qn, f_short, ti.line));
+                    }
                 }
                 if parts.is_empty() {
                     let text = format!("No implementations of \"{}\" found in {}\n", sym, module);
@@ -1853,7 +1922,7 @@ if def_only {
                         "content": [{ "type": "text", "text": text }]
                     }));
                 }
-                let summary: Vec<String> = parts.iter().map(|(qn, f, ln)| format!("{} at {}:{}", qn, f, ln)).collect();
+                let summary: Vec<String> = parts.iter().take(8).map(|(qn, f, ln)| format!("{} at {}:{}", qn, f, ln)).collect();
                 // V42: add raw code as evidence — show first hit's source line
                 let first_evidence = parts.first().and_then(|(_, f, ln)| {
                     reliary_search::file_meta::get(f)
@@ -1862,7 +1931,7 @@ if def_only {
                             let _abs = std::path::Path::new(f).to_string_lossy().to_string();
                             None
                         })
-                        .and_then(|meta| meta.lines.get(*ln as usize).cloned())
+                        .and_then(|meta| meta.lines.get((*ln as usize).saturating_sub(1)).cloned())
                 });
                 let code_evidence = first_evidence.map(|s| format!("\n  {}", s.trim())).unwrap_or_default();
                 let text = format!("Implementations of {} in {}: {}{}\n", sym, module, summary.join(", "), code_evidence);
@@ -1883,7 +1952,8 @@ if def_only {
                 out.push_str(&format!("{} is defined at {}:{}. ", qn, f_short, ln));
             } else {
                 // V59 B1: trait? return implementors instead of a dead end.
-                let impls = reliary_search::callgraph_v2::find_trait_impls(db, sym);
+                let pf_opt: Option<&str> = if path_filter.is_empty() { None } else { Some(path_filter.as_str()) };
+                let impls = reliary_search::callgraph_v2::find_trait_impls_scoped(db, sym, pf_opt);
                 if !impls.is_empty() {
                     let items: Vec<String> = impls.iter().take(8)
                         .map(|i| format!("{} ({}:{})", i.type_name,
@@ -2120,10 +2190,10 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     } else {
                         // V58c: per-method file:line — the model needs the
                         // location evidence, not just names.
+                        // V75: `m.line` is already 1-indexed (brace graph) —
+                        // do not add one (it reported methods one line late).
                         let entries: Vec<String> = mr.methods.iter().take(8)
-                            .map(|m| format!("{} ({}:{})", m.name,
-                                std::path::Path::new(&m.file).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| m.file.clone()),
-                                m.line + 1))
+                            .map(format_method_entry)
                             .collect();
                         format!("Methods on {}: {}.\n", type_name, entries.join(", "))
                     };
@@ -2251,14 +2321,9 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         } else {
                             // V58c: per-method file:line evidence.
                             // V59g: include field type / signature evidence.
+                            // V75: `m.line` is already 1-indexed — no `+ 1`.
                             let entries: Vec<String> = mr.methods.iter().take(8)
-                                .map(|m| {
-                                    let loc = format!("{}:{}",
-                                        std::path::Path::new(&m.file).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| m.file.clone()),
-                                        m.line + 1);
-                                    if m.source.is_empty() { format!("{} ({})", m.name, loc) }
-                                    else { format!("{}: {} ({})", m.name, m.source, loc) }
-                                })
+                                .map(format_method_entry)
                                 .collect();
                             format!("Methods on {}: {}.\n", sym, entries.join(", "))
                         };
@@ -2302,7 +2367,9 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 let looks_type = sym.chars().next()
                     .map(|c| c.is_ascii_uppercase()).unwrap_or(false);
                 if looks_type {
-                    let impls = reliary_search::callgraph_v2::find_trait_impls(db, sym);
+                    let pf_raw = args.get("path_filter").and_then(|v| v.as_str()).unwrap_or("");
+                    let pf_opt: Option<&str> = if pf_raw.is_empty() { None } else { Some(pf_raw) };
+                    let impls = reliary_search::callgraph_v2::find_trait_impls_scoped(db, sym, pf_opt);
                     if !impls.is_empty() {
                         let items: Vec<String> = impls.iter().take(8)
                             .map(|i| format!("{} ({}:{})", i.type_name,
@@ -2357,6 +2424,30 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     || h.file_path.contains(&format!("/{path_filter}"))
                     || h.file_path.contains(&path_filter)
                 });
+            }
+            // V77b: type_flow often returns 0 hits for trait names like `Default`
+            // (no occurrence rows with the right shape). Fall back to derive/impl
+            // detection so path_filter+PascalCase answers trait-impl questions.
+            if hits.is_empty() {
+                let looks_type = sym.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false);
+                if looks_type {
+                    let pf_opt: Option<&str> = if path_filter.is_empty() { None } else { Some(path_filter.as_str()) };
+                    let impls = reliary_search::callgraph_v2::find_trait_impls_scoped(db, sym, pf_opt);
+                    if !impls.is_empty() {
+                        let items: Vec<String> = impls.iter().take(8)
+                            .map(|i| format!("{} ({}:{})", i.type_name,
+                                std::path::Path::new(&i.file).file_name()
+                                    .map(|x| x.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| i.file.clone()),
+                                i.line))
+                            .collect();
+                        let text = format!("{} is implemented by {} types: {}.\n",
+                            sym, impls.len(), items.join(", "));
+                        return DispatchResult::Success(serde_json::json!({
+                            "content": [{ "type": "text", "text": text }]
+                        }));
+                    }
+                }
             }
             let mut is_summary_mode = false;
 

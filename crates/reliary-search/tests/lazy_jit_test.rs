@@ -5,7 +5,11 @@ use reliary_search::{schema, ingest, lazy_occurrence};
 #[test]
 fn test_jit_build_for_phrase() {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let dir = format!("/tmp/reliary_test_{}", nanos);
+    // Honor TMPDIR: hardcoding /tmp fails on hosts where /tmp is a small
+    // tmpfs (or is otherwise unwritable) even when a writable temp dir is
+    // configured. env::temp_dir() reads TMPDIR/TMP/TEMP with /tmp fallback.
+    let dir = std::env::temp_dir().join(format!("reliary_test_{}", nanos));
+    let dir = dir.to_string_lossy().to_string();
     let _ = std::fs::create_dir_all(&dir);
     // Write a small Rust file with a known phrase.
     let src = r#"

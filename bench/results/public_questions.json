@@ -1,0 +1,33 @@
+{
+  "repo": "llama.cpp",
+  "questions": [
+    {
+      "query_id": "q1_def",
+      "question": "Where is the function `ggml_backend_cann_transform_back_q8_0` defined? Give the file path and line number.",
+      "gt": [
+        {
+          "sym": "ggml_backend_cann_transform_back_q8_0",
+          "file": "/home/user/src/llama.cpp/ggml/src/ggml-cann/ggml-cann.cpp",
+          "line": 1048
+        }
+      ]
+    },
+    {
+      "query_id": "q2_callers",
+      "question": "Which functions or modules call `write_vocab`? List each caller file:line site.",
+      "gt": [
+        {
+          "sym": "write_vocab",
+          "file": "/home/user/src/llama.cpp/convert_hf_to_gguf.py",
+          "line": 9251
+        },
+        {
+          "sym": "write_vocab",
+          "file": "/home/user/src/llama.cpp/convert_hf_to_gguf.py",
+          "line": 13565
+        }
+      ]
+    }
+  ],
+  "n_files": 2798
+}
