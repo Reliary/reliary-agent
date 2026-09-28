@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-09-28
+
 ### Added
 
 - **Windows binaries.** The release matrix now builds `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` as `.zip` archives, matching the other Reliary repos. `reliary update` understands the new asset names and installs on Windows: it extracts with `Expand-Archive` and replaces a running executable by renaming it aside first (Windows forbids overwriting or deleting a running `.exe`).
