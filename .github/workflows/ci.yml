@@ -222,6 +222,7 @@ jobs:
                    e2e_cli_reinit_does_not_duplicate_hooks \
                    e2e_cli_uninstall_removes_hooks_and_registrations \
                    e2e_cli_doctor_flags_dangling_hook_registration \
+                   e2e_cli_doctor_flags_unusable_index \
                    e2e_mcp_hook_scripts_only_name_advertised_tools; do
             if ! grep -rq "fn $t(" crates/reliary-agent/tests/; then
               echo "FAIL: integration conformance test $t is missing"; exit 1

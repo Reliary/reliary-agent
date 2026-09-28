@@ -667,6 +667,41 @@ fn e2e_cli_uninstall_removes_hooks_and_registrations() {
 }
 
 #[test]
+fn e2e_cli_doctor_flags_unusable_index() {
+    // A `.reliary/index.sqlite` that exists but is not a database used to be
+    // reported as a green tick. It must now be a failure that names the file.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".reliary")).unwrap();
+    std::fs::write(dir.path().join(".reliary/index.sqlite"), b"not a database").unwrap();
+
+    let out = run_cli(&["doctor", "--format", "json"], dir.path(), &[]);
+    let v: serde_json::Value = serde_json::from_str(&stdout_of(&out)).unwrap();
+    let index = v["checks"].as_array().unwrap().iter()
+        .find(|c| c["name"] == "index").expect("index check");
+    assert_eq!(
+        index["ok"], false,
+        "doctor must not report an unusable index as ok: {}", index
+    );
+    assert!(
+        index["detail"].as_str().unwrap_or("").contains("not a usable index"),
+        "doctor must explain the index is unusable: {}", index
+    );
+    assert_eq!(v["ready"], false, "an unusable index means not ready: {}", v);
+
+    // And an absent index is still a failure with the rebuild hint.
+    let dir2 = tempfile::tempdir().unwrap();
+    let out = run_cli(&["doctor", "--format", "json"], dir2.path(), &[]);
+    let v: serde_json::Value = serde_json::from_str(&stdout_of(&out)).unwrap();
+    let index = v["checks"].as_array().unwrap().iter()
+        .find(|c| c["name"] == "index").expect("index check");
+    assert_eq!(index["ok"], false, "no index must not be ok: {}", index);
+    assert!(
+        index["detail"].as_str().unwrap_or("").contains("reliary trust"),
+        "doctor must suggest how to build the index: {}", index
+    );
+}
+
+#[test]
 fn e2e_cli_doctor_flags_dangling_hook_registration() {
     // A settings.json that registers a reliary hook whose file is missing is
     // a broken install: doctor must report claude as not-ok and name it.

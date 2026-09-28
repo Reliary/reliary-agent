@@ -216,7 +216,7 @@ fn doctor_checks(installs: &[InstallInfo]) -> Vec<DoctorCheck> {
     // --- Index health (the core capability) ---
     let index_path = PathBuf::from(".reliary/index.sqlite");
     let index_exists = index_path.exists();
-    let index_detail = if index_exists {
+    let (index_detail, index_ok) = if index_exists {
         // Probe the index for freshness
         let probe: Option<(i64, i64, f64)> = (|| -> Option<(i64, i64, f64)> {
             let db = rusqlite::Connection::open(&index_path).ok()?;
@@ -233,19 +233,25 @@ fn doctor_checks(installs: &[InstallInfo]) -> Vec<DoctorCheck> {
         match probe {
             Some((files, phrases, age)) => {
                 if age > 7.0 {
-                    format!("{} files, {} phrases, {:.0}d old (stale — run `reliary trust .`)", files, phrases, age)
+                    (format!("{} files, {} phrases, {:.0}d old (stale — run `reliary trust .`)", files, phrases, age), true)
                 } else {
-                    format!("{} files, {} phrases, {:.0}d old", files, phrases, age)
+                    (format!("{} files, {} phrases, {:.0}d old", files, phrases, age), true)
                 }
             }
-            None => "cannot probe index".into(),
+            // The file exists but cannot be read as an index. Reporting this
+            // as ok (as it did before) hides a corrupt or truncated database
+            // behind a green tick.
+            None => (format!(
+                "{} exists but is not a usable index — run `reliary trust .` to rebuild",
+                index_path.display()
+            ), false),
         }
     } else {
-        "no index found — run `reliary trust .`".into()
+        ("no index found — run `reliary trust .`".into(), false)
     };
     checks.push(DoctorCheck {
         name: "index",
-        ok: index_exists,
+        ok: index_ok,
         detail: index_detail,
         fixable: true,
         optional: false,

@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`reliary init` wrote three Claude hook files but registered only the sift entry** in `~/.claude/settings.json`, so the session reminder never fired while `reliary doctor` still reported "3/3 hooks installed". Install now registers both shipped hooks and doctor reports 2/2.
 - **`reliary uninstall` removed hook files but left the settings.json registration**, so the tool call kept firing a command that no longer existed. Removal is now symmetric and preserves unrelated hooks.
 - **`reliary doctor` now detects a registered reliary hook whose file is missing** and names it, instead of only counting files on disk.
+- **`reliary doctor` no longer reports an unusable index as ok.** A `.reliary/index.sqlite` that exists but cannot be opened as a database was shown with a green tick; it is now a failure that names the file and suggests a rebuild.
 - **Pi `gate.js` binary discovery now checks `~/.local/bin`**, the documented install location. Agent-spawned processes often run with a reduced PATH, so the previous fallback list could resolve a stale binary or none.
 - **Hook scripts are POSIX `sh`.** Agents invoke them with `sh`; a bash-only construct would fail silently.
 - **Internal version tags removed from MCP tool descriptions** (`V37:`, `V53:`) — descriptions are shown to the model and should not carry changelog tags.
