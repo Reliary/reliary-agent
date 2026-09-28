@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Manual build of the full platform matrix without cutting a release. Used to
+  # verify a target (especially Windows) before tagging.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -22,22 +25,37 @@ jobs:
             target: x86_64-unknown-linux-gnu
             os: linux
             arch: x86_64
-            ext: tar.gz
+            ext: ""
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             os: linux
             arch: aarch64
-            ext: tar.gz
+            ext: ""
           - runner: macos-15-intel
             target: x86_64-apple-darwin
             os: darwin
             arch: x86_64
-            ext: tar.gz
+            ext: ""
           - runner: macos-14
             target: aarch64-apple-darwin
             os: darwin
             arch: aarch64
-            ext: tar.gz
+            ext: ""
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            os: windows
+            arch: x86_64
+            ext: ".exe"
+          # aarch64 Windows is cross-compiled from the x64 runner. It is the
+          # least-used target and the most likely to break on a toolchain bump,
+          # so a failure here does not block the release; it just omits the
+          # asset. (Same policy as the other Reliary repos.)
+          - runner: windows-latest
+            target: aarch64-pc-windows-msvc
+            os: windows
+            arch: aarch64
+            ext: ".exe"
+    continue-on-error: ${{ matrix.target == 'aarch64-pc-windows-msvc' }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -51,13 +69,26 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
+        shell: bash
         run: |
-          VERSION=$(echo ${{ github.ref_name }} | sed 's/v//')
-          NAME=reliary-agent-v${VERSION}-${{ matrix.os }}-${{ matrix.arch }}
+          # On a tag the version is the tag; on a manual dispatch there is no
+          # tag, so fall back to the workspace version for sensible names.
+          VERSION="${{ github.ref_name }}"
+          case "$VERSION" in
+            v*) VERSION="${VERSION#v}" ;;
+            *)  VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/') ;;
+          esac
+          NAME="reliary-agent-v${VERSION}-${{ matrix.os }}-${{ matrix.arch }}"
+          BIN="target/${{ matrix.target }}/release/reliary${{ matrix.ext }}"
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/reliary dist/${NAME}
-          strip dist/${NAME} || true
-          cd dist && tar -czf ${NAME}.tar.gz ${NAME}
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            cp "$BIN" "dist/${NAME}.exe"
+            cd dist && 7z a "${NAME}.zip" "${NAME}.exe"
+          else
+            cp "$BIN" "dist/${NAME}"
+            strip "dist/${NAME}" || true
+            cd dist && tar -czf "${NAME}.tar.gz" "${NAME}"
+          fi
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -66,6 +97,8 @@ jobs:
 
   release:
     needs: build
+    # Manual dispatches only build the matrix; there is no tag to release.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683

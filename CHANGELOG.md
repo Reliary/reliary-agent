@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Windows binaries.** The release matrix now builds `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` as `.zip` archives, matching the other Reliary repos. `reliary update` understands the new asset names and installs on Windows: it extracts with `Expand-Archive` and replaces a running executable by renaming it aside first (Windows forbids overwriting or deleting a running `.exe`).
+- **`workflow_dispatch` on the release workflow**, so the whole platform matrix can be built and inspected without cutting a tag.
+
+### Changed
+
+- **CI now cross-compiles for aarch64-linux and uploads a Linux binary artifact**, so a target-specific break is caught on push rather than on release day. The binary is downloadable from any green run.
+- **`release_asset_platform` / `release_asset_name` are now functions with tests** that pin the six release triples, so `reliary update` and `release.yml` cannot drift apart silently (a drift is a 404 for every user on that platform).
+
 ## [0.8.5] - 2026-09-28
 
 ### Fixed

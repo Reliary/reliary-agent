@@ -60,6 +60,50 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
+    fn release_assets_match_the_published_matrix() {
+        // (std::env::consts::OS, ARCH) -> (asset os, asset arch, archive ext).
+        // The six triples release.yml publishes. If a target is added or
+        // removed there, update this list and release_asset_platform together;
+        // `reliary update` derives its download URL from the same function, so
+        // a drift here is a 404 for every user on that platform.
+        let expected = [
+            ("linux", "x86_64", "linux", "x86_64", "tar.gz"),
+            ("linux", "aarch64", "linux", "aarch64", "tar.gz"),
+            ("macos", "x86_64", "darwin", "x86_64", "tar.gz"),
+            ("macos", "aarch64", "darwin", "aarch64", "tar.gz"),
+            ("windows", "x86_64", "windows", "x86_64", "zip"),
+            ("windows", "aarch64", "windows", "aarch64", "zip"),
+        ];
+        for (in_os, in_arch, asset_os, asset_arch, ext) in expected {
+            let got = release_asset_platform(in_os, in_arch);
+            assert_eq!(
+                got,
+                Some((asset_os, asset_arch, ext)),
+                "release_asset_platform({}, {}) must match the release matrix",
+                in_os, in_arch
+            );
+        }
+        // Platforms we do not ship must decline, not guess.
+        assert_eq!(release_asset_platform("freebsd", "x86_64"), None);
+        assert_eq!(release_asset_platform("linux", "riscv64"), None);
+
+        // The name must round-trip into the shape release.yml uploads.
+        assert_eq!(
+            release_asset_name("v1.2.3", "windows", "aarch64", "zip"),
+            "reliary-agent-v1.2.3-windows-aarch64.zip"
+        );
+        assert_eq!(
+            release_asset_name("v1.2.3", "linux", "x86_64", "tar.gz"),
+            "reliary-agent-v1.2.3-linux-x86_64.tar.gz"
+        );
+        // The extracted entry name is the asset name minus the extension, plus
+        // .exe on Windows — the layout both release.yml and update rely on.
+        let zip_asset = release_asset_name("v1.2.3", "windows", "x86_64", "zip");
+        let entry = format!("{}.exe", zip_asset.trim_end_matches(".zip"));
+        assert_eq!(entry, "reliary-agent-v1.2.3-windows-x86_64.exe");
+    }
+
+    #[test]
     fn cli_structure_valid() {
         let cmd = Cli::command();
         // Verify all expected subcommands exist
@@ -1641,6 +1685,29 @@ fn sha256_file(path: &std::path::Path) -> std::io::Result<String> {
 
 const RELEASES_URL: &str = "https://api.github.com/repos/Reliary/reliary-agent/releases/latest";
 
+/// Map a `(OS, ARCH)` pair to the release asset platform tuple, or `None` if no
+/// prebuilt binary is published for it. The mapping is the single source of
+/// truth shared by `reliary update` and the tests that pin the release.yml
+/// matrix; both must agree or `update` 404s.
+fn release_asset_platform(os: &str, arch: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    match (os, arch) {
+        ("linux", "x86_64") => Some(("linux", "x86_64", "tar.gz")),
+        ("linux", "aarch64") => Some(("linux", "aarch64", "tar.gz")),
+        ("macos", "x86_64") => Some(("darwin", "x86_64", "tar.gz")),
+        ("macos", "aarch64") => Some(("darwin", "aarch64", "tar.gz")),
+        ("windows", "x86_64") => Some(("windows", "x86_64", "zip")),
+        ("windows", "aarch64") => Some(("windows", "aarch64", "zip")),
+        _ => None,
+    }
+}
+
+/// The asset filename for a tag and platform, e.g.
+/// `reliary-agent-v0.8.5-linux-x86_64.tar.gz`.
+fn release_asset_name(tag: &str, os: &str, arch: &str, ext: &str) -> String {
+    format!("reliary-agent-{}-{}-{}.{}", tag, os, arch, ext)
+}
+
+
 fn do_update(check_only: bool) {
     println!("{} Checking for updates...", color::bold(""));
     let current = VERSION;
@@ -1705,18 +1772,15 @@ fn do_update(check_only: bool) {
 
     // Platform triple must match the asset names produced by
     // .github/workflows/release.yml. Keep the two in sync.
-    let (os_name, arch_name) = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => ("linux", "x86_64"),
-        ("linux", "aarch64") => ("linux", "aarch64"),
-        ("macos", "x86_64") => ("darwin", "x86_64"),
-        ("macos", "aarch64") => ("darwin", "aarch64"),
-        (os, arch) => {
-            eprintln!("{} No prebuilt binary for {}-{}", color::red("✗"), os, arch);
-            eprintln!("  Build from source: cargo install reliary-agent");
-            return;
-        }
+    let Some((os_name, arch_name, archive_ext)) =
+        release_asset_platform(std::env::consts::OS, std::env::consts::ARCH)
+    else {
+        eprintln!("{} No prebuilt binary for {}-{}", color::red("✗"),
+                  std::env::consts::OS, std::env::consts::ARCH);
+        eprintln!("  Build from source: cargo install reliary-agent");
+        return;
     };
-    let asset_name = format!("reliary-agent-{}-{}-{}.tar.gz", tag, os_name, arch_name);
+    let asset_name = release_asset_name(tag, os_name, arch_name, archive_ext);
     let download_url = format!(
         "https://github.com/Reliary/reliary-agent/releases/download/{}/{}",
         tag, asset_name
@@ -1790,17 +1854,48 @@ fn do_update(check_only: bool) {
     }
     println!("  {} checksum verified", color::green("✓"));
 
-    let extract = std::process::Command::new("tar")
-        .args(["-xzf", &archive.to_string_lossy(), "-C", &tmp_dir.to_string_lossy()])
-        .status();
-    if !extract.is_ok_and(|s| s.success()) {
+    // Extract. Unix archives are tar.gz and `tar` is universal there; the
+    // Windows asset is a zip and `Expand-Archive` is the one extractor present
+    // on every supported Windows without extra tooling.
+    let extract_ok = if archive_ext == "zip" {
+        #[cfg(windows)]
+        {
+            std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile", "-NonInteractive", "-Command",
+                    &format!(
+                        "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
+                        archive.display(),
+                        tmp_dir.display()
+                    ),
+                ])
+                .status()
+                .is_ok_and(|s| s.success())
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    } else {
+        std::process::Command::new("tar")
+            .args(["-xzf", &archive.to_string_lossy(), "-C", &tmp_dir.to_string_lossy()])
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if !extract_ok {
         eprintln!("{} Extract failed", color::red("✗"));
         cleanup();
         return;
     }
 
-    // The tarball contains a single top-level file named without the .tar.gz.
-    let extracted_bin = tmp_dir.join(asset_name.trim_end_matches(".tar.gz"));
+    // The archive contains a single top-level file named after the asset
+    // (plus the binary extension on Windows).
+    let extracted_name = format!(
+        "{}{}",
+        asset_name.trim_end_matches(&format!(".{}", archive_ext)),
+        if archive_ext == "zip" { ".exe" } else { "" }
+    );
+    let extracted_bin = tmp_dir.join(&extracted_name);
     if !extracted_bin.is_file() {
         eprintln!("{} Unexpected archive layout (no {})", color::red("✗"), extracted_bin.display());
         cleanup();
@@ -1808,23 +1903,43 @@ fn do_update(check_only: bool) {
     }
 
     let binary = std::env::current_exe().unwrap_or_default();
-    // cp over a running binary fails with ETXTBSY on Linux — copy beside it,
-    // then rename over the target (rename is atomic on the same filesystem).
+    // Copy beside the target, then rename over it. Copying over a running
+    // binary fails with ETXTBSY on Linux; the rename that follows is atomic on
+    // the same filesystem.
     let tmp_bin = std::path::PathBuf::from(format!("{}.new", binary.display()));
-    let copy_ok = std::process::Command::new("cp")
-        .args([&extracted_bin.to_string_lossy().to_string(), &tmp_bin.to_string_lossy().to_string()])
-        .status()
-        .is_ok_and(|s| s.success());
+    let copy_ok = std::fs::copy(&extracted_bin, &tmp_bin).is_ok();
     #[cfg(unix)]
     if copy_ok {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&tmp_bin, std::fs::Permissions::from_mode(0o755));
     }
-    let install_ok = copy_ok
-        && std::process::Command::new("mv")
-            .args([&tmp_bin.to_string_lossy().to_string(), &binary.to_string_lossy().to_string()])
-            .status()
-            .is_ok_and(|s| s.success());
+    let install_ok = if !copy_ok {
+        false
+    } else {
+        #[cfg(windows)]
+        {
+            // Windows refuses to overwrite or delete a running executable, but
+            // it does allow renaming one. Move the live binary aside, put the
+            // new one in place, and let the next launch delete the leftover.
+            let old = std::path::PathBuf::from(format!("{}.old", binary.display()));
+            let _ = std::fs::remove_file(&old);
+            if std::fs::rename(&binary, &old).is_ok() {
+                if std::fs::rename(&tmp_bin, &binary).is_ok() {
+                    true
+                } else {
+                    // Restore the original so the install is never left broken.
+                    let _ = std::fs::rename(&old, &binary);
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::rename(&tmp_bin, &binary).is_ok()
+        }
+    };
     if install_ok {
         println!("{} Updated to v{}", color::green("✓"), latest);
     } else {

@@ -26,6 +26,27 @@ jobs:
       - name: Build
         run: cargo build --release
 
+      # Smoke-check the cross target the release workflow ships, so a
+      # `cfg(unix)`-only API or a target-specific dependency breaks here and not
+      # on release day. (macOS and Windows cannot be built on a Linux runner;
+      # they are exercised by their own release-matrix jobs.)
+      - name: Cross-compile check (aarch64-linux)
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          cargo check --workspace --release --target aarch64-unknown-linux-gnu
+
+      # The release artifacts are the product. Build one on every push so a
+      # broken release build is caught by CI, and so a branch build is
+      # downloadable without cutting a tag (Stria does the same).
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reliary-linux-x86_64
+          path: target/release/reliary
+          if-no-files-found: error
+
       # `cargo install reliary-agent` builds from the published tarball, which
       # contains only what is inside the crate directory. An `include_str!`
       # reaching above it (the hooks used to live at the repo root) compiles

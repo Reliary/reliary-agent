@@ -14,6 +14,30 @@ benchmark it answers at ~42% lower billed token cost than grep with about four
 times smaller tool output, at accuracy comparable to grep and clearly ahead of
 `codebase-memory-mcp` (the other MCP index tested).
 
+## Install
+
+Prebuilt binaries for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon),
+and Windows (x86_64, aarch64) are attached to every
+[release](https://github.com/Reliary/reliary-agent/releases). Download the
+archive for your platform from the latest release page, or:
+
+```bash
+# Linux x86_64. Substitute darwin/windows and aarch64 as needed.
+VER=$(curl -s https://api.github.com/repos/Reliary/reliary-agent/releases/latest | grep -oP '"tag_name": "\K[^"]+')
+curl -sSfL "https://github.com/Reliary/reliary-agent/releases/download/${VER}/reliary-agent-${VER}-linux-x86_64.tar.gz" | tar xz
+./reliary-agent-${VER}-linux-x86_64 --version
+```
+
+Once installed, `reliary update` self-updates from the same releases with
+SHA-256 verification, and detects an existing `cargo install` and points you at
+the right upgrade command instead of clobbering it.
+
+From source (needs a C compiler — the bundled SQLite and rustls build it):
+
+```bash
+cargo install reliary-agent
+```
+
 ## Quick start
 
 ```bash
