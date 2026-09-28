@@ -11,6 +11,7 @@ mod common;
 
 use common::{Fixture, Mcp};
 use serde_json::json;
+use std::path::Path;
 use std::time::Duration;
 
 // ── 1. Handshake ──────────────────────────────────────────────────────────
@@ -165,6 +166,82 @@ fn e2e_mcp_tools_list_schema_conformance() {
             names
         );
     }
+}
+
+#[test]
+fn e2e_mcp_hook_scripts_only_name_advertised_tools() {
+    // The SessionStart reminder and the Claude sift hook are injected into
+    // agent prompts. A hook that names a tool the agent cannot call is worse
+    // than no hook: it manufactures dead-ends. Every `reliary_*` identifier a
+    // shipped hook mentions must be present in the live tools/list.
+    let fx = Fixture::new();
+    let mut mcp = Mcp::start(fx.path());
+    mcp.initialize();
+    let advertised: std::collections::HashSet<String> = mcp
+        .list_tools()
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
+        .collect();
+
+    let hooks_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../hooks");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&hooks_dir).expect("hooks dir must exist") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("sh") {
+            continue;
+        }
+        let Some(fname) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        // Only scripts that reach an agent prompt. (The pretooluse hook emits
+        // no tool guidance — it only rewrites commands.)
+        if fname != "claude-session-reminder.sh" {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path).expect("read hook");
+        for cap in regex_lite_tool_names(&body) {
+            checked += 1;
+            assert!(
+                advertised.contains(&cap),
+                "{} advertises `{}`, which tools/list does not expose. \
+                 The agent cannot call it. Advertised: {:?}",
+                fname,
+                cap,
+                advertised
+            );
+        }
+    }
+    assert!(checked >= 3, "expected the reminder to name several tools, found {}", checked);
+}
+
+/// Minimal extractor for `reliary_<lower_snake>` tokens, avoiding a regex
+/// dependency: scan for the prefix and take the following identifier run.
+fn regex_lite_tool_names(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = body.as_bytes();
+    let needle = b"reliary_";
+    let mut i = 0;
+    while i + needle.len() < bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            let start = i;
+            let mut j = i + needle.len();
+            while j < bytes.len()
+                && (bytes[j].is_ascii_lowercase() || bytes[j].is_ascii_digit() || bytes[j] == b'_')
+            {
+                j += 1;
+            }
+            let tok = std::str::from_utf8(&bytes[start..j]).unwrap_or("");
+            // Trim a trailing underscore from prose like "reliary_ ".
+            let tok = tok.trim_end_matches('_');
+            if tok.len() > needle.len() {
+                out.push(tok.to_string());
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 #[test]

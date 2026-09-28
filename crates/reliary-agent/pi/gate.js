@@ -3,21 +3,19 @@
 // What this shim does:
 //   - Discover the reliary binary.
 //   - After edit/write, trigger background FTS5 reindex.
-//   - When RELIARY_SIFT_BASH=1, intercept bash tool calls and pipe output through
+//   - When RELIARY_SIFT_BASH=1 (default ON), intercept bash tool calls and pipe output through
 //     `reliary wrap` (sift compression). Compresses tool output BEFORE the LLM
 //     sees it — rtk's proven pattern. No cache bust because the LLM builds
 //     reasoning on compressed text from the start.
 //   - Log turn count for diagnostics.
 
 const { execFileSync, spawnSync } = require("child_process");
-const { existsSync, writeFileSync, unlinkSync } = require("fs");
-const { tmpdir } = require("os");
+const { existsSync } = require("fs");
 const { join } = require("path");
 
 const GATE_VERSION = "0.8.1";
 
 const SIFT_BASH = process.env.RELIARY_SIFT_BASH !== "0"; // default ON
-const GATE_ENABLED = process.env.RELIARY_GATE !== "0";   // default ON
 // Pack regeneration on edit: opt-in, default OFF.
 // When ON, after edit/write tools fire, regenerates the holographic pack for the file's project.
 // Cost: ~5s regen + cache miss on next turn ($0.001). Worth it only if the pack
@@ -104,16 +102,7 @@ function triggerPackRegen(filePath) {
   }
 }
 
-// Gate marker — one block per session (PID-based)
-const GATE_MARKER = join(tmpdir(), `reliary-gate-${process.pid}`);
-function gateMarkerExists() { return existsSync(GATE_MARKER); }
-function gateMarkerCreate() {
-  try { writeFileSync(GATE_MARKER, "1"); } catch {}
-  // Clean up on exit
-  process.on("exit", () => { try { unlinkSync(GATE_MARKER); } catch {} });
-}
-
-// Hook: tool_call — reindex after writes/edits + optional bash sift + code discovery gate.
+// Hook: tool_call — reindex after writes/edits + optional bash sift.
 function handleToolCall(event) {
   const name = event.toolName;
   const input = event.input || {};
@@ -166,22 +155,10 @@ function handleToolCall(event) {
     gateLog("debug", `sift exit ${result.status}: ${out.slice(0, 60)}`);
     return { block: true, reason: out || `(exit ${result.status})` };
   }
-  // Code discovery gate: block first grep/read per session, redirect to reliary tools.
-  // Toggle: RELIARY_GATE=1 (default OFF).
-  if (GATE_ENABLED && (name === "grep" || name === "read" || name === "glob")) {
-    if (!gateMarkerExists()) {
-      gateMarkerCreate();
-      return { block: true, reason:
-        "BLOCKED: For code intelligence, use reliary MCP tools first:\n" +
-        "  - reliary_find_references_with_source(name) — find references to a symbol\n" +
-        "  - reliary_search(query) — full-text search\n" +
-        "  - reliary_goto_def(name) — jump to definition\n" +
-        "  - reliary_callgraph(name) — callers/callees\n" +
-        "  - reliary_methods_on(type_name) — methods on a type\n" +
-        "If reliary lacks the data, retry this tool."
-      };
-    }
-  }
+  // Code-discovery blocking was removed: a gate that blocks the agent's own
+  // read/grep tools fights the model and advertises tool names the default
+  // menu does not expose. The reminder (session-reminder.sh for Claude Code)
+  // and the tool descriptions carry that guidance instead.
 }
 
 // Hook: tool_result — reindex the touched file once the edit has actually landed.
@@ -214,3 +191,33 @@ module.exports = function (pi) {
   pi.on("tool_result", handleToolResult);
   pi.on("before_provider_request", handleBeforeProviderRequest);
 };
+
+// ── selftest ──────────────────────────────────────────────────────────────
+// Run as `node gate.js --selftest <file>` with RELIARY_BIN_PATH set and the
+// file inside an indexed project, to exercise binary discovery and the
+// reindex path without a live Pi session. Exits 0 on success, 1 on failure.
+// This is the CI seam — runtime behaviour above is unchanged.
+if (require.main === module && process.argv.includes("--selftest")) {
+  const target = process.argv[process.argv.indexOf("--selftest") + 1];
+  const report = { discovery: null, target: target || null, reindex: false, reason: null };
+  if (!RELIARY_BIN) {
+    report.reason = "binary discovery failed";
+  } else if (!target) {
+    report.reason = "no target file passed to --selftest";
+  } else {
+    report.discovery = RELIARY_BIN;
+    try {
+      const r = spawnSync(RELIARY_BIN, ["reindex-file", target], {
+        encoding: "utf-8", timeout: 10000,
+      });
+      report.reindex = r.status === 0;
+      if (!report.reindex) {
+        report.reason = (r.stderr || "").slice(0, 200) || `exit ${r.status}`;
+      }
+    } catch (e) {
+      report.reason = e.message;
+    }
+  }
+  console.log(JSON.stringify(report));
+  process.exit(report.discovery && report.reindex ? 0 : 1);
+}

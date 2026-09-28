@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # reliary PreToolUse hook for Claude Code
 # Rewrites high-volume bash commands (git, cargo, pytest, ls, grep, etc.)
 # to pipe through `reliary wrap` for sift compression — the RTK pattern.

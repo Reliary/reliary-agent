@@ -301,6 +301,7 @@ fn e2e_cli_wrap_is_deterministic() {
 fn fake_home() -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     std::fs::write(home.path().join(".claude.json"), r#"{"mcpServers":{}}"#).unwrap();
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
     let oc = home.path().join(".config/opencode");
     std::fs::create_dir_all(&oc).unwrap();
     std::fs::write(oc.join("opencode.json"), r#"{"mcpServers":{}}"#).unwrap();
@@ -308,11 +309,16 @@ fn fake_home() -> tempfile::TempDir {
 }
 
 fn init_with(home: &Path, answers: &str) -> std::process::Output {
+    init_args(home, &["init"], answers)
+}
+
+/// Run `init` (or `init --dry-run`) against a fake HOME with scripted answers.
+fn init_args(home: &Path, args: &[&str], answers: &str) -> std::process::Output {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
     let mut child = Command::new(binary_path())
-        .arg("init")
+        .args(args)
         .current_dir(home)
         .env("HOME", home)
         .env("NO_RELIARY_WATCHER", "1")
@@ -454,5 +460,253 @@ fn e2e_cli_version_matches_crate_version() {
         "--version must report the crate version {}: {}",
         expected,
         text
+    );
+}
+
+// ── integration conformance (init ↔ settings ↔ doctor ↔ uninstall) ────────
+//
+// The install path used to write hook files and register only one of them,
+// and uninstall removed files without removing their registrations — leaving
+// a command that fires a failing exec on every tool call. These tests pin the
+// whole loop: every registered command must resolve to a file on disk, and
+// uninstall must remove exactly what install added.
+
+/// Read `~/.claude/settings.json` from the fake HOME.
+fn read_settings(home: &Path) -> serde_json::Value {
+    let raw = std::fs::read_to_string(home.join(".claude/settings.json"))
+        .expect("settings.json must exist");
+    serde_json::from_str(&raw).expect("settings.json must stay valid JSON")
+}
+
+/// Every hook command in settings.json, paired with its event.
+fn hook_commands(settings: &serde_json::Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if let Some(hooks) = settings.get("hooks").and_then(|h| h.as_object()) {
+        for (event, entries) in hooks {
+            let Some(arr) = entries.as_array() else { continue };
+            for entry in arr {
+                let Some(hs) = entry.get("hooks").and_then(|h| h.as_array()) else { continue };
+                for h in hs {
+                    if let Some(cmd) = h.get("command").and_then(|c| c.as_str()) {
+                        out.push((event.clone(), cmd.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn e2e_cli_init_registers_resolvable_hooks() {
+    let home = fake_home();
+    let out = init_with(home.path(), "Y\nY\nY\nN\n");
+    let text = plain(&format!("{}{}", stdout_of(&out), stderr_of(&out)));
+    assert!(!text.contains("panicked"), "init must not panic: {}", text);
+
+    // Both hook files must exist and be executable.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for name in ["reliary-session-reminder", "reliary-sift-pretooluse"] {
+            let p = home.path().join(".claude/hooks").join(name);
+            assert!(p.exists(), "hook file must be written: {}", p.display());
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "{} must be executable", p.display());
+        }
+    }
+
+    // Every registered hook command must resolve to an existing file. A
+    // registration without its file fires a failing exec on every call.
+    let settings = read_settings(home.path());
+    let commands = hook_commands(&settings);
+    assert!(
+        !commands.is_empty(),
+        "init must register at least one hook: {}",
+        settings
+    );
+    for (event, cmd) in &commands {
+        let prog = cmd.split_whitespace().next().unwrap_or("");
+        let path = if let Some(rest) = prog.strip_prefix("~/") {
+            home.path().join(rest)
+        } else {
+            std::path::PathBuf::from(prog)
+        };
+        assert!(
+            path.exists(),
+            "registered {} hook command does not exist on disk: {} (resolved {})",
+            event,
+            cmd,
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn e2e_cli_doctor_reports_wired_integrations() {
+    let home = fake_home();
+    init_with(home.path(), "Y\nY\nY\nN\n");
+
+    let out = run_cli(
+        &["doctor", "--format", "json"],
+        home.path(),
+        &[("HOME", home.path().to_str().unwrap())],
+    );
+    let text = stdout_of(&out);
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("doctor --format json must emit JSON ({}): {}", e, text));
+    let checks = v["checks"].as_array().expect("checks array");
+    for name in ["claude", "opencode"] {
+        let c = checks
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("doctor must report a {} check: {}", name, v));
+        assert_eq!(
+            c["ok"], true,
+            "doctor must report {} wired after init: {}",
+            name, c
+        );
+    }
+}
+
+#[test]
+fn e2e_cli_init_dry_run_mutates_nothing() {
+    let home = fake_home();
+    // Seed a settings file with unrelated content that must survive.
+    let settings_path = home.path().join(".claude/settings.json");
+    std::fs::write(&settings_path, r#"{"env":{"KEEP":"1"}}"#).unwrap();
+    let before_settings = std::fs::read(&settings_path).unwrap();
+    let before_claude = std::fs::read(home.path().join(".claude.json")).unwrap();
+
+    let out = init_args(home.path(), &["init", "--dry-run"], "\n\n\n\n\n\n");
+    assert!(out.status.success(), "dry-run init must exit 0");
+
+    assert_eq!(
+        std::fs::read(&settings_path).unwrap(),
+        before_settings,
+        "dry-run must not modify settings.json"
+    );
+    assert_eq!(
+        std::fs::read(home.path().join(".claude.json")).unwrap(),
+        before_claude,
+        "dry-run must not modify .claude.json"
+    );
+    assert!(
+        !home.path().join(".claude/hooks").exists(),
+        "dry-run must not create hook files"
+    );
+}
+
+#[test]
+fn e2e_cli_reinit_does_not_duplicate_hooks() {
+    let home = fake_home();
+    init_with(home.path(), "Y\nY\nY\nN\n");
+    let first = hook_commands(&read_settings(home.path()));
+    init_with(home.path(), "Y\nY\nY\nN\n");
+    let second = hook_commands(&read_settings(home.path()));
+    assert_eq!(
+        first.len(),
+        second.len(),
+        "a second init must not duplicate hook entries: {:?} -> {:?}",
+        first,
+        second
+    );
+}
+
+#[test]
+fn e2e_cli_uninstall_removes_hooks_and_registrations() {
+    let home = fake_home();
+    // Seed an unrelated hook that must survive uninstall.
+    let settings_path = home.path().join(".claude/settings.json");
+    std::fs::write(
+        &settings_path,
+        r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"/bin/true"}]}]}}"#,
+    )
+    .unwrap();
+
+    init_with(home.path(), "Y\nY\nY\nN\n");
+    assert!(
+        !hook_commands(&read_settings(home.path())).is_empty(),
+        "precondition: init must register hooks"
+    );
+
+    let out = run_cli(
+        &["uninstall"],
+        home.path(),
+        &[("HOME", home.path().to_str().unwrap())],
+    );
+    let text = plain(&format!("{}{}", stdout_of(&out), stderr_of(&out)));
+    assert!(!text.contains("panicked"), "uninstall must not panic: {}", text);
+
+    // No reliary hook command may remain registered.
+    let remaining = hook_commands(&read_settings(home.path()));
+    let reliary: Vec<_> = remaining
+        .iter()
+        .filter(|(_, c)| c.contains("reliary"))
+        .collect();
+    assert!(
+        reliary.is_empty(),
+        "uninstall must strip every reliary hook registration: {:?}",
+        reliary
+    );
+    // The unrelated hook must survive.
+    assert!(
+        remaining.iter().any(|(_, c)| c == "/bin/true"),
+        "uninstall must not touch unrelated hooks: {:?}",
+        remaining
+    );
+    // Hook files must be gone.
+    assert!(
+        !home.path().join(".claude/hooks/reliary-session-reminder").exists(),
+        "uninstall must remove the reminder hook file"
+    );
+    assert!(
+        !home.path().join(".claude/hooks/reliary-sift-pretooluse").exists(),
+        "uninstall must remove the sift hook file"
+    );
+}
+
+#[test]
+fn e2e_cli_doctor_flags_dangling_hook_registration() {
+    // A settings.json that registers a reliary hook whose file is missing is
+    // a broken install: doctor must report claude as not-ok and name it.
+    let home = fake_home();
+    std::fs::write(home.path().join(".claude.json"),
+        r#"{"mcpServers":{"reliary":{"command":"/bin/true","args":["mcp"]}}}"#).unwrap();
+    std::fs::create_dir_all(home.path().join(".claude/hooks")).unwrap();
+    std::fs::write(home.path().join(".claude/settings.json"),
+        r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"~/.claude/hooks/reliary-sift-pretooluse"}]}]}}"#).unwrap();
+
+    let out = run_cli(
+        &["doctor", "--format", "json"],
+        home.path(),
+        &[("HOME", home.path().to_str().unwrap())],
+    );
+    let v: serde_json::Value = serde_json::from_str(&stdout_of(&out)).unwrap();
+    let claude = v["checks"].as_array().unwrap().iter()
+        .find(|c| c["name"] == "claude").expect("claude check");
+    assert_eq!(
+        claude["ok"], false,
+        "doctor must flag a registered hook with no file on disk: {}", claude
+    );
+    assert!(
+        claude["detail"].as_str().unwrap_or("").contains("reliary-sift-pretooluse"),
+        "doctor must name the dangling hook: {}", claude
+    );
+
+    // Creating the file must clear the failure.
+    std::fs::write(home.path().join(".claude/hooks/reliary-sift-pretooluse"), "#!/bin/sh\n").unwrap();
+    std::fs::write(home.path().join(".claude/hooks/reliary-session-reminder"), "#!/bin/sh\n").unwrap();
+    let out = run_cli(
+        &["doctor", "--format", "json"],
+        home.path(),
+        &[("HOME", home.path().to_str().unwrap())],
+    );
+    let v: serde_json::Value = serde_json::from_str(&stdout_of(&out)).unwrap();
+    let claude = v["checks"].as_array().unwrap().iter()
+        .find(|c| c["name"] == "claude").expect("claude check");
+    assert_eq!(
+        claude["ok"], true,
+        "doctor must clear the flag once the hook file exists: {}", claude
     );
 }

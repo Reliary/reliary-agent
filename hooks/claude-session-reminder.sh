@@ -1,18 +1,19 @@
-#!/bin/bash
+#!/bin/sh
 # reliary SessionStart reminder for Claude Code
-# Prints tool guide at session start. Installed by `reliary init`.
-# Toggle: RELIARY_GATE=1 (default OFF)
+# Prints a tool guide at session start. Installed by `reliary init`.
+# Toggle: RELIARY_REMINDER=0 to disable (default ON).
 
-if [ "${RELIARY_GATE:-1}" != "1" ]; then
+if [ "${RELIARY_REMINDER:-1}" != "1" ]; then
   exit 0
 fi
 
 cat << 'REMINDER'
-Code intelligence protocol — use reliary tools:
-1. reliary_find_references_with_source(name) — find references to a symbol (returns file:line + source inline)
-2. reliary_goto_def(name) — find where a symbol is defined
-3. reliary_callgraph(name) — trace callers/callees of a function
-4. reliary_methods_on(type_name) — list methods on a type
-5. reliary_search(query) — full-text search for unknown symbol names
-6. Fall back to Grep/Glob/Read only if reliary lacks the data
+Code intelligence protocol — prefer reliary MCP tools over Grep/Read:
+1. reliary_find_references(name) — definitions, callers, implementors
+2. reliary_search(query) — full-text search for unknown symbols
+3. reliary_call_graph(name) — callers/callees of a function
+4. reliary_list_methods(type_name) — methods on a type
+5. reliary_describe(symbol) — overview of a symbol
+6. reliary_verify(text) — verify a claim about the code
+Fall back to Grep/Glob/Read only if reliary lacks the data.
 REMINDER

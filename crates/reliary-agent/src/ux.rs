@@ -144,9 +144,58 @@ struct DoctorCheck {
     optional: bool,
 }
 
+/// Return the names of reliary hook commands registered in
+/// `~/.claude/settings.json` whose script file does not exist. Such an entry
+/// fires a failing exec on every matching tool call, so surfacing it is worth
+/// a doctor failure.
+fn dangling_reliary_hooks(home: &std::path::Path) -> Vec<String> {
+    let settings_path = home.join(".claude/settings.json");
+    let content = match fs::read_to_string(&settings_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let v: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut dangling = Vec::new();
+    if let Some(hooks) = v.get("hooks").and_then(|h| h.as_object()) {
+        for entries in hooks.values() {
+            let Some(arr) = entries.as_array() else { continue };
+            for entry in arr {
+                let Some(hs) = entry.get("hooks").and_then(|h| h.as_array()) else { continue };
+                for h in hs {
+                    let Some(cmd) = h.get("command").and_then(|c| c.as_str()) else { continue };
+                    if !cmd.contains("reliary") {
+                        continue;
+                    }
+                    // Only the program token matters; drop any arguments and
+                    // skip env-assignment prefixes (FOO=bar cmd ...).
+                    let prog = cmd.split_whitespace()
+                        .find(|tok| !tok.contains('='))
+                        .unwrap_or("");
+                    if !prog.contains("reliary") {
+                        continue;
+                    }
+                    let expanded = if let Some(rest) = prog.strip_prefix("~/") {
+                        home.join(rest)
+                    } else {
+                        std::path::PathBuf::from(prog)
+                    };
+                    if !expanded.exists() {
+                        dangling.push(prog.to_string());
+                    }
+                }
+            }
+        }
+    }
+    dangling.sort();
+    dangling.dedup();
+    dangling
+}
+
 fn doctor_checks(installs: &[InstallInfo]) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
-
     // --- Binary reachability (critical: MCP server needs this) ---
     let exe = std::env::current_exe().ok(); // GUARDED: intentional — None falls back to "reliary"
     let exe_name = exe.as_ref()
@@ -216,20 +265,32 @@ fn doctor_checks(installs: &[InstallInfo]) -> Vec<DoctorCheck> {
     let claude_cfg = home_dir().map(|h| h.join(".claude.json")).unwrap_or_default();
     let claude_ok = has_mcp_server(&claude_cfg, "reliary");
     let claude_hooks_dir = home_dir().map(|h| h.join(".claude/hooks")).unwrap_or_default();
-    let hooks_count = ["reliary-code-gate", "reliary-session-reminder", "reliary-sift-pretooluse"]
+    let hooks_count = ["reliary-session-reminder", "reliary-sift-pretooluse"]
         .iter()
         .filter(|name| claude_hooks_dir.join(name).exists())
         .count();
-    let claude_detail = if claude_ok {
-        format!("MCP wired, {}/3 hooks installed", hooks_count)
-    } else if claude_cfg.exists() {
-        "config exists but not wired — run `reliary init`".into()
+    // A registration whose command file is missing fires a failing exec on
+    // every matching tool call. Detect it instead of counting files only.
+    let dangling = home_dir()
+        .map(|h| dangling_reliary_hooks(&h))
+        .unwrap_or_default();
+    let claude_detail = if !claude_ok {
+        if claude_cfg.exists() {
+            "config exists but not wired — run `reliary init`".into()
+        } else {
+            "not found (optional)".into()
+        }
+    } else if !dangling.is_empty() {
+        format!(
+            "MCP wired, but registered hook(s) missing on disk: {} — run `reliary init`",
+            dangling.join(", ")
+        )
     } else {
-        "not found (optional)".into()
+        format!("MCP wired, {}/2 hooks installed", hooks_count)
     };
     checks.push(DoctorCheck {
         name: "claude",
-        ok: claude_ok && hooks_count == 3,
+        ok: claude_ok && hooks_count == 2 && dangling.is_empty(),
         detail: claude_detail,
         fixable: false,
         optional: true,

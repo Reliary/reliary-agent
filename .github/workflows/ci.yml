@@ -39,7 +39,54 @@ jobs:
         run: |
           cd opencode-plugin
           npm ci --no-audit --no-fund
-          npm test
+          # The committed dist/ is the artifact users install. A rebuild must
+          # reproduce it byte-for-byte, or the committed artifact is stale
+          # relative to src/.
+          npm run build
+          if ! git diff --exit-code -- dist; then
+            echo "FAIL: opencode-plugin/dist is stale — run 'npm run build' and commit the result"
+            exit 1
+          fi
+          # Drive the real reindex path, not just the pure functions, and
+          # assert the real-binary test actually ran (a silent skip would
+          # otherwise look green).
+          RELIARY_TEST_BIN="$GITHUB_WORKSPACE/target/release/reliary" npm test 2>&1 | tee /tmp/plugin-test.log
+          if ! grep -q "finds the project root and reindexes an edited file" /tmp/plugin-test.log; then
+            echo "FAIL: the real-reindex integration test did not run"; exit 1
+          fi
+          if grep -q "reindex-file did not make the new symbol searchable" /tmp/plugin-test.log; then
+            echo "FAIL: real-reindex integration test reported a failure"; exit 1
+          fi
+
+      # Hooks are invoked by agents with `sh`, so they must be POSIX-safe
+      # regardless of their shebang. `sh -n` catches syntax errors; the grep
+      # catches bash-isms that dash parses differently at runtime (the V74
+      # class: `[[ ]]`, `$'...'`, `<<<`).
+      - name: hook scripts are POSIX-safe
+        run: |
+          fail=""
+          for f in hooks/*.sh; do
+            if ! sh -n "$f" 2>/dev/null; then
+              echo "FAIL: $f is not valid POSIX sh"; sh -n "$f"; fail=1
+            fi
+            if grep -nE '\[\[|\$'"'"'|<<<' "$f" >/dev/null 2>&1; then
+              echo "FAIL: $f contains a bash-ism ([[, \$'...', or <<<):"
+              grep -nE '\[\[|\$'"'"'|<<<' "$f" || true
+              fail=1
+            fi
+          done
+          [ -z "$fail" ] || exit 1
+          echo "all hook scripts are POSIX-safe"
+
+      # The Pi extension is the shim every Pi session runs. Drive its binary
+      # discovery and reindex path without a live agent.
+      - name: Pi gate.js selftest
+        run: |
+          proj=$(mktemp -d)
+          printf 'pub fn alpha() -> i32 { 1 }\n' > "$proj/lib.rs"
+          (cd "$proj" && "$GITHUB_WORKSPACE/target/release/reliary" trust . >/dev/null)
+          RELIARY_BIN_PATH="$GITHUB_WORKSPACE/target/release/reliary" \
+            node crates/reliary-agent/pi/gate.js --selftest "$proj/lib.rs"
 
       - name: no openssl-sys (cross-compile sanity)
         run: |
@@ -159,6 +206,24 @@ jobs:
           if [ "$skips" -gt 0 ]; then
             echo "FAIL: test suites contain pass-by-skip early returns"; exit 1
           fi
+
+      # The integration-conformance tests are the regression detector for the
+      # init ↔ settings ↔ doctor ↔ uninstall loop. If they are deleted the
+      # dangling-hook class comes back silently.
+      - name: integration conformance tests present
+        run: |
+          for t in e2e_cli_init_registers_resolvable_hooks \
+                   e2e_cli_doctor_reports_wired_integrations \
+                   e2e_cli_init_dry_run_mutates_nothing \
+                   e2e_cli_reinit_does_not_duplicate_hooks \
+                   e2e_cli_uninstall_removes_hooks_and_registrations \
+                   e2e_cli_doctor_flags_dangling_hook_registration \
+                   e2e_mcp_hook_scripts_only_name_advertised_tools; do
+            if ! grep -rq "fn $t(" crates/reliary-agent/tests/; then
+              echo "FAIL: integration conformance test $t is missing"; exit 1
+            fi
+          done
+          echo "integration conformance tests present"
 
       # V75: the bench cassette (record/replay determinism). Pure-Python unit
       # + harness-integration tests; no network, no API key, no corpus.

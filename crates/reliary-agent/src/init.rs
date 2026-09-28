@@ -183,8 +183,8 @@ pub fn run(dry_run: bool) {
             } else {
                 println!("  \x1b[33m-\x1b[0m Skipped\n");
             }
-            // Install code discovery gate hooks
-            if dry_run { dry_run_action("install Claude Code hooks (~/.claude/hooks/reliary-*)"); } else if ask_yes_no("Install code discovery gate hooks? (blocks first grep/read, redirects to reliary tools)", true) {
+            // Install Claude Code hooks (session reminder + bash sift)
+            if dry_run { dry_run_action("install Claude Code hooks (~/.claude/hooks/reliary-*)"); } else if ask_yes_no("Install Claude Code hooks? (session reminder + bash output compression)", true) {
                 if install_claude_hooks(&claude_hooks_dir) {
                     ok("Installed Claude Code hooks (~/.claude/hooks/reliary-*)");
                 } else {
@@ -276,24 +276,18 @@ pub fn run(dry_run: bool) {
     println!();
 }
 
-/// Install Claude Code hook scripts (PreToolUse gate + SessionStart reminder).
+/// Install Claude Code hook scripts (SessionStart reminder + Bash sift).
 fn install_claude_hooks(hooks_dir: &PathBuf) -> bool {
     if let Err(e) = fs::create_dir_all(hooks_dir) {
         eprintln!("  Failed to create hooks dir: {}", e);
         return false;
     }
     // Embed hook scripts at compile time
-    const GATE_SCRIPT: &str = include_str!("../../../hooks/claude-code-gate.sh");
     const REMINDER_SCRIPT: &str = include_str!("../../../hooks/claude-session-reminder.sh");
     // V14: also install the sift pretooluse hook for bash auto-rewrite (RTK parity).
     const SIFT_PRETOOLUSE: &str = include_str!("../../../hooks/claude-pretooluse.sh");
-    let gate_path = hooks_dir.join("reliary-code-gate");
     let reminder_path = hooks_dir.join("reliary-session-reminder");
     let sift_path = hooks_dir.join("reliary-sift-pretooluse");
-    if let Err(e) = fs::write(&gate_path, GATE_SCRIPT) {
-        eprintln!("  Failed to write gate hook: {}", e);
-        return false;
-    }
     if let Err(e) = fs::write(&reminder_path, REMINDER_SCRIPT) {
         eprintln!("  Failed to write reminder hook: {}", e);
         return false;
@@ -306,7 +300,7 @@ fn install_claude_hooks(hooks_dir: &PathBuf) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for p in [&gate_path, &reminder_path, &sift_path] {
+        for p in [&reminder_path, &sift_path] {
             if let Ok(meta) = fs::metadata(p) {
                 let mut perms = meta.permissions();
                 perms.set_mode(0o755);
@@ -314,86 +308,103 @@ fn install_claude_hooks(hooks_dir: &PathBuf) -> bool {
             }
         }
     }
-    // V14: register sift pretooluse in ~/.claude/settings.json so it fires
-    // automatically on Bash tool calls (RTK parity — user doesn't need to set
-    // RELIARY_SIFT_BASH=1 manually).
-    // V61: register_claude_sift_hook returns false when settings.json is
-    // malformed — init must not report success with a dead hook.
-    if !register_claude_sift_hook() {
-        eprintln!("\u{26A0}\u{FE0F} Failed to register sift hook in ~/.claude/settings.json (malformed JSON?)");
+    // Register both hooks in ~/.claude/settings.json so they fire automatically.
+    // V61: register_claude_hooks returns false when settings.json is malformed —
+    // init must not report success with a dead hook.
+    if !register_claude_hooks() {
+        eprintln!("\u{26A0}\u{FE0F} Failed to register hooks in ~/.claude/settings.json (malformed JSON?)");
         return false;
     }
     true
 }
 
-/// V14: Inject sift pretooluse hook into ~/.claude/settings.json. Idempotent.
-fn register_claude_sift_hook() -> bool {
+/// Shape of one hook entry to register: event, matcher, command.
+struct HookSpec {
+    event: &'static str,
+    matcher: &'static str,
+    command: &'static str,
+}
+
+const CLAUDE_HOOKS: &[HookSpec] = &[
+    HookSpec {
+        event: "PreToolUse",
+        matcher: "Bash",
+        command: "~/.claude/hooks/reliary-sift-pretooluse",
+    },
+    HookSpec {
+        event: "SessionStart",
+        matcher: "startup|resume|clear|compact",
+        command: "~/.claude/hooks/reliary-session-reminder",
+    },
+];
+
+/// V14: Inject the reliary hooks into ~/.claude/settings.json. Idempotent.
+/// Generalised from the sift-only version so install and uninstall stay
+/// symmetric for every entry this function can add.
+fn register_claude_hooks() -> bool {
     let home = match dirs::home_dir() {
         Some(h) => h,
         None => return false,
     };
     let settings_path = home.join(".claude/settings.json");
-    let content = match fs::read_to_string(&settings_path) {
-        Ok(c) => c,
+    let mut v: serde_json::Value = match fs::read_to_string(&settings_path) {
+        Ok(c) => match serde_json::from_str(&c) {
+            Ok(v) => v,
+            Err(_) => return false,
+        },
         Err(_) => {
-            // File doesn't exist — create with just the hooks.
-            let initial = serde_json::json!({
-                "hooks": {
-                    "PreToolUse": [{
-                        "matcher": "Bash",
-                        "hooks": [{
-                            "type": "command",
-                            "command": "~/.claude/hooks/reliary-sift-pretooluse"
-                        }]
-                    }]
-                }
-            });
-            return atomic_write(&settings_path.to_string_lossy(), &initial.to_string());
+            // File doesn't exist — create it with just the hooks.
+            serde_json::json!({ "hooks": {} })
         }
     };
-    let mut v: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let sift_hook_exists = v.get("hooks")
-        .and_then(|h| h.get("PreToolUse"))
-        .and_then(|p| p.as_array())
-        .map(|arr| {
-            arr.iter().any(|entry| {
-                entry.get("matcher").and_then(|m| m.as_str()) == Some("Bash")
-                    && entry.get("hooks").and_then(|h| h.as_array())
-                        .map(|hooks| {
-                            hooks.iter().any(|h| {
-                                h.get("command").and_then(|c| c.as_str())
-                                    .map(|c| c.contains("reliary-sift-pretooluse"))
-                                    .unwrap_or(false)
-                            })
-                        })
-                        .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false);
-    if sift_hook_exists { return true; }
 
-    if let Some(obj) = v.as_object_mut() {
-        let hooks = obj.entry("hooks").or_insert(serde_json::json!({}));
-        if let Some(hooks_obj) = hooks.as_object_mut() {
-            let pretooluse = hooks_obj.entry("PreToolUse").or_insert(serde_json::json!([]));
-            if let Some(arr) = pretooluse.as_array_mut() {
-                arr.push(serde_json::json!({
-                    "matcher": "Bash",
-                    "hooks": [{
-                        "type": "command",
-                        "command": "~/.claude/hooks/reliary-sift-pretooluse"
-                    }]
-                }));
-            }
+    let hooks = v
+        .as_object_mut()
+        .map(|obj| obj.entry("hooks").or_insert(serde_json::json!({})));
+    let Some(hooks) = hooks.and_then(|h| h.as_object_mut()) else {
+        return false;
+    };
+
+    for spec in CLAUDE_HOOKS {
+        let already = hooks
+            .get(spec.event)
+            .and_then(|e| e.as_array())
+            .map(|arr| {
+                arr.iter().any(|entry| {
+                    entry.get("matcher").and_then(|m| m.as_str()) == Some(spec.matcher)
+                        && entry
+                            .get("hooks")
+                            .and_then(|h| h.as_array())
+                            .map(|hs| {
+                                hs.iter().any(|h| {
+                                    h.get("command")
+                                        .and_then(|c| c.as_str())
+                                        .map(|c| c == spec.command)
+                                        .unwrap_or(false)
+                                })
+                            })
+                            .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if already {
+            continue;
         }
-        if let Ok(new_content) = serde_json::to_string_pretty(&v) {
-            return atomic_write(&settings_path.to_string_lossy(), &new_content);
+        let arr = hooks
+            .entry(spec.event)
+            .or_insert(serde_json::json!([]));
+        if let Some(arr) = arr.as_array_mut() {
+            arr.push(serde_json::json!({
+                "matcher": spec.matcher,
+                "hooks": [{ "type": "command", "command": spec.command }]
+            }));
         }
     }
-    false
+
+    match serde_json::to_string_pretty(&v) {
+        Ok(new_content) => atomic_write(&settings_path.to_string_lossy(), &new_content),
+        Err(_) => false,
+    }
 }
 
 fn inject_mcp_server(cfg_path: &PathBuf, server_name: &str, mcp_key: &str) -> bool {
@@ -590,21 +601,26 @@ pub fn uninstall() {
     // 5. Claude Code hooks
     println!("Removing Claude Code hooks...");
     if let Some(home) = home_dir() {
-        // V61: also strip the PreToolUse entry from ~/.claude/settings.json —
+        // V61: also strip hook entries from ~/.claude/settings.json —
         // uninstall only removed the hook FILES before, leaving a broken
         // command reference that fires on every Bash call.
-        remove_claude_sift_hook(&home);
+        remove_claude_hooks(&home);
         let hooks_dir = home.join(".claude/hooks");
         if hooks_dir.exists() {
-            let gate_path = hooks_dir.join("reliary-code-gate");
             let reminder_path = hooks_dir.join("reliary-session-reminder");
             let sift_path = hooks_dir.join("reliary-sift-pretooluse");
             let mut hooks_removed = 0;
-            for path in [gate_path, reminder_path, sift_path] {
+            for path in [reminder_path, sift_path] {
                 if path.exists() {
                     let _ = fs::remove_file(&path);
                     hooks_removed += 1;
                 }
+            }
+            // Legacy installs may still carry the removed code-gate file.
+            let legacy_gate = hooks_dir.join("reliary-code-gate");
+            if legacy_gate.exists() {
+                let _ = fs::remove_file(&legacy_gate);
+                hooks_removed += 1;
             }
             if hooks_removed > 0 {
                 ok(&format!("Removed {} Claude Code hook(s)", hooks_removed));
@@ -639,11 +655,11 @@ pub fn uninstall() {
     println!("Uninstall complete. You can now safely run `cargo uninstall reliary-agent`.");
 }
 
-/// V61: strip the sift PreToolUse entry from ~/.claude/settings.json.
-/// Mirror of register_claude_sift_hook — uninstall must remove what
-/// install created (it previously only deleted the hook files, leaving a
-/// broken command reference that fired on every Bash tool call).
-fn remove_claude_sift_hook(home: &std::path::Path) {
+/// V61: strip every reliary hook entry from ~/.claude/settings.json.
+/// Mirror of register_claude_hooks — uninstall must remove what install
+/// created (it previously only deleted the sift entry, leaving a broken
+/// command reference that fired on every Bash tool call).
+fn remove_claude_hooks(home: &std::path::Path) {
     let settings_path = home.join(".claude/settings.json");
     if !settings_path.exists() { return; }
     let content = match fs::read_to_string(&settings_path) {
@@ -654,33 +670,41 @@ fn remove_claude_sift_hook(home: &std::path::Path) {
         Ok(v) => v,
         Err(_) => return,
     };
-    let removed = v.get_mut("hooks")
-        .and_then(|h| h.get_mut("PreToolUse"))
-        .and_then(|p| p.as_array_mut())
-        .map(|arr| {
+    let mut removed = false;
+    if let Some(hooks) = v.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+        for spec in CLAUDE_HOOKS {
+            let Some(arr) = hooks.get_mut(spec.event).and_then(|e| e.as_array_mut()) else {
+                continue;
+            };
             let before = arr.len();
             arr.retain(|entry| {
                 !entry.get("hooks").and_then(|h| h.as_array())
-                    .map(|hooks| {
-                        hooks.iter().any(|h| {
+                    .map(|hs| {
+                        hs.iter().any(|h| {
                             h.get("command").and_then(|c| c.as_str())
-                                .map(|c| c.contains("reliary-sift-pretooluse"))
+                                .map(|c| c == spec.command)
                                 .unwrap_or(false)
                         })
                     })
                     .unwrap_or(false)
             });
-            arr.len() != before
-        })
-        .unwrap_or(false);
-    if !removed { return; }
-    // Drop empty PreToolUse array to keep settings clean.
-    if let Some(arr) = v.get("hooks").and_then(|h| h.get("PreToolUse")).and_then(|p| p.as_array()) {
-        if arr.is_empty() {
-            if let Some(hooks) = v.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-                hooks.remove("PreToolUse");
-            }
+            if arr.len() != before { removed = true; }
         }
+        // Drop emptied event arrays to keep settings clean.
+        let empty: Vec<String> = hooks.iter()
+            .filter(|(_, e)| e.as_array().map(|a| a.is_empty()).unwrap_or(false))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in empty { hooks.remove(&k); }
+    }
+    if !removed { return; }
+    // Drop the hooks object itself when nothing is left.
+    let hooks_empty = v.get("hooks")
+        .and_then(|h| h.as_object())
+        .map(|h| h.is_empty())
+        .unwrap_or(false);
+    if hooks_empty {
+        if let Some(obj) = v.as_object_mut() { obj.remove("hooks"); }
     }
     if let Ok(new_content) = serde_json::to_string_pretty(&v) {
         let _ = atomic_write(&settings_path.to_string_lossy(), &new_content);
