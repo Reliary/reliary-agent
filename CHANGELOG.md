@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-09-28
+
+### Fixed
+
+- **`cargo install reliary-agent` now works.** The crate embedded two hook scripts from the repository root, outside the crate directory, so they were absent from the published tarball and the build failed with `couldn't read src/../../../hooks/claude-pretooluse.sh`. The hooks now live at `crates/reliary-agent/hooks/` and ship in the package. 0.8.0–0.8.4 were affected on every platform.
+- **Publishing no longer skips verification.** `publish.yml` passed `--no-verify` for both the dry run and the real upload, which disabled the one check that catches an unpackageable crate. Both now verify, and CI runs `cargo package` for every crate so this cannot return silently.
+
 ## [0.8.4] - 2026-09-28
 
 ### Fixed

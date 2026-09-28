@@ -183,7 +183,7 @@ fn e2e_mcp_hook_scripts_only_name_advertised_tools() {
         .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
         .collect();
 
-    let hooks_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../hooks");
+    let hooks_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("hooks");
     let mut checked = 0;
     for entry in std::fs::read_dir(&hooks_dir).expect("hooks dir must exist") {
         let path = entry.expect("dir entry").path();

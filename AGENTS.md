@@ -76,7 +76,7 @@ are emitted whenever compression would be longer). Content readers on source
 files (`cat`/`head`/`tail`/`less`/`bat <source.rs>`) pass through unchanged.
 
 For automatic interception, set `RELIARY_SIFT_BASH=1` and install the hook from
-`hooks/` for your agent (Pi: `gate.js`; Claude Code:
+`crates/reliary-agent/hooks/` for your agent (Pi: `pi/gate.js`; Claude Code:
 `hooks/claude-pretooluse.sh`; OpenCode: `hooks/opencode-reliary-sift.js`).
 
 ## Benchmarks

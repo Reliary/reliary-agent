@@ -283,9 +283,9 @@ fn install_claude_hooks(hooks_dir: &PathBuf) -> bool {
         return false;
     }
     // Embed hook scripts at compile time
-    const REMINDER_SCRIPT: &str = include_str!("../../../hooks/claude-session-reminder.sh");
+    const REMINDER_SCRIPT: &str = include_str!("../hooks/claude-session-reminder.sh");
     // V14: also install the sift pretooluse hook for bash auto-rewrite (RTK parity).
-    const SIFT_PRETOOLUSE: &str = include_str!("../../../hooks/claude-pretooluse.sh");
+    const SIFT_PRETOOLUSE: &str = include_str!("../hooks/claude-pretooluse.sh");
     let reminder_path = hooks_dir.join("reliary-session-reminder");
     let sift_path = hooks_dir.join("reliary-sift-pretooluse");
     if let Err(e) = fs::write(&reminder_path, REMINDER_SCRIPT) {

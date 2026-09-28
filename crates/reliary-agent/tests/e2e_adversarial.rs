@@ -395,7 +395,7 @@ fn e2e_adv_hook_rewrites_bash_and_rejects_injection() {
     // 1. Legitimate path: the hook must emit a rewrite decision.
     // hooks/ lives at the workspace root, two levels above the crate dir.
     let hook = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../hooks/claude-pretooluse.sh");
+        .join("hooks/claude-pretooluse.sh");
     assert!(hook.exists(), "hook not found at {}", hook.display());
     let cache = dir.path().join("cache-ok");
     std::fs::create_dir_all(&cache).unwrap();

@@ -40,7 +40,7 @@ jobs:
                        reliary-risk reliary-fix reliary-dead reliary-edit \
                        reliary-search reliary-output reliary-pack reliary-agent; do
             echo "::group::dry-run $crate"
-            cargo publish -p "$crate" --dry-run --allow-dirty --no-verify
+            cargo publish -p "$crate" --dry-run --allow-dirty
             echo "::endgroup::"
           done
         env:
@@ -53,7 +53,7 @@ jobs:
           publish() {
             crate="$1"
             echo "::group::publish $crate"
-            if cargo publish -p "$crate" --no-verify; then
+            if cargo publish -p "$crate"; then
               echo "published $crate"
             else
               echo "publish of $crate failed (may already be published) — continuing"

@@ -64,7 +64,7 @@ reliary wrap pytest -v     # collapses passing lines to a summary
 ```
 
 For automatic interception with no manual prefix, set `RELIARY_SIFT_BASH=1` and
-install the hook from `hooks/` for your agent.
+install the hook from `crates/reliary-agent/hooks/` for your agent.
 
 ## Tools
 

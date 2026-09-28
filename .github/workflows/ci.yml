@@ -26,6 +26,21 @@ jobs:
       - name: Build
         run: cargo build --release
 
+      # `cargo install reliary-agent` builds from the published tarball, which
+      # contains only what is inside the crate directory. An `include_str!`
+      # reaching above it (the hooks used to live at the repo root) compiles
+      # locally and ships broken. `cargo package` verifies the tarball
+      # compiles; run it for every crate so it cannot regress.
+      - name: crates are publishable (package + verify)
+        run: |
+          for crate in reliary-core reliary-memory reliary-compress reliary-sift \
+                       reliary-risk reliary-fix reliary-dead reliary-edit \
+                       reliary-search reliary-output reliary-pack reliary-agent; do
+            echo "::group::package $crate"
+            cargo package -p "$crate" --allow-dirty
+            echo "::endgroup::"
+          done
+
       - name: cargo test
         run: cargo test --workspace --release
 
@@ -68,7 +83,7 @@ jobs:
       - name: hook scripts are POSIX-safe
         run: |
           fail=""
-          for f in hooks/*.sh; do
+          for f in crates/reliary-agent/hooks/*.sh; do
             if ! sh -n "$f" 2>/dev/null; then
               echo "FAIL: $f is not valid POSIX sh"; sh -n "$f"; fail=1
             fi
