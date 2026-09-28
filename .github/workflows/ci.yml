@@ -63,7 +63,8 @@ jobs:
       # Hooks are invoked by agents with `sh`, so they must be POSIX-safe
       # regardless of their shebang. `sh -n` catches syntax errors; the grep
       # catches bash-isms that dash parses differently at runtime (the V74
-      # class: `[[ ]]`, `$'...'`, `<<<`).
+      # class: `[[ ]]`, `$'...'`, `<<<`). Comments are stripped first — a
+      # comment that *names* a bash-ism is not one.
       - name: hook scripts are POSIX-safe
         run: |
           fail=""
@@ -71,9 +72,10 @@ jobs:
             if ! sh -n "$f" 2>/dev/null; then
               echo "FAIL: $f is not valid POSIX sh"; sh -n "$f"; fail=1
             fi
-            if grep -nE '\[\[|\$'"'"'|<<<' "$f" >/dev/null 2>&1; then
+            hits=$(grep -vE '^[[:space:]]*#' "$f" | grep -nE '\[\[|\$'"'"'|<<<' || true)
+            if [ -n "$hits" ]; then
               echo "FAIL: $f contains a bash-ism ([[, \$'...', or <<<):"
-              grep -nE '\[\[|\$'"'"'|<<<' "$f" || true
+              echo "$hits"
               fail=1
             fi
           done
