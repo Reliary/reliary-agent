@@ -49,8 +49,10 @@ jobs:
           fi
           # Drive the real reindex path, not just the pure functions, and
           # assert the real-binary test actually ran (a silent skip would
-          # otherwise look green).
-          RELIARY_TEST_BIN="$GITHUB_WORKSPACE/target/release/reliary" npm test 2>&1 | tee /tmp/plugin-test.log
+          # otherwise look green). Verbose reporter prints passing test names;
+          # the default reporter only prints failures.
+          RELIARY_TEST_BIN="$GITHUB_WORKSPACE/target/release/reliary" \
+            npm test -- --reporter=verbose 2>&1 | tee /tmp/plugin-test.log
           if ! grep -q "finds the project root and reindexes an edited file" /tmp/plugin-test.log; then
             echo "FAIL: the real-reindex integration test did not run"; exit 1
           fi
