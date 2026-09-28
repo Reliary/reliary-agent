@@ -12,8 +12,9 @@
 const { execFileSync, spawnSync } = require("child_process");
 const { existsSync } = require("fs");
 const { join } = require("path");
+const { homedir } = require("os");
 
-const GATE_VERSION = "0.8.1";
+const GATE_VERSION = "0.8.3";
 
 const SIFT_BASH = process.env.RELIARY_SIFT_BASH !== "0"; // default ON
 // Pack regeneration on edit: opt-in, default OFF.
@@ -53,7 +54,12 @@ if (!RELIARY_BIN) {
 }
 if (!RELIARY_BIN) {
   for (const c of ["/usr/local/bin/reliary", "/usr/bin/reliary",
-                   "/usr/local/bin/reliary-agent", "/usr/bin/reliary-agent"]) {
+                   "/usr/local/bin/reliary-agent", "/usr/bin/reliary-agent",
+                   // ~/.local/bin is the documented install location and is
+                   // on the interactive PATH, but agent-spawned processes
+                   // often run with a reduced PATH. Check it explicitly.
+                   join(homedir(), ".local", "bin", "reliary"),
+                   join(homedir(), ".local", "bin", "reliary-agent")]) {
     if (existsSync(c)) { RELIARY_BIN = c; break; }
   }
 }

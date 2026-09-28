@@ -7,16 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-09-28
+
+### Fixed
+
+- **Claude Code and OpenCode hook install was half-wired, and one hook was broken.** The `PreToolUse` code-gate blocked the agent's own grep/glob/read tools using a session key that changed on every invocation, so the once-per-session check never hit and *every* call was blocked, not the first; it also advertised tool names absent from `tools/list`, which the model cannot call. The gate (Claude, OpenCode, and the same gate inside Pi `gate.js`) has been removed — the session reminder and the tool descriptions carry that guidance instead.
+- **`reliary init` wrote three Claude hook files but registered only the sift entry** in `~/.claude/settings.json`, so the session reminder never fired while `reliary doctor` still reported "3/3 hooks installed". Install now registers both shipped hooks and doctor reports 2/2.
+- **`reliary uninstall` removed hook files but left the settings.json registration**, so the tool call kept firing a command that no longer existed. Removal is now symmetric and preserves unrelated hooks.
+- **`reliary doctor` now detects a registered reliary hook whose file is missing** and names it, instead of only counting files on disk.
+- **Pi `gate.js` binary discovery now checks `~/.local/bin`**, the documented install location. Agent-spawned processes often run with a reduced PATH, so the previous fallback list could resolve a stale binary or none.
+- **Hook scripts are POSIX `sh`.** Agents invoke them with `sh`; a bash-only construct would fail silently.
+- **Internal version tags removed from MCP tool descriptions** (`V37:`, `V53:`) — descriptions are shown to the model and should not carry changelog tags.
+- **CONTRIBUTING license corrected** to MIT (was stated as MIT OR Apache-2.0), branch name corrected to `master-rebuild`, and the `DEEP_SEEK_API_KEY` typo fixed.
+
 ### Changed
 
 - **Documentation rewritten around the product name, Reliary** — the working-directory name `reliary8` had leaked into the README, AGENTS.md, CONTRIBUTING, the OpenCode plugin README, and every crate README. The README is now a product document; benchmark methodology, the edit-outcome result, the familiarity experiment, and the cassette replay moved to `docs/BENCHMARKS.md`.
 - **Agent-config instructions corrected** to match `reliary init`: Claude Code uses `~/.claude.json`; OpenCode uses `opencode.json` (the `"mcp"` key, not `"mcpServers"`); Pi is installed as an extension, not an MCP JSON entry.
 - **Removed the stale "API proxy" description** from eight crate READMEs (the proxy was removed in 0.8.0).
 
-### Fixed
+### Added
 
-- **Internal version tags removed from MCP tool descriptions** (`V37:`, `V53:`) — descriptions are shown to the model and should not carry changelog tags.
-- **CONTRIBUTING license corrected** to MIT (was stated as MIT OR Apache-2.0), branch name corrected to `master-rebuild`, and the `DEEP_SEEK_API_KEY` typo fixed.
+- Integration-conformance tests covering the whole install loop: registered hooks resolve to files on disk, doctor goes green after init, `init --dry-run` mutates nothing, re-init does not duplicate entries, uninstall removes exactly what install added, doctor flags a dangling registration, and every tool name in the session reminder exists in `tools/list`.
+- CI: OpenCode `dist/` freshness check, a real `reindex-file` integration test, a POSIX-safety lint for every hook, a Pi `gate.js` selftest, and a presence check for the conformance tests.
 
 ## [0.8.2] - 2026-09-23
 
