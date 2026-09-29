@@ -1707,6 +1707,75 @@ fn release_asset_name(tag: &str, os: &str, arch: &str, ext: &str) -> String {
     format!("reliary-agent-{}-{}-{}.{}", tag, os, arch, ext)
 }
 
+/// Delete a file that the current process still holds open. Windows locks a
+/// running executable, so the leftover can only be removed once we have exited.
+///
+/// Spawns a detached copy of ourselves in a private janitor mode; it polls the
+/// file until the lock clears, then deletes it. Polling the file rather than
+/// waiting on a process handle keeps this free of `unsafe` FFI, which this
+/// crate forbids. On other platforms an ordinary remove is enough.
+///
+/// Best-effort: if the spawn or the delete fails, the caller still reports a
+/// successful update, because the new binary is in place either way. A
+/// leftover `.old` file is cosmetic.
+#[cfg(windows)]
+fn schedule_delete(path: &std::path::Path) {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let Ok(exe) = std::env::current_exe() else { return };
+    let _ = std::process::Command::new(exe)
+        .arg("--internal-unlink")
+        .arg(path)
+        .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// On Unix the previous binary is not locked once it has been renamed, so the
+/// leftover can be removed directly. (The Windows path above cannot do this
+/// while its own process still holds the file open.)
+///
+/// Unreachable on Unix: the self-update path only renames the old binary aside
+/// on Windows, so there is never a leftover here to delete.
+#[cfg(not(windows))]
+#[allow(dead_code)]
+fn schedule_delete(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+/// Arguments that follow `flag` in the process arguments, if the flag is
+/// present. Used to reach the private janitor mode without threading an
+/// unparseable argument through the CLI definition.
+fn args_after_flag(flag: &str) -> Option<Vec<String>> {
+    let mut args = std::env::args();
+    while let Some(a) = args.next() {
+        if a == flag {
+            return Some(args.collect());
+        }
+    }
+    None
+}
+
+/// Private janitor mode for [`schedule_delete`]. Polls until the file can be
+/// removed (Windows releases the lock when the previous process exits) and
+/// then removes it. Produces no output and never affects the exit status of
+/// the real command.
+fn unlink_when_unlocked(path: &std::path::Path) -> ! {
+    // ~30s of 100ms polls. A binary that is still locked after that is not
+    // worth a longer-lived background process.
+    for _ in 0..300 {
+        match std::fs::remove_file(path) {
+            Ok(()) => break,
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    }
+    std::process::exit(0);
+}
+
 
 fn do_update(check_only: bool) {
     println!("{} Checking for updates...", color::bold(""));
@@ -1919,12 +1988,16 @@ fn do_update(check_only: bool) {
         #[cfg(windows)]
         {
             // Windows refuses to overwrite or delete a running executable, but
-            // it does allow renaming one. Move the live binary aside, put the
-            // new one in place, and let the next launch delete the leftover.
+            // it does allow renaming one. Move the live binary aside and put the
+            // new one in place. The old file is still locked by this process,
+            // so a plain delete now would fail and leave `reliary.exe.old`
+            // lying next to the binary forever. Spawn a detached helper that
+            // waits for this process to exit and then removes it.
             let old = std::path::PathBuf::from(format!("{}.old", binary.display()));
             let _ = std::fs::remove_file(&old);
             if std::fs::rename(&binary, &old).is_ok() {
                 if std::fs::rename(&tmp_bin, &binary).is_ok() {
+                    schedule_delete(&old);
                     true
                 } else {
                     // Restore the original so the install is never left broken.
@@ -1951,6 +2024,22 @@ fn do_update(check_only: bool) {
 
 fn main() {
     log::init();
+
+    // Private janitor mode used by the Windows self-update path: spawned as
+    // `reliary --internal-unlink <path>` and must work without a subcommand, so
+    // it is handled before any logging or CLI parsing that could fail. Not a
+    // subcommand on purpose — it stays out of the documented command list and
+    // out of the generated completion/man scripts.
+    if let Some(rest) = args_after_flag("--internal-unlink") {
+        // An empty or missing path would resolve to the current directory,
+        // which can never be removed, so we would poll for the full timeout for
+        // nothing. Exit immediately instead.
+        match rest.first() {
+            Some(p) if !p.is_empty() => unlink_when_unlocked(&std::path::PathBuf::from(p)),
+            _ => std::process::exit(0),
+        }
+    }
+
     // ARM/WSL2 fix: cap the rayon global pool at 4 threads by default.
     // On low-core-count machines (WSL2 ARM, 4-core VMs) the default pool
     // (num_cpus) oversubscribes and pegs the CPU during indexing. On x86

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-09-28
+
+### Fixed
+
+- **The Windows self-update no longer leaves `reliary.exe.old` behind.** The update path renames the running executable aside because Windows will not overwrite or delete one in use, but nothing ever removed the renamed file, so it accumulated next to the binary on every update. A detached janitor mode (`--internal-unlink <path>`, hidden from the CLI surface) now waits for the lock to clear and removes it. Implemented by polling the file rather than waiting on a process handle, because the crate forbids `unsafe` and a `WaitForSingleObject` wrapper would not compile.
+- **`reliary --internal-unlink` with no path exits immediately** instead of retrying for 30 seconds against the current directory, which can never be removed.
+
 ## [0.8.6] - 2026-09-28
 
 ### Added
