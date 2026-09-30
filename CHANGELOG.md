@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-09-30
+
+### Fixed
+
+- **OpenCode setup failed for every real install.** `init` located its plugin with `binary.ancestors().nth(3)`, which only resolves inside the source tree (`<repo>/target/release/reliary`). From `cargo install`, a tarball, or brew (`~/.cargo/bin/reliary`, `/usr/local/bin/reliary`) it looked for `~/opencode-plugin` or `/usr/opencode-plugin` and failed with a message telling the user to build a source tree they do not have. The built plugin is now embedded in the binary and written to `~/.local/share/reliary/opencode-plugin.js` at init — no source tree, no npm, works offline.
+- **The OpenCode MCP entry was written in the wrong schema.** OpenCode requires a local server to be `{ "type": "local", "command": ["<exe>", "mcp"] }`; `init` wrote the Claude/Cline shape (`{ "command": "<string>", "args": [...] }`), which fails schema validation and never starts the server. OpenCode now gets its own writer.
+- **A `.jsonc` config could not be edited at all.** OpenCode's documented default is `opencode.jsonc`, which contains comments. `init`, `doctor`, and `uninstall` parsed configs with `serde_json`, which rejects comments, so `.jsonc`-only setups were silently skipped and uninstall left the MCP entry behind. Config handling now uses a JSONC parser (lossless CST edits that preserve comments and formatting).
+- **`uninstall` left the OpenCode plugin entry and file behind.** It removed the MCP server but not the plugin path, so OpenCode kept trying to load a file that no longer existed. Removal is now symmetric; unrelated plugin entries are preserved.
+- **`doctor` reported OpenCode green on a malformed entry**, because it only checked that the `mcp.reliary` key existed. It now validates the schema and reports "present but malformed".
+- **Cline integration looked in a stale extension directory.** The extension id changed from `rooveterinery.cline` to `saoudrizwan.claude-dev`; both are now checked.
+
+### Added
+
+- Config discovery follows OpenCode's own precedence: `opencode.jsonc`, `opencode.json`, then `config.json`.
+- Integration tests for the whole OpenCode path (schema-valid MCP entry, plugin file materialised and registered, `.jsonc` preserved, uninstall symmetry, malformed-entry detection), each with a negative control, plus a clean-room Docker test run on amd64 and arm64.
+
 ## [0.8.8] - 2026-09-30
 
 ### Fixed

@@ -304,7 +304,8 @@ fn fake_home() -> tempfile::TempDir {
     std::fs::create_dir_all(home.path().join(".claude")).unwrap();
     let oc = home.path().join(".config/opencode");
     std::fs::create_dir_all(&oc).unwrap();
-    std::fs::write(oc.join("opencode.json"), r#"{"mcpServers":{}}"#).unwrap();
+    // OpenCode uses the "mcp" key (not Claude's "mcpServers").
+    std::fs::write(oc.join("opencode.json"), r#"{"mcp":{}}"#).unwrap();
     home
 }
 
@@ -682,8 +683,160 @@ fn e2e_cli_doctor_reports_wired_integrations() {
 }
 
 #[test]
-fn e2e_cli_init_dry_run_mutates_nothing() {
+fn e2e_cli_opencode_mcp_entry_matches_opencode_schema() {
     let home = fake_home();
+    init_with(home.path(), "Y\nY\nY\nY\nY\n");
+
+    let oc: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join(".config/opencode/opencode.json")).unwrap(),
+    )
+    .expect("opencode config must stay valid JSON");
+
+    let entry = &oc["mcp"]["reliary"];
+    // OpenCode's local-server schema: type:"local" and an ARRAY command.
+    // The Claude/Cline shape ({command:"<str>", args:[...]}) decodes as
+    // invalid and the server never starts.
+    assert_eq!(
+        entry["type"], "local",
+        "mcp.reliary must be type:\"local\" for OpenCode: {}",
+        entry
+    );
+    let cmd = entry["command"]
+        .as_array()
+        .unwrap_or_else(|| panic!("mcp.reliary.command must be an array: {}", entry));
+    assert!(!cmd.is_empty(), "command array must not be empty");
+    assert_eq!(cmd[1], "mcp", "second element must be the `mcp` subcommand: {}", entry);
+    assert!(
+        entry.get("args").is_none(),
+        "OpenCode entries must not carry a Claude-style \"args\" key: {}",
+        entry
+    );
+}
+
+#[test]
+fn e2e_cli_opencode_plugin_entry_points_at_real_file() {
+    let home = fake_home();
+    init_with(home.path(), "Y\nY\nY\nY\nY\n");
+
+    let oc: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join(".config/opencode/opencode.json")).unwrap(),
+    )
+    .unwrap();
+    let plugins = oc["plugin"].as_array().expect("plugin array must exist");
+    let reliary_plugin = plugins
+        .iter()
+        .filter_map(|p| p.as_str())
+        .find(|p| p.ends_with("opencode-plugin.js"))
+        .unwrap_or_else(|| panic!("plugin array must name the reliary plugin: {}", oc));
+
+    // The registered path must exist — registering a file we never wrote is
+    // the failure this whole change fixes.
+    assert!(
+        std::path::Path::new(reliary_plugin).exists(),
+        "registered plugin file must exist on disk: {}",
+        reliary_plugin
+    );
+    // And it must be under the fake HOME, not the dev tree.
+    assert!(
+        reliary_plugin.starts_with(home.path().to_str().unwrap()),
+        "plugin must be written into the data dir, not the source tree: {}",
+        reliary_plugin
+    );
+}
+
+#[test]
+fn e2e_cli_uninstall_removes_opencode_plugin_and_file() {
+    let home = fake_home();
+    init_with(home.path(), "Y\nY\nY\nY\nY\n");
+
+    let oc_path = home.path().join(".config/opencode/opencode.json");
+    let plugin_path = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&oc_path).unwrap())
+        .unwrap()["plugin"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p.as_str())
+        .find(|p| p.ends_with("opencode-plugin.js"))
+        .expect("precondition: plugin must be registered")
+        .to_string();
+
+    run_cli(&["uninstall"], home.path(), &[("HOME", home.path().to_str().unwrap())]);
+
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&oc_path).unwrap()).unwrap();
+    let still = after["plugin"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|p| p.as_str()).any(|p| p.contains("opencode-plugin.js")))
+        .unwrap_or(false);
+    assert!(!still, "uninstall must remove the reliary plugin entry: {}", after);
+    assert!(
+        !std::path::Path::new(&plugin_path).exists(),
+        "uninstall must delete the materialized plugin file: {}",
+        plugin_path
+    );
+}
+
+#[test]
+fn e2e_cli_opencode_jsonc_only_is_wired() {
+    // A `.jsonc`-only setup (OpenCode's documented default) must be found and
+    // edited, not silently skipped because we only looked for opencode.json.
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join(".claude.json"), r#"{"mcpServers":{}}"#).unwrap();
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    let oc = home.path().join(".config/opencode");
+    std::fs::create_dir_all(&oc).unwrap();
+    std::fs::write(oc.join("opencode.jsonc"), "{\n  // opencode config\n  \"mcp\": {}\n}\n").unwrap();
+
+    // n for claude mcp/hooks, y for opencode mcp/plugin, y for rel alias.
+    let out = init_with(home.path(), "N\nN\nY\nY\nY\n");
+    let text = plain(&format!("{}{}", stdout_of(&out), stderr_of(&out)));
+    assert!(
+        text.contains("Updated opencode.jsonc"),
+        "init must edit the .jsonc config it found: {}",
+        text
+    );
+    let raw = std::fs::read_to_string(oc.join("opencode.jsonc")).unwrap();
+    assert!(
+        raw.contains("reliary"),
+        "the .jsonc config must contain the reliary MCP entry: {}",
+        raw
+    );
+}
+
+#[test]
+fn e2e_cli_doctor_flags_malformed_opencode_entry() {
+    // The old shape (string command + args) is invalid for OpenCode; doctor
+    // must not report it green.
+    let home = tempfile::tempdir().unwrap();
+    let oc = home.path().join(".config/opencode");
+    std::fs::create_dir_all(&oc).unwrap();
+    std::fs::write(
+        oc.join("opencode.json"),
+        r#"{"mcp":{"reliary":{"command":"/usr/bin/reliary","args":["mcp"]}}}"#,
+    )
+    .unwrap();
+
+    let out = run_cli(
+        &["doctor", "--format", "json"],
+        home.path(),
+        &[("HOME", home.path().to_str().unwrap())],
+    );
+    let v: serde_json::Value = serde_json::from_str(&stdout_of(&out)).unwrap();
+    let c = v["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "opencode")
+        .unwrap();
+    assert_eq!(
+        c["ok"], false,
+        "doctor must flag a malformed OpenCode MCP entry, not report it green: {}",
+        c
+    );
+}
+
+#[test]
+fn e2e_cli_init_dry_run_mutates_nothing() {    let home = fake_home();
     // Seed a settings file with unrelated content that must survive.
     let settings_path = home.path().join(".claude/settings.json");
     std::fs::write(&settings_path, r#"{"env":{"KEEP":"1"}}"#).unwrap();

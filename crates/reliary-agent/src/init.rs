@@ -26,6 +26,15 @@ fn atomic_write(path: &str, content: &str) -> bool {
 }
 const EMBEDDED_GATE_JS: &str = include_str!("../pi/gate.js");
 
+/// The built OpenCode plugin (tsup output) embedded at compile time, the same
+/// way gate.js is. It is written to the data dir on `init` so the plugin works
+/// from a cargo/npm/tarball install where no source tree exists. CI keeps this
+/// copy byte-identical to `opencode-plugin/dist/index.js`.
+const EMBEDDED_OPENCODE_PLUGIN: &str = include_str!("../opencode-plugin/index.js");
+
+/// Filename the OpenCode plugin is written under in the reliary data dir.
+const OPENCODE_PLUGIN_FILENAME: &str = "opencode-plugin.js";
+
 fn ask_yes_no(prompt: &str, default: bool) -> bool {
     let def_str = if default { "[Y/n]" } else { "[y/N]" };
     print!("{} {}: ", prompt, def_str);
@@ -91,6 +100,59 @@ fn get_data_dir() -> Option<PathBuf> {
     {
         home_dir().map(|h| h.join(".local/share"))
     }
+}
+
+/// The Cline global storage settings file.
+///
+/// Cline's extension id changed from `rooveterinery.cline` to
+/// `saoudrizwan.claude-dev`; we prefer the current id and fall back to the
+/// legacy one so installs of either generation are found.
+fn cline_config_path() -> Option<PathBuf> {
+    let base = if cfg!(target_os = "windows") {
+        dirs::data_dir().map(|d| d.join("Code").join("User").join("globalStorage"))
+    } else if cfg!(target_os = "macos") {
+        home_dir().map(|h| h.join("Library/Application Support/Code/User/globalStorage"))
+    } else {
+        home_dir().map(|h| h.join(".config/Code/User/globalStorage"))
+    }?;
+    let current = base.join("saoudrizwan.claude-dev").join("cline_mcp_settings.json");
+    if current.exists() {
+        return Some(current);
+    }
+    let legacy = base.join("rooveterinery.cline").join("cline_mcp_settings.json");
+    if legacy.exists() {
+        return Some(legacy);
+    }
+    Some(current)
+}
+
+/// Directory OpenCode reads global config from, per platform.
+fn opencode_config_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "windows") {
+        dirs::config_dir().map(|d| d.join("opencode"))
+    } else if cfg!(target_os = "macos") {
+        home_dir().map(|h| h.join("Library/Application Support/opencode"))
+    } else {
+        home_dir().map(|h| h.join(".config/opencode"))
+    }
+}
+
+/// The OpenCode global config file to use.
+///
+/// OpenCode merges `opencode.jsonc`, `opencode.json`, and `config.json` (it
+/// prefers `.jsonc` when present). We return the highest-precedence file that
+/// exists so we edit the one the user actually runs; if none exist we return
+/// the `opencode.json` path so the caller can report "not found" rather than
+/// silently skipping a `.jsonc`-only setup.
+fn opencode_config_path() -> Option<PathBuf> {
+    let dir = opencode_config_dir()?;
+    for name in ["opencode.jsonc", "opencode.json", "config.json"] {
+        let p = dir.join(name);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    Some(dir.join("opencode.json"))
 }
 
 /// Path of the short-alias shim that the `--help` text advertises.
@@ -261,65 +323,49 @@ pub fn run(dry_run: bool) {
     }
 
     // 3. OpenCode
-    if let Some(home) = home_dir() {
-        let opencode_cfg = if cfg!(target_os = "windows") {
-            dirs::config_dir().map(|d| d.join("opencode").join("opencode.json"))
-        } else if cfg!(target_os = "macos") {
-            Some(home.join("Library/Application Support/opencode/opencode.json"))
-        } else {
-            Some(home.join(".config/opencode/opencode.json"))
-        };
-
-        if let Some(cfg_path) = opencode_cfg {
-            if cfg_path.exists() {
-                if dry_run { dry_run_action("add Reliary MCP server to OpenCode (~/.config/opencode/opencode.json)"); } else if ask_yes_no("Found OpenCode config. Add Reliary MCP server?", true) {
-                    if inject_mcp_server(&cfg_path, "reliary", "mcp") {
-                        ok("Updated opencode.json");
-                        configured_agents += 1;
-                    } else {
-                        println!("  \x1b[31m✗\x1b[0m Failed to update opencode.json\n");
-                    }
+    if let Some(cfg_path) = opencode_config_path() {
+        if cfg_path.exists() {
+            let name = cfg_path.file_name().and_then(|s| s.to_str()).unwrap_or("opencode.json");
+            if dry_run { dry_run_action(&format!("add Reliary MCP server to OpenCode ({})", name)); } else if ask_yes_no("Found OpenCode config. Add Reliary MCP server?", true) {
+                if inject_opencode_mcp_server(&cfg_path, "reliary") {
+                    ok(&format!("Updated {}", name));
+                    configured_agents += 1;
                 } else {
-                    println!("  \x1b[33m-\x1b[0m Skipped\n");
+                    println!("  \x1b[31m✗\x1b[0m Failed to update {}\n", name);
                 }
-
-                // Offer to install the OpenCode plugin (regen-on-edit hook)
-                if dry_run { dry_run_action("install reliary-opencode plugin in opencode.json"); } else if ask_yes_no("Install reliary-opencode plugin? (auto-reindex + regen pack after every write/edit)", true) {
-                    let exe_path = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("reliary"));
-                    match inject_opencode_plugin(&cfg_path, &exe_path) {
-                        Ok(true) => ok("Installed reliary-opencode plugin in opencode.json"),
-                        Ok(false) => println!("  \x1b[33m-\x1b[0m Plugin already present, skipped\n"),
-                        Err(e) => println!("  \x1b[31m✗\x1b[0m Plugin install failed: {}\n", e),
-                    }
-                } else {
-                    println!("  \x1b[33m-\x1b[0m Plugin install skipped\n");
-                }
+            } else {
+                println!("  \x1b[33m-\x1b[0m Skipped\n");
             }
+
+            // Offer to install the OpenCode plugin (regen-on-edit hook)
+            if dry_run { dry_run_action(&format!("install reliary-opencode plugin in {}", name)); } else if ask_yes_no("Install reliary-opencode plugin? (auto-reindex + regen pack after every write/edit)", true) {
+                match inject_opencode_plugin(&cfg_path) {
+                    Ok(true) => ok(&format!("Installed reliary-opencode plugin in {}", name)),
+                    Ok(false) => println!("  \x1b[33m-\x1b[0m Plugin already present, skipped\n"),
+                    Err(e) => println!("  \x1b[31m✗\x1b[0m Plugin install failed: {}\n", e),
+                }
+            } else {
+                println!("  \x1b[33m-\x1b[0m Plugin install skipped\n");
+            }
+        } else {
+            println!("  \x1b[33m-\x1b[0m No OpenCode config found (optional)\n");
         }
+    } else {
+        println!("  \x1b[33m-\x1b[0m Could not locate OpenCode config dir (optional)\n");
     }
     
     // 4. Cline
-    if let Some(home) = home_dir() {
-        let cline_cfg = if cfg!(target_os = "windows") {
-            dirs::data_dir().map(|d| d.join("Code").join("User").join("globalStorage").join("rooveterinery.cline").join("cline_mcp_settings.json"))
-        } else if cfg!(target_os = "macos") {
-            Some(home.join("Library/Application Support/Code/User/globalStorage/rooveterinery.cline/cline_mcp_settings.json"))
-        } else {
-            Some(home.join(".config/Code/User/globalStorage/rooveterinery.cline/cline_mcp_settings.json"))
-        };
-
-        if let Some(cfg_path) = cline_cfg {
-            if cfg_path.exists() {
-                if dry_run { dry_run_action("add Reliary MCP server to Cline"); } else if ask_yes_no("Found Cline config. Add Reliary MCP server?", true) {
-                    if inject_mcp_server(&cfg_path, "reliary", "mcpServers") {
-                        ok("Updated cline MCP settings");
-                        configured_agents += 1;
-                    } else {
-                        println!("  \x1b[31m✗\x1b[0m Failed to update cline_mcp_settings.json\n");
-                    }
+    if let Some(cfg_path) = cline_config_path() {
+        if cfg_path.exists() {
+            if dry_run { dry_run_action("add Reliary MCP server to Cline"); } else if ask_yes_no("Found Cline config. Add Reliary MCP server?", true) {
+                if inject_mcp_server(&cfg_path, "reliary", "mcpServers") {
+                    ok("Updated cline MCP settings");
+                    configured_agents += 1;
                 } else {
-                    println!("  \x1b[33m-\x1b[0m Skipped\n");
+                    println!("  \x1b[31m✗\x1b[0m Failed to update cline_mcp_settings.json\n");
                 }
+            } else {
+                println!("  \x1b[33m-\x1b[0m Skipped\n");
             }
         }
     }
@@ -512,70 +558,168 @@ fn inject_mcp_server(cfg_path: &PathBuf, server_name: &str, mcp_key: &str) -> bo
     false
 }
 
-/// Inject the reliary-opencode-plugin entry into opencode.json's "plugin" array.
+/// Write the reliary MCP server into an OpenCode config.
 ///
-/// Locates the plugin source relative to the running binary (sibling directory at
-/// `<install_root>/../../opencode-plugin`), checks it's built (dist/index.js exists),
-/// and appends the absolute path to the config's "plugin" array. Preserves existing
-/// entries; removes any prior `@reliary/opencode` (the deprecated v0.x plugin) entry.
+/// OpenCode's `mcp` schema is *not* the Claude/Cline shape: a local server is
+/// `{ "type": "local", "command": ["<exe>", "<args>..."] }`. The generic
+/// [`inject_mcp_server`] writes `{ "command": "<string>", "args": [...] }`,
+/// which fails OpenCode's `command: string[]` decode and does not start the
+/// server. This is the OpenCode-specific writer.
 ///
-/// Returns:
-///   - Ok(true) if the plugin was added (or already present)
-///   - Ok(false) if the user declined the prompt or the plugin source wasn't found
-///   - Err on filesystem/parse failure
-fn inject_opencode_plugin(cfg_path: &PathBuf, exe_path: &std::path::Path) -> Result<bool, String> {
-    // Locate the plugin dist/. Binary layout:
-    //   <repo>/target/release/reliary
-    //   <repo>/opencode-plugin/dist/index.js
-    // The exe is at `<repo>/target/release/reliary`; ancestors[3] gives `<repo>`.
-    let repo_root = exe_path
-        .ancestors()
-        .nth(3)
-        .ok_or("cannot determine repo root")?;
-    let plugin_src = repo_root.join("opencode-plugin");
-    let plugin_dist = plugin_src.join("dist").join("index.js");
+/// Edits through the JSONC CST so an `opencode.jsonc` (OpenCode's documented
+/// default) keeps its comments and formatting. `serde_json` alone cannot even
+/// parse a `.jsonc` file, so the generic writer would silently fail on it.
+fn inject_opencode_mcp_server(cfg_path: &PathBuf, server_name: &str) -> bool {
+    use jsonc_parser::cst::{CstInputValue, CstRootNode};
 
-    if !plugin_dist.exists() {
-        return Err(format!(
-            "plugin not built: {}\n  Run `cd {} && npm install && npm run build` to build it.",
-            plugin_dist.display(),
-            plugin_src.display()
-        ));
+    let Ok(content) = fs::read_to_string(cfg_path) else { return false };
+    let Ok(root) = CstRootNode::parse(&content, &jsonc_parser::ParseOptions::default()) else {
+        return false;
+    };
+    let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("reliary"));
+    let exe_str = exe_path.to_string_lossy().to_string();
+
+    let obj = root.object_value_or_set();
+    let mcp = obj.object_value_or_set("mcp");
+    // Replace any existing entry so a reinstall cannot leave the old malformed
+    // shape in place (append would leave two `reliary` keys).
+    if let Some(existing) = mcp.get(server_name) {
+        existing.remove();
     }
-    let plugin_path = plugin_dist.canonicalize()
-        .map_err(|e| format!("canonicalize {}: {}", plugin_dist.display(), e))?
-        .to_string_lossy().to_string();
+    mcp.append(
+        server_name,
+        CstInputValue::Object(vec![
+            ("type".into(), CstInputValue::String("local".into())),
+            (
+                "command".into(),
+                CstInputValue::Array(vec![
+                    CstInputValue::String(exe_str),
+                    CstInputValue::String("mcp".into()),
+                ]),
+            ),
+            ("enabled".into(), CstInputValue::Bool(true)),
+        ]),
+    );
+    atomic_write(&cfg_path.to_string_lossy(), &root.to_string())
+}
+
+/// Absolute path where the embedded OpenCode plugin is written.
+fn opencode_plugin_target() -> Option<PathBuf> {
+    get_data_dir().map(|d| d.join("reliary").join(OPENCODE_PLUGIN_FILENAME))
+}
+
+/// Whether a `plugin` array element refers to this tool's plugin.
+fn is_reliary_plugin_entry(el: &jsonc_parser::cst::CstNode) -> bool {
+    el.to_serde_value()
+        .and_then(|v| v.as_str().map(String::from))
+        .map(|s| s.contains("@reliary/opencode") || s.ends_with(OPENCODE_PLUGIN_FILENAME))
+        .unwrap_or(false)
+}
+
+/// Materialize the embedded OpenCode plugin and register it in the config.
+///
+/// The plugin is written to the reliary data dir (not referenced from a source
+/// tree), so this works for cargo/npm/tarball/brew installs where no
+/// `opencode-plugin/` directory exists. Registration is idempotent and drops
+/// any prior reliary plugin path (including the deprecated `@reliary/opencode`
+/// package entry). Uses a lossless JSONC edit to preserve comments.
+fn inject_opencode_plugin(cfg_path: &PathBuf) -> Result<bool, String> {
+    use jsonc_parser::cst::{CstInputValue, CstRootNode};
+
+    let target = opencode_plugin_target().ok_or("could not determine data directory")?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create {}: {}", parent.display(), e))?;
+    }
+    if !atomic_write(&target.to_string_lossy(), EMBEDDED_OPENCODE_PLUGIN) {
+        return Err(format!("failed to write plugin to {}", target.display()));
+    }
+    let plugin_path = target.to_string_lossy().to_string();
 
     let content = fs::read_to_string(cfg_path)
         .map_err(|e| format!("read {}: {}", cfg_path.display(), e))?;
-    let mut v: Value = serde_json::from_str(&content)
+    let root = CstRootNode::parse(&content, &jsonc_parser::ParseOptions::default())
         .map_err(|e| format!("parse {}: {}", cfg_path.display(), e))?;
+    let obj = root.object_value_or_set();
 
-    if let Some(obj) = v.as_object_mut() {
-        let plugin_arr = obj.entry("plugin").or_insert(serde_json::json!([]));
-        if let Some(arr) = plugin_arr.as_array_mut() {
-            // Drop any deprecated entry (the old `@reliary/opencode` v0.x plugin)
-            arr.retain(|v| {
-                let s = v.as_str().unwrap_or("");
-                !s.contains("@reliary/opencode") || s.ends_with("opencode-plugin/dist/index.js")
-            });
-            // Idempotent: only add if not present
-            let already = arr.iter().any(|v| {
-                v.as_str().map(|s| s == plugin_path).unwrap_or(false)
-            });
-            if !already {
-                arr.push(serde_json::Value::String(plugin_path.clone()));
-            }
-            if let Ok(new_content) = serde_json::to_string_pretty(&v) {
-                if atomic_write(&cfg_path.to_string_lossy(), &new_content) {
-                    return Ok(true);
-                }
-                return Err(format!("failed to write {}", cfg_path.display()));
+    // Drop every existing reliary entry (stale path, or the old npm package)
+    // so a reinstall cannot leave duplicates or a dead path behind.
+    if let Some(arr) = obj.array_value("plugin") {
+        for el in arr.elements() {
+            if is_reliary_plugin_entry(&el) {
+                el.remove();
             }
         }
     }
-    Ok(false)
+
+    let arr = obj
+        .array_value_or_create("plugin")
+        .ok_or("config has a non-array \"plugin\" value")?;
+    arr.append(CstInputValue::String(plugin_path));
+
+    if atomic_write(&cfg_path.to_string_lossy(), &root.to_string()) {
+        Ok(true)
+    } else {
+        Err(format!("failed to write {}", cfg_path.display()))
+    }
 }
+
+/// Remove the reliary MCP server entry from an OpenCode config, using a JSONC
+/// edit so an `opencode.jsonc` (with comments) can be parsed and rewritten.
+fn remove_opencode_mcp_server(cfg_path: &PathBuf, server_name: &str) -> bool {
+    use jsonc_parser::cst::CstRootNode;
+    let Ok(content) = fs::read_to_string(cfg_path) else { return false };
+    let Ok(root) = CstRootNode::parse(&content, &jsonc_parser::ParseOptions::default()) else {
+        return false;
+    };
+    let removed = root
+        .object_value()
+        .and_then(|o| o.object_value("mcp"))
+        .and_then(|m| m.get(server_name))
+        .map(|prop| {
+            prop.remove();
+            true
+        })
+        .unwrap_or(false);
+    if removed {
+        atomic_write(&cfg_path.to_string_lossy(), &root.to_string())
+    } else {
+        false
+    }
+}
+
+/// Remove the reliary plugin entry from an OpenCode config and delete the
+/// materialized plugin file. Symmetric with [`inject_opencode_plugin`];
+/// unrelated plugin entries are preserved.
+fn remove_opencode_plugin(cfg_path: &PathBuf) {
+    use jsonc_parser::cst::CstRootNode;
+
+    if let Ok(content) = fs::read_to_string(cfg_path) {
+        if let Ok(root) =
+            CstRootNode::parse(&content, &jsonc_parser::ParseOptions::default())
+        {
+            let mut changed = false;
+            if let Some(obj) = root.object_value() {
+                if let Some(arr) = obj.array_value("plugin") {
+                    for el in arr.elements() {
+                        if is_reliary_plugin_entry(&el) {
+                            el.remove();
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if changed {
+                let _ = atomic_write(&cfg_path.to_string_lossy(), &root.to_string());
+            }
+        }
+    }
+    if let Some(target) = opencode_plugin_target() {
+        let _ = fs::remove_file(&target);
+    }
+}
+
+
+
 
 pub fn uninstall() {
     println!("\nReliary Uninstall");
@@ -636,40 +780,27 @@ pub fn uninstall() {
         }
     }
 
-    // 3. OpenCode
-    if let Some(home) = home_dir() {
-        let opencode_cfg = if cfg!(target_os = "windows") {
-            dirs::config_dir().map(|d| d.join("opencode").join("opencode.json"))
-        } else if cfg!(target_os = "macos") {
-            Some(home.join("Library/Application Support/opencode/opencode.json"))
-        } else {
-            Some(home.join(".config/opencode/opencode.json"))
-        };
-
-        if let Some(cfg_path) = opencode_cfg {
-            if cfg_path.exists()
-                && remove_mcp_server(&cfg_path, "reliary", "mcp") {
-                    ok("Removed Reliary from OpenCode");
-                    removed_agents += 1;
-                }
+    // 3. OpenCode — MCP server and the materialized regen plugin.
+    if let Some(cfg_path) = opencode_config_path() {
+        if cfg_path.exists() {
+            // JSONC-aware removal: a `.jsonc` config with comments cannot be
+            // parsed by the generic serde_json-based remover.
+            let mcp_removed = remove_opencode_mcp_server(&cfg_path, "reliary");
+            // Plugin entry + the file written on install; leaving the entry
+            // behind would make OpenCode try to load a path we just deleted.
+            remove_opencode_plugin(&cfg_path);
+            if mcp_removed {
+                ok("Removed Reliary from OpenCode");
+                removed_agents += 1;
+            }
         }
     }
     
     // 4. Cline
-    if let Some(home) = home_dir() {
-        let cline_cfg = if cfg!(target_os = "windows") {
-            dirs::data_dir().map(|d| d.join("Code").join("User").join("globalStorage").join("rooveterinery.cline").join("cline_mcp_settings.json"))
-        } else if cfg!(target_os = "macos") {
-            Some(home.join("Library/Application Support/Code/User/globalStorage/rooveterinery.cline/cline_mcp_settings.json"))
-        } else {
-            Some(home.join(".config/Code/User/globalStorage/rooveterinery.cline/cline_mcp_settings.json"))
-        };
-
-        if let Some(cfg_path) = cline_cfg {
-            if cfg_path.exists() && remove_mcp_server(&cfg_path, "reliary", "mcpServers") {
-                ok("Removed Reliary from Cline");
-                removed_agents += 1;
-            }
+    if let Some(cfg_path) = cline_config_path() {
+        if cfg_path.exists() && remove_mcp_server(&cfg_path, "reliary", "mcpServers") {
+            ok("Removed Reliary from Cline");
+            removed_agents += 1;
         }
     }
 

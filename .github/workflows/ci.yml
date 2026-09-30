@@ -83,6 +83,14 @@ jobs:
             echo "FAIL: opencode-plugin/dist is stale — run 'npm run build' and commit the result"
             exit 1
           fi
+          # The binary embeds a byte-identical copy of the built plugin (so it
+          # can be written out at `init` with no source tree present). If these
+          # drift, users silently get an old plugin.
+          if ! diff -q dist/index.js ../crates/reliary-agent/opencode-plugin/index.js >/dev/null; then
+            echo "FAIL: crates/reliary-agent/opencode-plugin/index.js is out of sync with dist/index.js"
+            echo "      run: cp opencode-plugin/dist/index.js crates/reliary-agent/opencode-plugin/index.js"
+            exit 1
+          fi
           # Drive the real reindex path, not just the pure functions, and
           # assert the real-binary test actually ran (a silent skip would
           # otherwise look green). Verbose reporter prints passing test names;

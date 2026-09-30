@@ -14,7 +14,7 @@ const { existsSync } = require("fs");
 const { join } = require("path");
 const { homedir } = require("os");
 
-const GATE_VERSION = "0.8.8";
+const GATE_VERSION = "0.8.9";
 
 const SIFT_BASH = process.env.RELIARY_SIFT_BASH !== "0"; // default ON
 // Pack regeneration on edit: opt-in, default OFF.

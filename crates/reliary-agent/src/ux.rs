@@ -303,18 +303,22 @@ fn doctor_checks(installs: &[InstallInfo]) -> Vec<DoctorCheck> {
     });
 
     // --- OpenCode integration (optional) ---
-    let opencode_cfg = if cfg!(target_os = "windows") {
-        dirs::config_dir().map(|d| d.join("opencode").join("opencode.json"))
-    } else if cfg!(target_os = "macos") {
-        home_dir().map(|h| h.join("Library/Application Support/opencode/opencode.json"))
-    } else {
-        home_dir().map(|h| h.join(".config/opencode/opencode.json"))
-    }.unwrap_or_default();
-    let opencode_ok = has_mcp_server(&opencode_cfg, "reliary");
+    let opencode_cfg = find_opencode_config();
+    let (opencode_ok, opencode_detail) = match &opencode_cfg {
+        None => (false, "not found (optional)".to_string()),
+        Some(p) if opencode_mcp_well_formed(p) => (true, "MCP wired".to_string()),
+        Some(p) if has_mcp_server(p, "reliary") => (
+            false,
+            "mcp.reliary present but malformed (needs \"type\":\"local\" and an \
+             array \"command\") — re-run `reliary init`"
+                .to_string(),
+        ),
+        Some(_) => (false, "config exists but not wired — run `reliary init`".to_string()),
+    };
     checks.push(DoctorCheck {
         name: "opencode",
         ok: opencode_ok,
-        detail: if opencode_ok { "MCP wired".into() } else if opencode_cfg.exists() { "config exists but not wired — run `reliary init`".into() } else { "not found (optional)".into() },
+        detail: opencode_detail,
         fixable: false,
         optional: true,
     });
@@ -686,6 +690,53 @@ fn has_mcp_server(cfg_path: &PathBuf, server_name: &str) -> bool {
         }
     }
     false
+}
+
+/// Whether an OpenCode config's `mcp.reliary` entry is *well-formed*.
+///
+/// OpenCode requires a local server to be `{ "type": "local", "command":
+/// ["<exe>", ...] }`. The Claude/Cline shape (`{ "command": "<string>",
+/// "args": [...] }`) decodes as invalid and the server never starts, so
+/// checking only for the key's presence (as `has_mcp_server` does) reports a
+/// false green.
+///
+/// Parsed with the JSONC parser because OpenCode's documented default config
+/// (`opencode.jsonc`) contains comments that `serde_json` rejects.
+fn opencode_mcp_well_formed(cfg_path: &std::path::Path) -> bool {
+    let Ok(content) = fs::read_to_string(cfg_path) else { return false };
+    let Ok(Some(v)) = jsonc_parser::parse_to_value(&content, &jsonc_parser::ParseOptions::default())
+    else {
+        return false;
+    };
+    let jsonc_parser::JsonValue::Object(root) = v else { return false };
+    let Some(jsonc_parser::JsonValue::Object(mcp)) = root.get("mcp") else { return false };
+    let Some(entry) = mcp.get("reliary") else { return false };
+    let jsonc_parser::JsonValue::Object(entry) = entry else { return false };
+    let is_local = matches!(entry.get("type"), Some(jsonc_parser::JsonValue::String(s)) if *s == "local");
+    let command_ok = matches!(
+        entry.get("command"),
+        Some(jsonc_parser::JsonValue::Array(a)) if !a.is_empty()
+    );
+    is_local && command_ok
+}
+
+/// Locate any OpenCode global config, preferring the files OpenCode itself
+/// checks (`opencode.jsonc`, then `opencode.json`, then `config.json`).
+fn find_opencode_config() -> Option<PathBuf> {
+    let dir = if cfg!(target_os = "windows") {
+        dirs::config_dir().map(|d| d.join("opencode"))
+    } else if cfg!(target_os = "macos") {
+        home_dir().map(|h| h.join("Library/Application Support/opencode"))
+    } else {
+        home_dir().map(|h| h.join(".config/opencode"))
+    }?;
+    for name in ["opencode.jsonc", "opencode.json", "config.json"] {
+        let p = dir.join(name);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

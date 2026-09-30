@@ -25,23 +25,23 @@ Run `reliary init` from any directory; you'll be prompted:
 ✓ Installed reliary-opencode plugin
 ```
 
-The plugin path is appended to the `"plugin"` array in `opencode.json`.
+`init` writes the built plugin to `~/.local/share/reliary/opencode-plugin.js`
+and adds that path to the `"plugin"` array in your OpenCode config. No source
+tree or npm install is needed.
 
-### Option 2 — Manual
+### Option 2 — Manual (from a source checkout)
 
 ```bash
 cd opencode-plugin
 npm install                # one-time
-npm run build              # tsup → dist/
-npm pack                   # → reliary-opencode-plugin-0.1.0.tgz
-npm install -g ./reliary-opencode-plugin-0.1.0.tgz
+npm run build              # tsup → dist/index.js
 ```
 
-Then add to `opencode.json`:
+Then point your config at the built file:
 
 ```json
 {
-  "plugin": ["./reliary-opencode-plugin"]
+  "plugin": ["/absolute/path/to/opencode-plugin/dist/index.js"]
 }
 ```
 
