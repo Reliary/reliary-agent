@@ -7,7 +7,7 @@
 mod common;
 
 use common::{binary_path, run_cli, run_cli_stdin, Fixture};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn stdout_of(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
@@ -418,8 +418,120 @@ fn e2e_cli_uninstall_removes_mcp_entries() {
     assert!(!text.contains("panicked"), "uninstall must not panic: {}", text);
 }
 
-// ── completions / man ─────────────────────────────────────────────────────
+// ── the advertised short alias is real ─────────────────────────────────────
+//
+// `--help` used to print "Shorter: 'rel' also works for all commands", but
+// nothing ever created a `rel` command — the hint was aspirational. These
+// tests pin the two halves: init creates the shim, uninstall removes it, and
+// the help text does not name a binary that is not the one being run.
 
+/// The `rel` shim path under a fake HOME.
+fn rel_shim(home: &Path) -> PathBuf {
+    home.join(".local/bin").join(if cfg!(windows) { "rel.cmd" } else { "rel" })
+}
+
+#[test]
+fn e2e_cli_init_installs_rel_alias() {
+    let home = fake_home();
+    // Answers: claude mcp, claude hooks, opencode mcp, opencode plugin, rel alias.
+    let out = init_with(home.path(), "Y\nY\nY\nY\nY\n");
+    let text = plain(&format!("{}{}", stdout_of(&out), stderr_of(&out)));
+
+    let shim = rel_shim(home.path());
+    assert!(
+        shim.symlink_metadata().is_ok(),
+        "init must create the 'rel' shim it advertises: {}",
+        text
+    );
+
+    // The shim must dispatch: running it reports the crate version.
+    let rel_out = std::process::Command::new(&shim)
+        .arg("--version")
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .output()
+        .expect("run rel shim");
+    let rel_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&rel_out.stdout),
+        String::from_utf8_lossy(&rel_out.stderr)
+    );
+    assert!(
+        rel_text.contains("reliary") && rel_text.contains(env!("CARGO_PKG_VERSION")),
+        "'rel' shim must dispatch to reliary and report its version: {}",
+        rel_text
+    );
+}
+
+#[test]
+fn e2e_cli_uninstall_removes_rel_alias() {
+    let home = fake_home();
+    init_with(home.path(), "Y\nY\nY\nY\nY\n");
+    assert!(
+        rel_shim(home.path()).symlink_metadata().is_ok(),
+        "precondition: init must have installed the shim"
+    );
+
+    let out = run_cli(
+        &["uninstall"],
+        home.path(),
+        &[("HOME", home.path().to_str().unwrap())],
+    );
+    assert!(
+        rel_shim(home.path()).symlink_metadata().is_err(),
+        "uninstall must remove the 'rel' shim: {}",
+        plain(&format!("{}{}", stdout_of(&out), stderr_of(&out)))
+    );
+}
+
+#[test]
+fn e2e_cli_dry_run_does_not_install_rel_alias() {
+    let home = fake_home();
+    init_args(home.path(), &["init", "--dry-run"], "\n\n\n\n\n\n");
+    assert!(
+        rel_shim(home.path()).symlink_metadata().is_err(),
+        "dry-run must not create the 'rel' shim"
+    );
+}
+
+#[test]
+fn e2e_cli_help_examples_use_the_real_binary_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_cli(&["--help"], dir.path(), &[]);
+    let text = plain(&stdout_of(&out));
+
+    // The examples used to say `reliary-agent index .`, naming a binary the
+    // user does not have. Every example line must start with `reliary `.
+    let examples: Vec<&str> = text
+        .lines()
+        .skip_while(|l| !l.starts_with("EXAMPLES"))
+        .skip(1)
+        .take_while(|l| !l.trim().is_empty())
+        .collect();
+    assert!(!examples.is_empty(), "help must list examples: {}", text);
+    for line in &examples {
+        let cmd = line.trim();
+        assert!(
+            cmd.starts_with("reliary "),
+            "example must invoke the real binary 'reliary': {:?}",
+            cmd
+        );
+        assert!(
+            !cmd.contains("reliary-agent"),
+            "example must not reference the crate name 'reliary-agent': {:?}",
+            cmd
+        );
+    }
+
+    // Usage line must match the shipped binary name too.
+    assert!(
+        text.contains("Usage: reliary"),
+        "--help usage line must name the binary 'reliary': {}",
+        text
+    );
+}
+
+// ── completions / man ─────────────────────────────────────────────────────
 #[test]
 fn e2e_cli_completions_and_man_emit_output() {
     let dir = tempfile::tempdir().unwrap();

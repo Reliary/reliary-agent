@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-09-30
+
+### Fixed
+
+- **`--help` named a binary you do not have.** The examples said `reliary-agent index .`, but the shipped binary is `reliary` (the crate is `reliary-agent`; `cargo install reliary-agent` is what puts `reliary` on your PATH). Every example now uses `reliary`, and a test asserts each example line starts with the real binary name.
+- **The advertised `rel` shortcut did not exist.** `--help` printed "Shorter: 'rel' also works for all commands", but nothing ever created a `rel` command, so `rel search` failed with `command not found`. `reliary init` now offers to install a `rel` shim into `~/.local/bin` (a symlink on Unix, a `.cmd` wrapper on Windows) and `uninstall` removes it. The help text now says how to get it. A test runs the installed shim and checks it dispatches.
+
 ## [0.8.7] - 2026-09-28
 
 ### Fixed

@@ -133,9 +133,9 @@ mod tests {
     fn completions_bash_generates_output() {
         let mut cmd = Cli::command();
         let mut buf = Vec::new();
-        generate(clap_complete::Shell::Bash, &mut cmd, "reliary-agent", &mut buf);
+        generate(clap_complete::Shell::Bash, &mut cmd, "reliary", &mut buf);
         let output = String::from_utf8_lossy(&buf).to_string();
-        assert!(output.contains("reliary-agent"), "Bash completions should mention binary name");
+        assert!(output.contains("reliary"), "Bash completions should mention binary name");
         assert!(output.contains("completions"), "Bash completions should list 'completions' subcommand");
         assert!(output.contains("search"), "Bash completions should list 'search' subcommand");
         assert!(output.contains("update"), "Bash completions should list 'update' subcommand");
@@ -146,36 +146,36 @@ mod tests {
     fn completions_zsh_generates_output() {
         let mut cmd = Cli::command();
         let mut buf = Vec::new();
-        generate(clap_complete::Shell::Zsh, &mut cmd, "reliary-agent", &mut buf);
+        generate(clap_complete::Shell::Zsh, &mut cmd, "reliary", &mut buf);
         let output = String::from_utf8_lossy(&buf).to_string();
-        assert!(output.contains("reliary-agent"), "Zsh completions should mention binary name");
+        assert!(output.contains("reliary"), "Zsh completions should mention binary name");
     }
 
     #[test]
     fn completions_fish_generates_output() {
         let mut cmd = Cli::command();
         let mut buf = Vec::new();
-        generate(clap_complete::Shell::Fish, &mut cmd, "reliary-agent", &mut buf);
+        generate(clap_complete::Shell::Fish, &mut cmd, "reliary", &mut buf);
         let output = String::from_utf8_lossy(&buf).to_string();
-        assert!(output.contains("reliary-agent"), "Fish completions should mention binary name");
+        assert!(output.contains("reliary"), "Fish completions should mention binary name");
     }
 
     #[test]
     fn completions_powershell_generates_output() {
         let mut cmd = Cli::command();
         let mut buf = Vec::new();
-        generate(clap_complete::Shell::PowerShell, &mut cmd, "reliary-agent", &mut buf);
+        generate(clap_complete::Shell::PowerShell, &mut cmd, "reliary", &mut buf);
         let output = String::from_utf8_lossy(&buf).to_string();
-        assert!(output.contains("reliary-agent"), "PowerShell completions should mention binary name");
+        assert!(output.contains("reliary"), "PowerShell completions should mention binary name");
     }
 
     #[test]
     fn completions_elvish_generates_output() {
         let mut cmd = Cli::command();
         let mut buf = Vec::new();
-        generate(clap_complete::Shell::Elvish, &mut cmd, "reliary-agent", &mut buf);
+        generate(clap_complete::Shell::Elvish, &mut cmd, "reliary", &mut buf);
         let output = String::from_utf8_lossy(&buf).to_string();
-        assert!(output.contains("reliary-agent"), "Elvish completions should mention binary name");
+        assert!(output.contains("reliary"), "Elvish completions should mention binary name");
     }
 
     #[test]
@@ -185,7 +185,7 @@ mod tests {
         let mut buf = Vec::new();
         man.render(&mut buf).expect("Failed to render man page");
         let output = String::from_utf8_lossy(&buf).to_string();
-        assert!(output.contains(".TH reliary-agent"), "Man page should have TH header");
+        assert!(output.contains(".TH reliary"), "Man page should have TH header");
         assert!(output.contains("search"), "Man page should document search");
         assert!(output.contains("server"), "Man page should document MCP server");
         assert!(output.contains("completions"), "Man page should document completions");
@@ -289,21 +289,21 @@ mod tests {
 
     #[test]
     fn verbose_flag_parsed() {
-        let cli = Cli::try_parse_from(["reliary-agent", "-vv", "search", "test", "."]);
+        let cli = Cli::try_parse_from(["reliary", "-vv", "search", "test", "."]);
         assert!(cli.is_ok());
         assert_eq!(cli.unwrap().verbose, 2);
     }
 
     #[test]
     fn quiet_flag_parsed() {
-        let cli = Cli::try_parse_from(["reliary-agent", "-q", "search", "test", "."]);
+        let cli = Cli::try_parse_from(["reliary", "-q", "search", "test", "."]);
         assert!(cli.is_ok());
         assert!(cli.unwrap().quiet);
     }
 
     #[test]
     fn format_flag_parsed() {
-        let cli = Cli::try_parse_from(["reliary-agent", "-f", "json", "search", "test", "."]);
+        let cli = Cli::try_parse_from(["reliary", "-f", "json", "search", "test", "."]);
         assert!(cli.is_ok());
         assert_eq!(cli.unwrap().format, "json");
     }
@@ -312,7 +312,7 @@ mod tests {
     fn completions_outdir_creates_file() {
         let tmp = tempfile::tempdir().unwrap();
         let outdir = tmp.path().to_str().unwrap();
-        let cli = Cli::try_parse_from(["reliary-agent", "completions", "bash", "--outdir", outdir]);
+        let cli = Cli::try_parse_from(["reliary", "completions", "bash", "--outdir", outdir]);
         assert!(cli.is_ok());
         // The completions command would write to outdir/reliary-agent.bash
         // We can't easily test the full dispatch without calling main, but we verify parsing works
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn update_check_flag_parsed() {
-        let cli = Cli::try_parse_from(["reliary-agent", "update", "--check"]);
+        let cli = Cli::try_parse_from(["reliary", "update", "--check"]);
         assert!(cli.is_ok());
         match cli.unwrap().command {
             Commands::Update { check } => assert!(check),
@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn trust_path_parsed() {
-        let cli = Cli::try_parse_from(["reliary-agent", "trust", "/tmp/test"]);
+        let cli = Cli::try_parse_from(["reliary", "trust", "/tmp/test"]);
         assert!(cli.is_ok());
         match cli.unwrap().command {
             Commands::Trust { path } => assert_eq!(path, "/tmp/test"),
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn trust_default_path() {
-        let cli = Cli::try_parse_from(["reliary-agent", "trust"]);
+        let cli = Cli::try_parse_from(["reliary", "trust"]);
         assert!(cli.is_ok());
         match cli.unwrap().command {
             Commands::Trust { path } => assert_eq!(path, "."),
@@ -365,7 +365,7 @@ mod tests {
     fn completions_includes_global_flags() {
         let mut cmd = Cli::command();
         let mut buf = Vec::new();
-        generate(clap_complete::Shell::Bash, &mut cmd, "reliary-agent", &mut buf);
+        generate(clap_complete::Shell::Bash, &mut cmd, "reliary", &mut buf);
         let output = String::from_utf8_lossy(&buf).to_string();
         // Global flags should appear in completions
         assert!(output.contains("--format") || output.contains("format"), "Completions should include --format flag");
@@ -709,23 +709,23 @@ fn build_cli() -> clap::Command {
 
 #[derive(Parser)]
 #[command(
-    name = "reliary-agent",
+    name = "reliary",
     version = VERSION,
     about = "Grammar-free code intelligence CLI and MCP server",
     after_help = "\
 EXAMPLES:
-  reliary-agent index .              Build search index for current project
-  reliary-agent search query .       Search indexed project
-  reliary-agent risk src/main.rs     Check edit risk before making changes
-  reliary-agent init                 Auto-configure agents (Pi, Claude, Cline)
-  reliary-agent doctor               System health check
-  reliary-agent doctor --fix         Check and fix issues automatically
-  reliary-agent completions bash     Generate bash completions
-  reliary-agent man                  Generate man page
+  reliary index .               Build search index for current project
+  reliary search query .        Search indexed project
+  reliary risk src/main.rs      Check edit risk before making changes
+  reliary init                  Auto-configure agents (Pi, Claude Code, OpenCode, Cline)
+  reliary doctor                System health check
+  reliary doctor --fix          Check and fix issues automatically
+  reliary completions bash      Generate bash completions
+  reliary man                   Generate man page
 
 ALIAS:
-  Shorter: 'rel' also works for all commands.
-  e.g. 'rel search', 'rel doctor'
+  Short: 'rel' also works for every command, e.g. 'rel search', 'rel doctor'.
+  Run `reliary init` to install the 'rel' shim into ~/.local/bin.
 
 ENVIRONMENT:
   NO_COLOR          Disable colored output
@@ -897,7 +897,7 @@ enum Commands {
         #[arg(default_value = ".")]
         path: String,
     },
-    /// Update reliary-agent to latest release
+    /// Update reliary to the latest release
     Update {
         /// Check only, don't install
         #[arg(long)]
@@ -1109,7 +1109,7 @@ fn read_prefix(path: &std::path::Path, n: usize) -> std::io::Result<Vec<u8>> {
 
 fn exec_wrap(cmd: &[String]) {
     if cmd.is_empty() {
-        eprintln!("Usage: reliary-agent wrap <command> [args...]");
+        eprintln!("Usage: reliary wrap <command> [args...]");
         std::process::exit(1);
     }
     let program = &cmd[0];
@@ -1293,7 +1293,7 @@ fn exec_sift(cmd: &[String], stdin_mode: bool) {
     }
 
     if cmd.is_empty() {
-        eprintln!("Usage: reliary-agent sift <command> [args...]  |  sift --stdin");
+        eprintln!("Usage: reliary sift <command> [args...]  |  sift --stdin");
         std::process::exit(1);
     }
     let program = &cmd[0];
@@ -2341,7 +2341,7 @@ fn main() {
                     }
                 }
                 _ => {
-                    eprintln!("Usage: reliary-agent config [key] [value]");
+                    eprintln!("Usage: reliary config [key] [value]");
                     eprintln!("       reliary-agent config (show current)");
                     eprintln!("       reliary-agent config --local mode strict");
                 }
@@ -2869,12 +2869,12 @@ fn main() {
                 Shell::Elvish => "elvish",
             };
             let mut buf = Vec::new();
-            generate(sh, &mut cmd, "reliary-agent", &mut buf);
+            generate(sh, &mut cmd, "reliary", &mut buf);
             let output = String::from_utf8_lossy(&buf).to_string();
             if let Some(dir) = outdir {
                 let path = std::path::Path::new(dir);
                 std::fs::create_dir_all(path).ok();  // GUARDED: intentional
-                let file_path = path.join(format!("reliary-agent.{}", ext));
+                let file_path = path.join(format!("reliary.{}", ext));
                 if let Err(e) = reliary_core::atomic_write(file_path.to_string_lossy().as_ref(), &output) {
                     eprintln!("{} Failed to write completion file: {}", color::red("✗"), e);
                     std::process::exit(1);

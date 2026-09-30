@@ -93,6 +93,72 @@ fn get_data_dir() -> Option<PathBuf> {
     }
 }
 
+/// Path of the short-alias shim that the `--help` text advertises.
+fn rel_shim_path() -> Option<PathBuf> {
+    home_dir().map(|h| {
+        h.join(".local/bin")
+            .join(if cfg!(windows) { "rel.cmd" } else { "rel" })
+    })
+}
+
+/// Install the `rel` short alias so the hint in `--help` is true rather than
+/// aspirational. A symlink to the running binary on Unix; a tiny `.cmd`
+/// wrapper on Windows (non-symlink is the safe default there). Best-effort:
+/// a failure is reported but never aborts `init`.
+fn install_rel_shim(dry_run: bool) -> bool {
+    let Some(shim) = rel_shim_path() else { return false };
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("reliary"));
+
+    if dry_run {
+        dry_run_action(&format!("install 'rel' shim → {}", shim.display()));
+        return true;
+    }
+
+    let Some(parent) = shim.parent() else { return false };
+    if fs::create_dir_all(parent).is_err() {
+        return false;
+    }
+    // Replace any existing shim so a stale or wrong target cannot survive.
+    let _ = fs::remove_file(&shim);
+
+    #[cfg(unix)]
+    let created = std::os::unix::fs::symlink(&exe, &shim).is_ok();
+
+    #[cfg(windows)]
+    let created = fs::write(&shim, format!("@echo off\r\n\"{}\" %*\r\n", exe.display())).is_ok();
+
+    if created {
+        ok(&format!("Installed 'rel' alias → {}", shim.display()));
+        if !path_contains(parent) {
+            println!(
+                "  \x1b[33m!\x1b[0m {} is not on your PATH — add it to use 'rel'",
+                parent.display()
+            );
+        }
+    }
+    created
+}
+
+/// Whether `dir` appears in `PATH`.
+fn path_contains(dir: &std::path::Path) -> bool {
+    std::env::var("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| d == dir))
+        .unwrap_or(false)
+}
+
+/// Remove the short-alias shim. Symmetric with [`install_rel_shim`].
+fn remove_rel_shim() {
+    if let Some(shim) = rel_shim_path() {
+        // A dangling symlink has no regular-file metadata, so check the link
+        // itself too, or we would leave a broken `rel` behind.
+        if (shim.exists() || shim.symlink_metadata().is_ok())
+            && fs::remove_file(&shim).is_ok()
+        {
+            ok("Removed 'rel' alias");
+        }
+    }
+}
+
 pub fn run(dry_run: bool) {
     let bold = "\x1b[1m";
     let dim = "\x1b[2m";
@@ -260,6 +326,15 @@ pub fn run(dry_run: bool) {
 
     if configured_agents == 0 {
         println!("  {} No agents were configured. You can run `reliary init` again later.", dim);
+    }
+
+    // Short alias 'rel', advertised in `reliary --help`.
+    if dry_run {
+        dry_run_action("install 'rel' shim");
+    } else if ask_yes_no("Install the short 'rel' command alias?", true) {
+        install_rel_shim(false);
+    } else {
+        println!("  \x1b[33m-\x1b[0m Skipped\n");
     }
 
     // ── Summary ──
@@ -633,6 +708,9 @@ pub fn uninstall() {
         println!("- No MCP integrations found or modified");
     }
     println!();
+
+    // Short alias shim (mirror of install_rel_shim).
+    remove_rel_shim();
 
     // 5. Config
     if ask_yes_no("Do you want to delete global configuration files? (~/.reliary)", false) {
