@@ -21,6 +21,7 @@ mod tee;
 mod ux;
 
 mod paths;
+mod index_root;
 
 use clap::{Parser, Subcommand, ValueEnum, CommandFactory};
 use clap_complete::generate;
@@ -1385,22 +1386,16 @@ fn sift_file_read(raw: &str, args: &[String]) -> String {
 
 /// Find and open the nearest .reliary/index.sqlite by walking up from the given path.
 fn find_open_index(start_path: &str) -> Option<rusqlite::Connection> {
-    let start = std::path::Path::new(start_path);
-    let mut current = if start.is_dir() {
-        start.to_path_buf()
-    } else {
-        start.parent()?.to_path_buf()
-    };
-    loop {
-        let candidate = current.join(".reliary").join("index.sqlite");
-        if candidate.exists() {
-            return rusqlite::Connection::open(&candidate).ok().inspect(|d| {
-                let _ = d.execute_batch("PRAGMA synchronous = NORMAL;");
-            });
-        }
-        if !current.pop() { break; }
-    }
-    None
+    // V77: walk up to the nearest *usable* index (skips empty stubs) and open it
+    // read-only. `Connection::open` is read-write-create and would otherwise
+    // leave a 0-table `index.sqlite` behind wherever `.reliary/` happens to exist.
+    let root = crate::index_root::nearest_index_root(std::path::Path::new(start_path))?;
+    let candidate = crate::index_root::db_path_for(&root);
+    rusqlite::Connection::open_with_flags(&candidate, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .ok()
+        .inspect(|d| {
+            let _ = d.execute_batch("PRAGMA synchronous = NORMAL;");
+        })
 }
 
 /// Build a structured footer with callers + test references for the file.

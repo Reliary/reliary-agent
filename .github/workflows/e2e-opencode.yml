@@ -1,0 +1,54 @@
+name: OpenCode Agent E2E
+
+# Layer 2 integration test: a real OpenCode agent, driven headlessly with a
+# keyless free model, must call reliary's MCP tools and answer correctly.
+#
+# Not on every push: it depends on OpenCode's free tier (network, shared-CI
+# rate limits) and a third-party binary, so it runs nightly and on demand.
+# Layer 1 (Dockerfile.e2e, in ci.yml) is the offline per-push gate.
+on:
+  schedule:
+    # 03:17 UTC daily
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "OpenCode model id"
+        required: false
+        default: "opencode/deepseek-v4.1-flash-free"
+
+permissions:
+  contents: read
+
+jobs:
+  opencode-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - uses: actions-rust-lang/setup-rust-toolchain@46a9d261ee2ace4b93b3bd6e867168ac38627b38
+        with:
+          toolchain: stable
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af
+        with:
+          node-version: "22"
+
+      - name: Build reliary
+        run: cargo build --release
+
+      # Pinned so a silent upstream change cannot turn the test red without
+      # explanation. Bump deliberately.
+      - name: Install OpenCode
+        run: npm install -g opencode-ai@1.18.31
+
+      # No API key is provided on purpose: with OPENCODE_API_KEY unset, OpenCode
+      # sends anonymous requests to its free tier and enables only zero-cost
+      # models. This is the keyless path we want to exercise.
+      - name: Run OpenCode agent e2e
+        env:
+          RELIARY_BIN: ${{ github.workspace }}/target/release/reliary
+          OPENCODE_BIN: opencode
+          RELIARY_E2E_MODEL: ${{ github.event.inputs.model || 'opencode/deepseek-v4.1-flash-free' }}
+          RELIARY_E2E_TIMEOUT: "300"
+        run: bash scripts/e2e_opencode.sh

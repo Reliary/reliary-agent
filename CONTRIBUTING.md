@@ -49,6 +49,30 @@ cargo test -- --skip e2e_               # unit tests only
 gets an e2e test in the matching file above — the e2e layer is what catches
 protocol and process-boundary regressions that unit tests cannot see.
 
+**Docker integration tests.** Two container layers exercise the shipped binary
+and a real agent client end to end:
+
+```bash
+make e2e            # Layer 1 — offline, keyless: the binary in a clean container
+make e2e-opencode   # Layer 2 — a real OpenCode agent driving reliary's MCP tools
+```
+
+- **Layer 1** (`Dockerfile.e2e`, `scripts/e2e_docker_checks.sh`) runs the
+  installed binary with `--network none`: install → `trust` → `search` → MCP
+  handshake/`tools/call` → `init`/`uninstall` round-trip. It gates every push in
+  CI and needs no secret.
+- **Layer 2** (`scripts/e2e_opencode.sh`, `.github/workflows/e2e-opencode.yml`)
+  installs OpenCode, wires reliary via `reliary init`, and runs `opencode run`
+  headlessly with a **keyless free model**. It asserts the agent actually called
+  a `reliary_*` tool and answered correctly, plus a negative control proving an
+  unwired project calls no reliary tools. It needs network + the free tier, so it
+  runs nightly and on `workflow_dispatch`, not per push. No API key is used:
+  with `OPENCODE_API_KEY` unset, OpenCode's free tier is anonymous.
+
+Both layers assert real behaviour and carry negative controls; neither may skip
+silently. If Layer 2 cannot run (no network/model), remove the job rather than
+let it report green.
+
 **The OpenCode plugin** has its own suite:
 
 ```bash

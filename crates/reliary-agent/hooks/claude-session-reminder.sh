@@ -16,4 +16,6 @@ Code intelligence protocol — prefer reliary MCP tools over Grep/Read:
 5. reliary_describe(symbol) — overview of a symbol
 6. reliary_verify(text) — verify a claim about the code
 Fall back to Grep/Glob/Read only if reliary lacks the data.
+The tools find the project index on their own. If a call returns "no index",
+pass the project directory as path=<dir> on the next call.
 REMINDER

@@ -55,10 +55,27 @@ listed; do not guess their names.
 - **Recent file changes** — use `git diff`.
 - **Binary files** — reliary indexes source text only.
 
+## Which project do the tools use?
+
+The tools locate the index themselves; you do not need to start the server from
+the project. Resolution order:
+
+1. the `path` argument you pass on the call, if it names a directory;
+2. `RELIARY_ROOT`;
+3. the workspace root your client advertises (`roots/list`);
+4. the server's working directory.
+
+From there they walk up to the nearest `.reliary/` index. So a call from a
+subdirectory finds the project above it, and `path="/abs/project"` selects that
+project explicitly. If a lookup returns "no index", pass the project directory
+as `path` rather than retrying.
+
 ## Indexing
 
 Before any query, the project must be indexed. Run `reliary trust <path>` once
-per project. Indexing takes seconds for most repos.
+per project (from that directory, or pass the path). Indexing takes seconds for
+most repos. `reliary init` can auto-index the project the first time an MCP
+client connects to it.
 
 ## Compressing verbose output
 

@@ -36,25 +36,112 @@ fn truncate_limit() -> usize {
     })
 }
 
-/// P1-6: Cached DB path string. The DB path doesn't change within an MCP
-/// server lifetime. Computing it via `format!()` and `.to_string_lossy()` per
-/// call is wasteful. Cache the canonical PathBuf at first use.
-static CACHED_DB_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
-
-fn cached_db_path() -> &'static std::path::PathBuf {
-    CACHED_DB_PATH.get_or_init(|| {
-        cached_cwd().join(".reliary").join("index.sqlite")
-    })
+// V77: the workspace root advertised by the MCP client (`roots/list`). When
+// present it is the authoritative project for the session — an agent may be
+// editing project B while the MCP server process was spawned from project A
+// (or from $HOME with a global config). Falls back to CWD when the client does
+// not implement roots.
+thread_local! {
+    static CLIENT_ROOT: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
 }
 
-// V54: thread-local cached SQLite connection for the CWD project. The stdio
-// MCP server is single-threaded (serve_stdio loop), so a thread_local keeps
-// ONE connection alive across all tool calls. Reusing it:
+fn client_root() -> Option<std::path::PathBuf> {
+    CLIENT_ROOT.with(|c| c.borrow().clone())
+}
+
+fn set_client_root(root: std::path::PathBuf) {
+    CLIENT_ROOT.with(|c| *c.borrow_mut() = Some(root));
+}
+
+// V77: the project root the last resolution settled on, so relpath/display and
+// the phrase-index cache use the *project*, not the server's launch CWD.
+thread_local! {
+    static ACTIVE_ROOT: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The active project root: the last resolved index root, else the process CWD.
+fn active_root() -> std::path::PathBuf {
+    ACTIVE_ROOT
+        .with(|c| c.borrow().clone())
+        .unwrap_or_else(|| cached_cwd().clone())
+}
+
+/// A `path` argument used purely as a module-prefix filter is only meaningful
+/// when it stays inside the project: indexed file paths are absolute under the
+/// root, so a filter that escapes (`../../etc`) can never match anything. Treat
+/// an escaping filter as no filter — it must not be echoed as if it were a valid
+/// scope, and must never be used to read files outside the project.
+fn safe_module_filter(filter: Option<&str>) -> Option<String> {
+    let f = filter?;
+    if f.is_empty() || f == "." {
+        return None;
+    }
+    let root = active_root();
+    let candidate = root.join(f);
+    let inside = candidate
+        .canonicalize()
+        .map(|c| c.starts_with(&root))
+        .unwrap_or(false);
+    if inside { Some(f.to_string()) } else { None }
+}
+
+// V54: thread-local cached SQLite connection for the active project. The stdio
+// MCP server is single-threaded (serve_stdio loop), so a thread_local keeps the
+// connection alive across tool calls. Reusing it:
 //   - keeps `prepare_cached` statement caches warm (no re-parse per call)
 //   - avoids the ~20-50ms open + PRAGMA + schema-verify per call
 //   - correctly shares the same WAL-backed index file
+// V77: keyed by resolved DB path — a session that switches roots (or an agent
+// that passes a different `path`) drops the stale connection and opens the new
+// one instead of silently querying the wrong project.
 thread_local! {
-    static CACHED_CONN: std::cell::RefCell<Option<rusqlite::Connection>> = const { std::cell::RefCell::new(None) };
+    static CACHED_CONN: std::cell::RefCell<Option<(std::path::PathBuf, rusqlite::Connection)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Resolve the project root for this session, honoring an optional `path` hint.
+/// Records the resolved root as the active project so relpath/display and the
+/// phrase-index cache agree with the DB actually being queried.
+fn index_root_for(hint: Option<&str>) -> crate::index_root::Resolution {
+    let cr = client_root();
+    let res = crate::index_root::resolve(hint, cr.as_deref());
+    if let crate::index_root::Resolution::Found(root) = &res {
+        ACTIVE_ROOT.with(|c| *c.borrow_mut() = Some(root.clone()));
+    }
+    res
+}
+
+/// The resolved index DB path for this session (or None if no usable index).
+/// Used where a path *string* is needed (phrase-index cache key, messages).
+///
+/// With no hint, prefers the root a prior resolution already settled on — a
+/// call that queried project A via `path` must not have its follow-up stamp or
+/// suggestion lookup fall back to the launch CWD.
+fn resolved_db_path(hint: Option<&str>) -> Option<std::path::PathBuf> {
+    if hint.is_none() {
+        if let Some(root) = ACTIVE_ROOT.with(|c| c.borrow().clone()) {
+            let p = crate::index_root::db_path_for(&root);
+            if crate::index_root::is_reliary_index(&p) {
+                return Some(p);
+            }
+        }
+    }
+    match index_root_for(hint) {
+        crate::index_root::Resolution::Found(root) => Some(crate::index_root::db_path_for(&root)),
+        crate::index_root::Resolution::NotFound(_) => None,
+    }
+}
+
+/// Diagnostic string naming where the search started (for "no index" errors).
+fn index_search_note() -> String {
+    match index_root_for(None) {
+        crate::index_root::Resolution::NotFound(start) => crate::index_root::searched_note(&start),
+        crate::index_root::Resolution::Found(root) => {
+            format!("index at {}", crate::index_root::db_path_for(&root).display())
+        }
+    }
 }
 
 // V56: session-level tool-result cache. Tools are deterministic (V26
@@ -152,22 +239,39 @@ fn compact_cached(text: &str) -> String {
     }
 }
 
-/// Get the shared connection for the CWD project. Opens + verifies on first
-/// use, reuses afterwards within this thread. Returns None if no index.
+/// Get the shared connection for the resolved project index, honoring an
+/// optional `path` hint (a tool's `path` argument). Opens + verifies on first
+/// use, reuses afterwards within this thread. Returns None if no usable index.
+///
+/// V77: opens the DB read-only. `Connection::open` is read-write-**create**, so
+/// the old code silently created a 0-table `index.sqlite` whenever the CWD held
+/// a `.reliary/` dir but no valid index — which then shadowed the real project
+/// on the next walk-up. Read-only cannot create, and `open_existing_db_safe`
+/// still runs (it only touches PRAGMAs and migrations, never CREATE).
 pub fn get_cached_db() -> Option<rusqlite::Connection> {
-    // Take the cached connection out (borrow_mut ends immediately).
-    let cached: Option<rusqlite::Connection> = CACHED_CONN.with(|c| c.borrow_mut().take());
-    if let Some(conn) = cached {
-        // Reuse without re-running PRAGMAs — journal_mode=WAL blocks while
-        // another connection holds the DB (e.g. auto_trust's handle), and
-        // re-running it per call deadlocks the stdio loop.
-        return Some(conn);
+    get_cached_db_for(None)
+}
+
+/// As [`get_cached_db`], but resolving from an explicit `path` hint.
+pub fn get_cached_db_for(hint: Option<&str>) -> Option<rusqlite::Connection> {
+    // `resolved_db_path` validates with a read-only probe and never creates the
+    // file, so by the time we open read-write the path is a real index. Opening
+    // read-write is required: `open_existing_db_safe` sets journal_mode=WAL and
+    // JIT builds write occurrence rows, both of which a read-only handle refuses.
+    let db_path = resolved_db_path(hint)?;
+    // Reuse the warm connection only when it belongs to the same index.
+    let cached: Option<(std::path::PathBuf, rusqlite::Connection)> =
+        CACHED_CONN.with(|c| c.borrow_mut().take());
+    if let Some((cached_path, conn)) = cached {
+        if cached_path == db_path {
+            // Reuse without re-running PRAGMAs — journal_mode=WAL blocks while
+            // another connection holds the DB (e.g. auto_trust's handle), and
+            // re-running it per call deadlocks the stdio loop.
+            return Some(conn);
+        }
+        // Different project: drop the stale connection and fall through.
     }
-    let db_path = cached_db_path().clone();
-    let db = match rusqlite::Connection::open(&db_path) {
-        Ok(db) => db,
-        Err(_) => return None,
-    };
+    let db = rusqlite::Connection::open(&db_path).ok()?;
     let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
     if reliary_search::schema::open_existing_db_safe(&db).is_err() {
         return None;
@@ -175,22 +279,34 @@ pub fn get_cached_db() -> Option<rusqlite::Connection> {
     Some(db)
 }
 
+fn put_cached_conn(key: std::path::PathBuf, conn: rusqlite::Connection) {
+    CACHED_CONN.with(|c| *c.borrow_mut() = Some((key, conn)));
+}
+
 /// Hand the connection back to the thread-local cache after a tool call.
 /// The caller MUST do this when done, so the next call reuses the warm
-/// connection (and its prepare_cached statement cache).
+/// connection (and its prepare_cached statement cache). The connection is filed
+/// under the active project's index path (set by the last resolution), so a
+/// later call for a different index discards it.
 pub fn return_cached_db(conn: rusqlite::Connection) {
-    CACHED_CONN.with(|c| *c.borrow_mut() = Some(conn));
+    if let Some(p) = resolved_db_path(None) {
+        put_cached_conn(p, conn);
+    }
 }
 
 /// V73: RAII guard that returns a checked-out cached connection to the
 /// thread-local slot on drop. Every `open_symbol_index` call site used to
 /// drop the connection (closing it), silently defeating the V54 warm cache.
 /// With this guard, early returns and `?` can't leak it either.
-pub struct CachedDbGuard(Option<rusqlite::Connection>);
+/// V77: carries the DB path it belongs to so the keyed cache stays correct.
+pub struct CachedDbGuard {
+    conn: Option<rusqlite::Connection>,
+    key: std::path::PathBuf,
+}
 
 impl CachedDbGuard {
     pub fn conn(&self) -> &rusqlite::Connection {
-        self.0.as_ref().expect("guard holds a connection")
+        self.conn.as_ref().expect("guard holds a connection")
     }
 }
 
@@ -203,8 +319,8 @@ impl std::ops::Deref for CachedDbGuard {
 
 impl Drop for CachedDbGuard {
     fn drop(&mut self) {
-        if let Some(c) = self.0.take() {
-            return_cached_db(c);
+        if let Some(c) = self.conn.take() {
+            put_cached_conn(self.key.clone(), c);
         }
     }
 }
@@ -245,7 +361,7 @@ fn relpath_with(file_path: &str, workdir: &str) -> String {
 
 #[allow(dead_code)]
 fn relpath(file_path: &str) -> String {
-    let workdir = cached_cwd().to_string_lossy().to_string();
+    let workdir = active_root().to_string_lossy().to_string();
     relpath_with(file_path, &workdir)
 }
 
@@ -299,7 +415,11 @@ fn closest_symbols(db: &Connection, name: &str, limit: usize) -> Vec<String> {
 
     // V56: use the in-memory phrase index (SWAR/memchr, no SQLite LIKE scans).
     // Fall back to SQL only if the index isn't loadable.
-    let db_path = cached_db_path().to_string_lossy().to_string();
+    // V77: key the cache on the resolved index path (the active project), not
+    // the server's launch CWD, so suggestions match the DB being queried.
+    let db_path = resolved_db_path(None)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| active_root().to_string_lossy().to_string());
     if let Some(idx) = reliary_search::phrase_index::get_phrase_index(db, &db_path) {
         let mut out: Vec<String> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -418,19 +538,19 @@ pub fn tool_definitions() -> &'static Vec<serde_json::Value> {
     ALL_TOOL_DEFS.get_or_init(|| {
         vec![
             // 1. SEARCH: Find files/symbols by name or topic.
-            serde_json::json!({ "name": "reliary_search", "description": "BM25 full-text search across the indexed codebase. Returns matching files ranked by relevance. USE THIS TOOL when you don't know the exact symbol name — e.g. 'find files about connection pooling', 'where is request handling implemented', 'find authentication code'. For symbol-level lookups (where is X defined, who calls X, etc.), use reliary_find_references instead — it returns structured one-line answers. Search returns a list of files with paths and relevance scores. The tool never returns empty — if no exact match, closest files by vocabulary similarity are returned.", "inputSchema": { "type": "object", "properties": { "query": {"type": "string", "description": "Natural-language search query. Examples: 'connection pooling', 'request handling', 'authentication'."}, "path": {"type": "string", "description": "Work directory to search. Defaults to '.'."}, "limit": {"type": "integer", "default": 15, "description": "Max files to return (default 15)"} }, "required": ["query"], "input_examples": [ { "query": "connection pooling" }, { "query": "request handling", "limit": 5 }, { "query": "authentication middleware" } ] } }),
+            serde_json::json!({ "name": "reliary_search", "description": "BM25 full-text search across the indexed codebase. Returns matching files ranked by relevance. USE THIS TOOL when you don't know the exact symbol name — e.g. 'find files about connection pooling', 'where is request handling implemented', 'find authentication code'. For symbol-level lookups (where is X defined, who calls X, etc.), use reliary_find_references instead — it returns structured one-line answers. Search returns a list of files with paths and relevance scores. The tool never returns empty — if no exact match, closest files by vocabulary similarity are returned.", "inputSchema": { "type": "object", "properties": { "query": {"type": "string", "description": "Natural-language search query. Examples: 'connection pooling', 'request handling', 'authentication'."}, "path": {"type": "string", "description": "Project directory to search. Defaults to the client's workspace root, else '.'."}, "limit": {"type": "integer", "default": 15, "description": "Max files to return (default 15)"} }, "required": ["query"], "input_examples": [ { "query": "connection pooling" }, { "query": "request handling", "limit": 5 }, { "query": "authentication middleware" } ] } }),
             // 2. FIND_REFERENCES: Find all usages of a symbol. Absorbs with_source, type_flow, boltzmann.
-            serde_json::json!({ "name": "reliary_find_references", "description": "Find references to a symbol in the indexed codebase. USE THIS TOOL for ALL symbol-level code questions. It replaces goto_def, find_references, call_graph, list_methods, find_dead_code, and describe in a single entry point with mode parameters. The output is a structured one-line answer with raw code evidence — copy it verbatim into your response. Mode flags: def_only=true → 'where is X defined' (returns top definition with source code). usage_only=true → 'who calls X' or 'callers of X' (returns CALLERS only — NOT what X calls). For 'what does X call / which helpers does X use', use reliary_call_graph with direction=outbound instead. methods=true → 'list methods on Type X' (returns method names of an impl block). dead_only=true → 'find dead code in path=X' (returns unused functions; path required, name ignored). path_filter='io/util/' → restrict to one module/folder (use when question specifies a module). NO params → general references to the symbol. If unsure which mode, call WITHOUT mode flags first — the tool returns all relevant knowledge.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol name to look up. Use the exact identifier name including underscores (e.g. 'block_on', 'Sleep', 'consume')."}, "def_only": {"type": "boolean", "default": false, "description": "Return ONLY the definition location. Use for 'where is X defined'."}, "usage_only": {"type": "boolean", "default": false, "description": "Return ONLY call sites (non-test files). Use for 'who calls X' or 'callers of X'."}, "methods": {"type": "boolean", "default": false, "description": "List methods on a type. Use for 'what methods does X have'."}, "dead_only": {"type": "boolean", "default": false, "description": "Find unused code. Pass path to scope the search."}, "path": {"type": "string", "description": "Work directory. Required for dead_only. Defaults to '.'."}, "path_filter": {"type": "string", "description": "Restrict to one module. Examples: 'io/util/' for tokio io utilities, 'crates/reliary-search/' for a Rust subdirectory. Use when question mentions a specific module."}, "file_only": {"type": "boolean", "default": false, "description": "Return only the distinct list of files that mention this symbol (no file:line, no qualified names). Use for 'which files use X' or 'find files importing X' queries. Cheaper than full references."} }, "required": [], "input_examples": [ { "name": "block_on", "def_only": true }, { "name": "spawn", "usage_only": true }, { "name": "Sleep", "methods": true }, { "name": "consume", "path_filter": "io/util/" }, { "name": "", "dead_only": true, "path": "src/" }, { "name": "HashMap", "file_only": true } ] } }),
+            serde_json::json!({ "name": "reliary_find_references", "description": "Find references to a symbol in the indexed codebase. USE THIS TOOL for ALL symbol-level code questions. It replaces goto_def, find_references, call_graph, list_methods, find_dead_code, and describe in a single entry point with mode parameters. The output is a structured one-line answer with raw code evidence — copy it verbatim into your response. Mode flags: def_only=true → 'where is X defined' (returns top definition with source code). usage_only=true → 'who calls X' or 'callers of X' (returns CALLERS only — NOT what X calls). For 'what does X call / which helpers does X use', use reliary_call_graph with direction=outbound instead. methods=true → 'list methods on Type X' (returns method names of an impl block). dead_only=true → 'find dead code in path=X' (returns unused functions; path required, name ignored). path_filter='io/util/' → restrict to one module/folder (use when question specifies a module). NO params → general references to the symbol. If unsure which mode, call WITHOUT mode flags first — the tool returns all relevant knowledge.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol name to look up. Use the exact identifier name including underscores (e.g. 'block_on', 'Sleep', 'consume')."}, "def_only": {"type": "boolean", "default": false, "description": "Return ONLY the definition location. Use for 'where is X defined'."}, "usage_only": {"type": "boolean", "default": false, "description": "Return ONLY call sites (non-test files). Use for 'who calls X' or 'callers of X'."}, "methods": {"type": "boolean", "default": false, "description": "List methods on a type. Use for 'what methods does X have'."}, "dead_only": {"type": "boolean", "default": false, "description": "Find unused code. Pass path to scope the search."}, "path": {"type": "string", "description": "Project directory (also selects which project to query). Required for dead_only. Defaults to the client's workspace root, else '.'."}, "path_filter": {"type": "string", "description": "Restrict to one module. Examples: 'io/util/' for tokio io utilities, 'crates/reliary-search/' for a Rust subdirectory. Use when question mentions a specific module."}, "file_only": {"type": "boolean", "default": false, "description": "Return only the distinct list of files that mention this symbol (no file:line, no qualified names). Use for 'which files use X' or 'find files importing X' queries. Cheaper than full references."} }, "required": [], "input_examples": [ { "name": "block_on", "def_only": true }, { "name": "spawn", "usage_only": true }, { "name": "Sleep", "methods": true }, { "name": "consume", "path_filter": "io/util/" }, { "name": "", "dead_only": true, "path": "src/" }, { "name": "HashMap", "file_only": true } ] } }),
             // 3. GOTO_DEF: Jump to the definition of a symbol.
             serde_json::json!({ "name": "reliary_goto_def", "description": "DEPRECATED: use reliary_find_references(name=X, def_only=true) instead — it returns the same information in a structured format. This tool still works but is not the preferred entry point.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string"}, "anchor_file": {"type": "string", "description": "Optional. Path to file containing the usage."}, "anchor_line": {"type": "integer", "description": "Optional. 1-based line of the usage."}, "path": {"type": "string"} }, "required": ["name"] } }),
             // 4. CALL_GRAPH: Who calls X? What does X call? Absorbs callgraph, callgraph_v2, trace_path, call_graph.
-            serde_json::json!({ "name": "reliary_call_graph", "description": "PRIMARY call-graph tool. Who calls X? What does X call? Returns callers and callees with source. Use for 'who calls X' and 'what does X call' questions. Set direction='inbound' for callers, 'outbound' for callees, 'both' for full graph. Set depth=2-3 for multi-hop call chains (entry points like block_on/spawn/run auto-expand to depth 3). Pass anchor_file/anchor_line to disambiguate when multiple symbols share the same name.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string"}, "anchor_file": {"type": "string", "description": "Optional. Path to the file containing the definition."}, "anchor_line": {"type": "integer", "description": "Optional. 1-based line of the definition."}, "direction": {"type": "string", "enum": ["inbound", "outbound", "both"], "default": "both"}, "depth": {"type": "integer", "default": 1, "description": "Recursion depth. Entry-point names (block_on, run, start, etc.) auto-expand to depth 3."}, "summary": {"type": "boolean", "description": "Set to true for compact output: caller/callee names only, no source text."}, "path": {"type": "string"} }, "required": ["name"] } }),
+            serde_json::json!({ "name": "reliary_call_graph", "description": "PRIMARY call-graph tool. Who calls X? What does X call? Returns callers and callees with source. Use for 'who calls X' and 'what does X call' questions. Set direction='inbound' for callers, 'outbound' for callees, 'both' for full graph. Set depth=2-3 for multi-hop call chains (entry points like block_on/spawn/run auto-expand to depth 3). Pass anchor_file/anchor_line to disambiguate when multiple symbols share the same name.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string"}, "anchor_file": {"type": "string", "description": "Optional. Path to the file containing the definition."}, "anchor_line": {"type": "integer", "description": "Optional. 1-based line of the definition."}, "direction": {"type": "string", "enum": ["inbound", "outbound", "both"], "default": "both"}, "depth": {"type": "integer", "default": 1, "description": "Recursion depth. Entry-point names (block_on, run, start, etc.) auto-expand to depth 3."}, "summary": {"type": "boolean", "description": "Set to true for compact output: caller/callee names only, no source text."}, "path": {"type": "string", "description": "Project directory to query. Defaults to the client's workspace root, else '.'."} }, "required": ["name"] } }),
             // 5. LIST_METHODS: List all methods on a type.
             serde_json::json!({ "name": "reliary_list_methods", "description": "List all methods declared on a type. Scans for impl blocks and returns method names with file:line. Use for 'list methods on Type X' questions.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Type name (e.g. 'Sleep', 'BufWriter', 'Runtime')"} }, "required": ["name"] } }),
             // 6. FIND_DEAD_CODE: Find unused/orphaned functions. Absorbs dead_symbols, dead.
-            serde_json::json!({ "name": "reliary_find_dead_code", "description": "Find unused/orphaned functions in a module or codebase. Cross-references against the full index. Pass path='io/util' to scope to a module. Use 'summary' format for a high-level overview, 'list' for detailed results. Use for 'find dead code', 'find unused functions' questions.", "inputSchema": { "type": "object", "properties": { "path": {"type": "string", "description": "Module prefix to scope (e.g. 'io/util', 'runtime/scheduler'). Use '.' for whole codebase."}, "format": {"type": "string", "enum": ["list", "summary"], "default": "list"}, "limit": {"type": "integer", "default": 30}, "functions_only": {"type": "boolean", "default": true} }, "required": ["path"] } }),
+            serde_json::json!({ "name": "reliary_find_dead_code", "description": "Find unused/orphaned functions in a module or codebase. Cross-references against the full index. Pass path='io/util' to scope to a module. Use 'summary' format for a high-level overview, 'list' for detailed results. Use for 'find dead code', 'find unused functions' questions.", "inputSchema": { "type": "object", "properties": { "path": {"type": "string", "description": "Project directory (also selects which project to query) and/or module prefix to scope (e.g. 'io/util', 'runtime/scheduler'). Use '.' for the whole codebase."}, "format": {"type": "string", "enum": ["list", "summary"], "default": "list"}, "limit": {"type": "integer", "default": 30}, "functions_only": {"type": "boolean", "default": true} }, "required": ["path"] } }),
             // 7. DESCRIBE: Explain a symbol — purpose, signature, callers, methods, surprise facts. Absorbs pack, pack_query, plan, risk.
-            serde_json::json!({ "name": "reliary_describe", "description": "Explain a symbol: its purpose, signature, location, callers, and methods. methods=true → 'list methods on Type X' (replaces list_methods). dead_only=true → 'find dead code in module X' (replaces find_dead_code). Use for 'explain X', 'what does X do', 'list methods on X', 'find dead code in X'.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol to describe (e.g. 'block_on', 'Sleep', 'BufWriter')"}, "file": {"type": "string", "description": "File path to show structure of (alternative to name)"}, "context": {"type": "string", "description": "Optional filter: 'callers', 'signature', 'behavior'"}, "path": {"type": "string"}, "methods": {"type": "boolean", "default": false, "description": "List methods on a type. Replaces list_methods."}, "dead_only": {"type": "boolean", "default": false, "description": "Find dead code in a module. Replaces find_dead_code. Pass path to scope to a module."}, "limit": {"type": "integer", "default": 30, "description": "Max dead code items to return"}, "functions_only": {"type": "boolean", "default": true} } } }),
+            serde_json::json!({ "name": "reliary_describe", "description": "Explain a symbol: its purpose, signature, location, callers, and methods. methods=true → 'list methods on Type X' (replaces list_methods). dead_only=true → 'find dead code in module X' (replaces find_dead_code). Use for 'explain X', 'what does X do', 'list methods on X', 'find dead code in X'.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol to describe (e.g. 'block_on', 'Sleep', 'BufWriter')"}, "file": {"type": "string", "description": "File path to show structure of (alternative to name)"}, "context": {"type": "string", "description": "Optional filter: 'callers', 'signature', 'behavior'"}, "path": {"type": "string", "description": "Project directory to query. Defaults to the client's workspace root, else '.'."}, "methods": {"type": "boolean", "default": false, "description": "List methods on a type. Replaces list_methods."}, "dead_only": {"type": "boolean", "default": false, "description": "Find dead code in a module. Replaces find_dead_code. Pass path to scope to a module."}, "limit": {"type": "integer", "default": 30, "description": "Max dead code items to return"}, "functions_only": {"type": "boolean", "default": true} } } }),
             serde_json::json!({ "name": "reliary_similar", "description": "Find functions structurally similar to the named function (near-clone detection via hypervector token-set similarity). Use for 'find duplicate code', 'similar functions to X', 'is this copied elsewhere'.", "inputSchema": { "type": "object", "properties": { "name": { "type": "string", "description": "Function name" }, "path": { "type": "string" }, "limit": { "type": "integer", "default": 8 } }, "required": ["name"] } }),
             // 9. VERIFY: mechanically verify claims (symbol at file:line) against the index.
             serde_json::json!({ "name": "reliary_verify", "description": "Mechanically verify claims about the codebase against the index. Pass text containing 'symbol at file.rs:line' claims; returns VERIFIED or FALSE with the actual location. Use before asserting a location, or to check a statement from another source.", "inputSchema": { "type": "object", "properties": { "text": { "type": "string", "description": "Claim text, e.g. 'classify_structural at structural.rs:31'" }, "path": { "type": "string" }, "tol": { "type": "integer", "default": 1, "description": "Line tolerance" } }, "required": ["text"] } }),
@@ -665,18 +785,19 @@ fn delegate_depth(name: &str) -> usize {
 
 /// Pure dispatch: maps tool name + args → result or error. No I/O.
 pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json::Value>) -> DispatchResult {
+    // V77: establish the active project for this call before any handler reads a
+    // workdir or opens a DB. A `path` argument that names a directory selects the
+    // project; a module-prefix path falls back to the client root / CWD walk-up.
+    let _ = index_root_for(args.get("path").and_then(|v| v.as_str()));
     match name {
         "reliary_search" => {
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            // Bug 76: restrict search to workdir
-            let sp = match safe_path(path, ".") {
-                Ok(p) => p,
-                Err(e) => return err_invalid_path(&e),
-            };
-            let _db_path = format!("{}/.reliary/index.sqlite", sp.to_string_lossy().trim_end_matches('/'));
-            // V54: cached connection.
-            match get_cached_db() {
+            // V54: cached connection. V77: resolve via the `path` hint so an
+            // agent can name the project it means (the resolver walks up from
+            // the hint; a read-only search needs no traversal gate).
+            let hint = if path.is_empty() || path == "." { None } else { Some(path) };
+            match get_cached_db_for(hint) {
                 Some(db) => {
                     let results = reliary_search::search::search_fts5(&db, query, 10);
                         DispatchResult::Success(serde_json::json!({
@@ -686,7 +807,7 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                 None => {
                     let tokens = reliary_search::tokenize(query);
                     DispatchResult::Success(serde_json::json!({
-                        "content": [{ "type": "text", "text": serde_json::json!({"results": [], "note": "no index — run index first", "stemmed": tokens.iter().map(|t| reliary_search::porter_stem(t)).collect::<Vec<_>>()}).to_string() }]
+                        "content": [{ "type": "text", "text": serde_json::json!({"results": [], "note": index_search_note(), "stemmed": tokens.iter().map(|t| reliary_search::porter_stem(t)).collect::<Vec<_>>()}).to_string() }]
                     }))
                 }
             }
@@ -695,20 +816,16 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
             let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
             if task.is_empty() { return err_missing_param("task"); }
-            let sp = match safe_path(path, ".") {
-                Ok(p) => p,
-                Err(e) => return err_invalid_path(&e),
-            };
-            let _db_path = format!("{}/.reliary/index.sqlite", sp.to_string_lossy().trim_end_matches('/'));
-            // V54: cached connection.
-            match get_cached_db() {
+            // V54: cached connection. V77: resolve via the `path` hint.
+            let hint = if path.is_empty() || path == "." { None } else { Some(path) };
+            match get_cached_db_for(hint) {
                 Some(db) => {
                     let plan = reliary_search::plan::hologram_plan(&db, task);
                         DispatchResult::Success(serde_json::json!({
                         "content": [{ "type": "text", "text": serde_json::to_string(&plan).unwrap_or_default() }]
                     }))
                 }
-                None => err_db("cannot open index. Run `reliary trust .` first."),
+                None => err_db(format!("cannot open index — {}", index_search_note())),
             }
         }
         // V27: Aliases for the 7-tool surface. Each new name maps to an
@@ -923,7 +1040,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         score: h.similarity,
                     }).collect();
                     let calibrated = reliary_search::boltzmann::calibrate_hits(&raw_hits, temp, tau);
-                    let wd = cached_cwd().to_string_lossy().to_string();
+                    let wd = active_root().to_string_lossy().to_string();
                     let arr: Vec<_> = calibrated.iter().map(|h| serde_json::json!({
                         "file": relpath_with(&h.file, &wd),
                         "line": h.line + 1,
@@ -1127,15 +1244,9 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
         "reliary_architecture" => {
             let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-            // Bug 76: restrict to workdir
-            let pp = match safe_path(path_arg, ".") {
-                Ok(p) => p,
-                Err(e) => return err_invalid_path(&e),
-            };
-            let pp_str = pp.to_string_lossy().to_string();
-            let _db_path = format!("{}/.reliary/index.sqlite", pp_str.trim_end_matches('/'));
-            // V54: cached connection.
-            match get_cached_db() {
+            let pp_str = active_root().to_string_lossy().to_string();
+            // V54: cached connection. V77: resolve via the `path` hint.
+            match get_cached_db_for(Some(path_arg).filter(|s| !s.is_empty() && *s != ".")) {
                 Some(db) => {
                     match reliary_search::architecture::get_architecture(&db, &pp_str, limit) {
                         Ok(summary) => {
@@ -1148,18 +1259,13 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         }
                     }
                 }
-                None => err_db("cannot open index. Run `reliary trust .` first."),
+                None => err_db(format!("cannot open index — {}", index_search_note())),
             }
         }
         "reliary_trace_path" => {
             let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            let pp = match safe_path(path_arg, ".") {
-                Ok(p) => p,
-                Err(e) => return err_invalid_path(&e),
-            };
-            let pp_str = pp.to_string_lossy().to_string();
-            let _db_path = format!("{}/.reliary/index.sqlite", pp_str.trim_end_matches('/'));
-            // V54: cached connection.
+            let pp_str = active_root().to_string_lossy().to_string();
+            // V54: cached connection. V77: resolve via the `path` hint.
             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
             if name.is_empty() { return err_missing_param("name"); }
             let af_raw = args.get("anchor_file").and_then(|v| v.as_str()).unwrap_or("");
@@ -1168,7 +1274,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
             // Resolve anchor_file to a key the SQL can match (try as-is, then as suffix).
             let af = if af_raw.is_empty() { ".".to_string() } else { af_raw.to_string() };
-            match get_cached_db() {
+            match get_cached_db_for(Some(path_arg).filter(|s| !s.is_empty() && *s != ".")) {
                 Some(db) => {
                     let result = reliary_search::trace_path::trace_path(
                         &db, name, &af, al, direction, depth, &pp_str,
@@ -1423,35 +1529,38 @@ fn disp_query_ast(name: &str, args: &serde_json::Map<String, serde_json::Value>)
     }))
 }
 
-/// Helper: open the .reliary index at `path` and run a symbol query.
-/// Returns DispatchResult::Error if the path is unsafe or index missing.
+/// Helper: open the project index and run a symbol query.
+/// Returns DispatchResult::Error if the path is unsafe or no index is found.
 /// V73: returns a CachedDbGuard — the connection auto-returns to the
 /// thread-local cache when the guard drops, so no call site can leak it.
+///
+/// V77: the DB is located by the shared resolver (client root → `RELIARY_ROOT`
+/// → walk-up from the `path` hint/CWD), not by a fixed CWD. `path` still acts as
+/// the module-prefix filter it always was; it only also selects the project when
+/// it names an existing directory holding (or under) a `.reliary/` index.
 fn open_symbol_index(path: &str) -> Result<(CachedDbGuard, String), DispatchResult> {
-    // V15: distinguish between a path-as-directory and a path-as-filter.
-    // For dead_symbols/callgraph etc., path="io/util" is a module filter, NOT
-    // a subdirectory to open a new index. We always use the CWD's .reliary/
-    // index, and treat path as a prefix filter passed to the SQL query.
-    //
-    // For tools that DO need a different index (none currently), the path
-    // would point to a directory containing its own .reliary/ subdir.
-    //
-    // The safe_path check still validates that `path` doesn't escape CWD via
-    // ..  but the result is only used for prefix matching, not DB location.
-    let sp = safe_path(path, ".").map_err(|e| DispatchResult::Error(codes::INVALID_PATH, e))?;
-    // Always open the index at CWD's .reliary/.
-    // V54: reuse the thread-local cached connection (warm prepare_cached
-    // statements, no per-call open/verify overhead).
-    let db = get_cached_db().ok_or_else(|| {
+    // If `path` names a real directory inside the project, the query's "workdir"
+    // is the resolved project root so relative results read cleanly. Otherwise
+    // (module filter like "io/util") the workdir is the resolved project root too.
+    let hint = if path.is_empty() || path == "." { None } else { Some(path) };
+    let root = match index_root_for(hint) {
+        crate::index_root::Resolution::Found(r) => r,
+        crate::index_root::Resolution::NotFound(start) => {
+            return Err(err_db(format!(
+                "cannot open index — {}",
+                crate::index_root::searched_note(&start)
+            )));
+        }
+    };
+    let db_path = crate::index_root::db_path_for(&root);
+    let db = get_cached_db_for(hint).ok_or_else(|| {
         err_db(format!(
             "cannot open index at {}\n  -> run `reliary trust .` to build it",
-            cached_db_path().display()
+            db_path.display()
         ))
     })?;
-    // Return dir as the SAFE-PATH result (for relative-path resolution)
-    // but the DB is at CWD/.reliary/.
-    let dir = sp.to_string_lossy().trim_end_matches('/').to_string();
-    Ok((CachedDbGuard(Some(db)), dir))
+    let dir = root.to_string_lossy().trim_end_matches('/').to_string();
+    Ok((CachedDbGuard { conn: Some(db), key: db_path }, dir))
 }
 
 fn handle_symbol_tool(name: &str, args: &serde_json::Map<String, serde_json::Value>) -> DispatchResult {
@@ -1676,7 +1785,7 @@ let phrase_id = reliary_search::symbol::phrase_id_for(db, &sym_stemmed).ok().fla
             };
             let _last_err = String::new();
 
-            let wd = cached_cwd().to_string_lossy().to_string();
+            let wd = active_root().to_string_lossy().to_string();
 
             // V40: One-line answer format. No hits list, no candidates, no headers.
             // The tool IS the answer. The model copies it verbatim.
@@ -1994,7 +2103,7 @@ if def_only {
 let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i32; let al = if al_raw > 0 { al_raw - 1 } else { al_raw };
             match reliary_search::symbol::goto_def(db, sym, &af, al) {
                 Ok(Some(hit)) => {
-                    let wd = cached_cwd().to_string_lossy().to_string();
+                    let wd = active_root().to_string_lossy().to_string();
                     let hit_obj = hit_with_qualified_name(&hit.file_path, hit.line, hit.col, &wd);
                     let qn = hit_obj["qualified_name"].as_str().unwrap_or(sym);
                     let f = hit_obj["file"].as_str().unwrap_or("");
@@ -2225,13 +2334,15 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
         }
         "reliary_dead_symbols" => {
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
-            let path_filter = args.get("path").and_then(|v| v.as_str()).filter(|s| !s.is_empty() && *s != ".");
+            // V77: an escaping filter is dropped (see safe_module_filter) so it
+            // is never echoed as a scope or used to escape the project.
+            let path_filter = safe_module_filter(args.get("path").and_then(|v| v.as_str()));
             let functions_only = args.get("functions_only").and_then(|v| v.as_bool()).unwrap_or(true);
-            match reliary_search::symbol::dead_symbols(db, limit, path_filter, functions_only) {
+            match reliary_search::symbol::dead_symbols(db, limit, path_filter.as_deref(), functions_only) {
                 Ok(dead) => {
                     // V35: Flat text output — same fix as find_references V25.
                     let mut out = String::with_capacity(1024);
-                    out.push_str(&format!("The answer is: {} dead items in {}:\n", dead.len(), path_filter.unwrap_or(".")));
+                    out.push_str(&format!("The answer is: {} dead items in {}:\n", dead.len(), path_filter.as_deref().unwrap_or(".")));
                     for (stem, file, line, _col) in &dead {
                         let f_short = file.rsplit('/').next().unwrap_or(file);
                         out.push_str(&format!("{} at {}:{}\n", stem, f_short, line + 1));
@@ -2261,7 +2372,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 }
             }
             {
-                let wd = cached_cwd().to_string_lossy().to_string();
+                let wd = active_root().to_string_lossy().to_string();
                 let arr: Vec<_> = hits.iter().map(|h| {
                     let mut obj = hit_with_qualified_name(&h.file_path, h.line, h.col, &wd);
                     obj["is_def"] = serde_json::json!(h.is_def);
@@ -2291,8 +2402,10 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     .unwrap_or("");
                 let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(30) as usize;
                 let functions_only = args.get("functions_only").and_then(|v| v.as_bool()).unwrap_or(true);
-                let pf: Option<&str> = if dpath == "." || dpath.is_empty() { None } else { Some(dpath) };
-                let dir_label = if dpath.is_empty() { "." } else { dpath };
+                // V77: drop an escaping filter rather than echoing or honoring it.
+                let safe_pf = safe_module_filter(if dpath.is_empty() { None } else { Some(dpath) });
+                let pf: Option<&str> = safe_pf.as_deref();
+                let dir_label = safe_pf.as_deref().unwrap_or(".");
                 return match reliary_search::symbol::dead_symbols(db, limit, pf, functions_only) {
                     Ok(items) => {
                         // dead_symbols returns (phrase_text, file_path, line0, col)
@@ -2539,7 +2652,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 // while guaranteeing call-site visibility.
                 let n_defs_shown = defs_hits.len().min((max_grep * 3) / 5);
                 let n_calls_shown = calls_hits.len().min(max_grep - n_defs_shown);
-                let workdir = cached_cwd().clone();
+                let workdir = active_root();
                 let mut file_cache: HashMap<String, Vec<String>> = HashMap::new();
                 // Helper closure to format a hit as "relpath:line: text".
                 // Phase 1-4: cache-safe cost reduction — whitespace-stripped source,
@@ -2618,7 +2731,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 }))
             } else {
                 use std::collections::HashMap;
-                let workdir = cached_cwd().clone();
+                let workdir = active_root();
                 let wd_str = workdir.to_string_lossy().to_string();
                 let mut file_cache: HashMap<String, Vec<String>> = HashMap::new();
                 let arr: Vec<_> = capped.iter().enumerate().map(|(rank, h)| {
@@ -2778,6 +2891,12 @@ fn handle_tool_call_stdio(id: &serde_json::Value, params: &serde_json::Value) {
     }
     let args = params.get("arguments").and_then(|v| v.as_object()).unwrap_or(&empty_map);
 
+    // V77: settle the active project once per call, before the result cache key
+    // and the connection are derived, so both agree on the same index. Without
+    // this, a call for project B could be keyed against project A's stamp and
+    // serve a stale cached answer across projects.
+    let _ = index_root_for(args.get("path").and_then(|v| v.as_str()));
+
     // V56: session-level result cache. Tools are deterministic, so identical
     // (tool, args) pairs can be served from cache. On hit, return the compact
     // one-line "cached:" reply — the model asked the same question again and
@@ -2863,6 +2982,14 @@ fn auto_trust_if_needed() -> AutoTrustResult {
         Ok(c) => c,
         Err(_) => return AutoTrustResult::Failed,
     };
+    // V77: prefer an existing *valid* index over the nearest `.git`. A project
+    // nested inside a larger git repo (a package under a monorepo) would
+    // otherwise auto-index the whole monorepo at the git root and miss the
+    // package index the user actually built. This matches the precedence the
+    // tools use, so auto-trust never creates a second, shadowing index.
+    if let Some(root) = crate::index_root::nearest_index_root(&cwd) {
+        return AutoTrustResult::AlreadyTrusted(root);
+    }
     let mut cur = cwd.clone();
     for _ in 0..10 {
         if cur.join(".git").exists() {
@@ -2924,8 +3051,46 @@ impl AutoTrustResult {
     }
 }
 
+/// Send a JSON-RPC *request* from the server to the client (not a response).
+/// Used once, after `initialize`, to ask for the client's workspace roots
+/// (`roots/list`) when the client advertised that capability.
+fn send_server_request(id: &str, method: &str, params: serde_json::Value) {
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": method,
+        "params": params,
+    });
+    let mut out = io::stdout();
+    let _ = serde_json::to_writer(&mut out, &req);
+    let _ = writeln!(out);
+    out.flush().unwrap_or_default();
+}
+
+/// Parse a `roots/list` result and record the first `file://` root as the
+/// session's client root. OpenCode and other clients advertise the workspace
+/// directory here; honoring it makes the server work even when its own CWD is
+/// unrelated to the project being edited.
+fn absorb_roots_result(result: &serde_json::Value) {
+    let roots = result.get("roots").and_then(|r| r.as_array());
+    let Some(roots) = roots else { return };
+    for r in roots {
+        if let Some(uri) = r.get("uri").and_then(|u| u.as_str()) {
+            if let Some(path) = uri.strip_prefix("file://") {
+                let p = std::path::PathBuf::from(path);
+                if p.is_dir() {
+                    set_client_root(p);
+                    return;
+                }
+            }
+        }
+    }
+}
+
 pub fn serve_stdio() {
     let stdin = io::stdin();
+    // V77: id of the in-flight `roots/list` request, if the client supports roots.
+    let mut pending_roots: Option<&'static str> = None;
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(l) => l,
@@ -2940,6 +3105,19 @@ pub fn serve_stdio() {
 
         let id = msg.get("id").cloned().unwrap_or(serde_json::Value::Null);
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
+
+        // A response to our `roots/list` request (no method, matching id).
+        if method.is_empty() {
+            if let Some(pid) = pending_roots {
+                if msg.get("id").and_then(|v| v.as_str()) == Some(pid) {
+                    if let Some(result) = msg.get("result") {
+                        absorb_roots_result(result);
+                    }
+                    pending_roots = None;
+                }
+            }
+            continue;
+        }
 
         match method {
             "initialize" => {
@@ -3042,6 +3220,14 @@ pub fn serve_stdio() {
                         }
                     }
                 }
+                // V77: capture the client's roots capability, if advertised, so
+                // we can ask for the workspace root right after the handshake.
+                let client_has_roots = msg
+                    .get("params")
+                    .and_then(|p| p.get("capabilities"))
+                    .and_then(|c| c.get("roots"))
+                    .is_some();
+
                 respond(&id, serde_json::json!({
                     "protocolVersion": "2024-11-05",
                     "capabilities": { "tools": {} },
@@ -3051,8 +3237,23 @@ pub fn serve_stdio() {
                         "auto_trusted": auto_trusted,
                     }
                 }));
+
+                if client_has_roots {
+                    const ROOTS_REQ_ID: &str = "reliary-roots-1";
+                    send_server_request(ROOTS_REQ_ID, "roots/list", serde_json::json!({}));
+                    pending_roots = Some(ROOTS_REQ_ID);
+                }
             }
             "notifications/initialized" => {}
+            // V77: the client's workspace changed — re-resolve the index root.
+            "notifications/roots/list_changed" => {
+                const ROOTS_REQ_ID: &str = "reliary-roots-1";
+                send_server_request(ROOTS_REQ_ID, "roots/list", serde_json::json!({}));
+                pending_roots = Some(ROOTS_REQ_ID);
+            }
+            "ping" => {
+                respond(&id, serde_json::json!({}));
+            }
             "tools/list" => {
                 respond(&id, serde_json::json!({ "tools": tool_definitions_filtered() }));
             }

@@ -1,0 +1,23 @@
+# Offline integration test: drives the real `reliary` binary exactly as an
+# agent would, in a clean Ubuntu image with no network, no API key, and no
+# source tree. If any link in the install → trust → query → MCP chain is
+# broken, this fails. Gated in CI on every push/PR.
+#
+# Build:  docker build -f Dockerfile.e2e -t reliary-e2e .
+# Run:    docker run --rm reliary-e2e
+FROM ubuntu:24.04
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY target/release/reliary /usr/local/bin/reliary
+RUN chmod 0755 /usr/local/bin/reliary
+
+# A non-git-project workdir so auto-trust does not fire and we exercise the
+# explicit `trust <path>` path.
+WORKDIR /work
+COPY scripts/e2e_docker_checks.sh /usr/local/bin/e2e_docker_checks.sh
+RUN chmod 0755 /usr/local/bin/e2e_docker_checks.sh
+
+CMD ["/usr/local/bin/e2e_docker_checks.sh"]

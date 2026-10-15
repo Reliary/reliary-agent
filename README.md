@@ -63,11 +63,12 @@ by hand:
 ```
 
 **OpenCode** (`~/.config/opencode/opencode.json`; on macOS
-`~/Library/Application Support/opencode/opencode.json`):
+`~/Library/Application Support/opencode/opencode.json`). OpenCode's local MCP
+shape differs from Claude's — `command` is an array and `type` is required:
 ```json
 {
   "mcp": {
-    "reliary": { "command": "/path/to/reliary", "args": ["mcp"] }
+    "reliary": { "type": "local", "command": ["/path/to/reliary", "mcp"] }
   }
 }
 ```
@@ -106,6 +107,21 @@ The default MCP menu exposes six tools plus one verifier:
 
 Every response ends with a freshness stamp `[idx:xxxxxxxx]` that changes only
 when the index changes.
+
+### Which project do the tools use?
+
+The tools resolve the project index themselves, so they work even when the MCP
+server was started from somewhere else. In order of precedence they use:
+
+1. the `path` argument on the tool call, if it names a directory;
+2. `RELIARY_ROOT`, if set;
+3. the workspace root your client advertises over MCP (`roots/list` — OpenCode
+   and other modern clients send this);
+4. the server's working directory.
+
+From that starting point they walk up to the nearest `.reliary/` index, so a
+query from a subdirectory finds the project above it. Passing
+`path="/path/to/project"` always selects that project explicitly.
 
 ## CLI
 

@@ -1315,7 +1315,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reliary-agent"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1353,7 +1353,7 @@ dependencies = [
 
 [[package]]
 name = "reliary-compress"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "ahash",
  "aho-corasick",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "reliary-core"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "clap",
  "rusqlite",
@@ -1374,18 +1374,18 @@ dependencies = [
 
 [[package]]
 name = "reliary-dead"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "walkdir",
 ]
 
 [[package]]
 name = "reliary-edit"
-version = "0.8.9"
+version = "0.8.10"
 
 [[package]]
 name = "reliary-fix"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "aho-corasick",
  "regex-lite",
@@ -1396,7 +1396,7 @@ dependencies = [
 
 [[package]]
 name = "reliary-memory"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "chrono",
  "rand 0.8.8",
@@ -1409,7 +1409,7 @@ dependencies = [
 
 [[package]]
 name = "reliary-output"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "regex",
  "reliary-sift",
@@ -1417,7 +1417,7 @@ dependencies = [
 
 [[package]]
 name = "reliary-pack"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "reliary-search",
  "reliary-sift",
@@ -1430,11 +1430,11 @@ dependencies = [
 
 [[package]]
 name = "reliary-risk"
-version = "0.8.9"
+version = "0.8.10"
 
 [[package]]
 name = "reliary-search"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "ahash",
  "memchr",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "reliary-sift"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "ahash",
  "flate2",
@@ -1563,9 +1563,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",

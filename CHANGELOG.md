@@ -5,7 +5,20 @@ All notable changes to Reliary will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.10] - 2026-10-15
+
+### Fixed
+
+- **MCP tools reported "no index" whenever the server was not started in the indexed project.** The CLI resolved the index from the `path` argument, but the MCP server resolved it from its own process working directory (cached once at startup) and ignored `path` entirely. With a global MCP config — or any client that does not set the spawn directory — every symbol tool failed even though the project was indexed. Both now share one resolver: `path` argument → `RELIARY_ROOT` → the client's advertised workspace root (`roots/list`) → the server's working directory, then walk up to the nearest `.reliary/` index.
+- **A stray empty `index.sqlite` could shadow a real project.** `Connection::open` is read-write-create, so opening a directory that merely had a `.reliary/` folder silently created a 0-table database; the next walk-up then found that stub instead of the project. Candidates are now validated (`user_version` in range) with a read-only probe before use, and a query never creates a file.
+- **Auto-trust indexed the wrong root in a monorepo.** It keyed off the nearest `.git`, so a package nested inside a larger repo was indexed at the repo root instead of the package the user built. It now prefers an existing valid `.reliary/` walking up, matching the tools.
+- **The server ignored MCP `roots`.** Clients that advertise the `roots` capability (OpenCode does) now receive a `roots/list` request, and the returned workspace root becomes the project for path-less calls. `notifications/roots/list_changed` re-resolves it, and `ping` is answered.
+- **rustls 0.23.45 → 0.23.46** (RUSTSEC-2026-0346 through 0349).
+
+### Added
+
+- MCP root-resolution coverage in the e2e suite: project selection via `path`, via `roots/list`, via walk-up from a subdirectory, and a negative control asserting an unindexed server neither reports nor creates an index.
+- **Docker integration tests.** Layer 1 (`Dockerfile.e2e`) drives the installed binary offline (`--network none`) through install → trust → query → MCP handshake → init/uninstall, and gates every push. Layer 2 (`scripts/e2e_opencode.sh`) runs a real OpenCode agent headlessly with a keyless free model and asserts it actually called a `reliary_*` tool, with a negative control; it runs nightly. `make e2e` and `make e2e-opencode` run them locally.
 
 ## [0.8.9] - 2026-09-30
 

@@ -523,14 +523,19 @@ fn e2e_mcp_path_traversal_is_rejected() {
                 tool,
                 escape
             );
-            // The escape must not silently produce results from outside the
-            // workdir: it must be an explicit error.
+            // V77: `path` now selects a *project*. An escape names a directory
+            // with no `.reliary/` index, so resolution fails and the tool reports
+            // "cannot open index" (or a path error) — it must never read files
+            // from outside an indexed project.
             match resp.get("error") {
                 Some(err) => {
                     let msg = err["message"].as_str().unwrap_or("");
                     assert!(
-                        msg.contains("path") || msg.contains("escapes") || msg.contains("invalid"),
-                        "{} escape {} must be rejected with a path error, got: {}",
+                        msg.contains("index")
+                            || msg.contains("path")
+                            || msg.contains("escapes")
+                            || msg.contains("invalid"),
+                        "{} escape {} must be rejected, got: {}",
                         tool,
                         escape,
                         msg
@@ -651,6 +656,123 @@ fn e2e_mcp_parallel_tool_calls_are_answered_in_order() {
         "identical parallel requests must yield identical answers"
     );
     assert!(mcp.is_alive());
+}
+
+// ── V77: project resolution independent of the server's launch CWD ────────
+
+/// The core bug this fixes: an agent launches `reliary mcp` from somewhere
+/// other than the indexed project (a global MCP config, or a client that does
+/// not set the spawn cwd). Passing the project as the `path` argument must
+/// select it.
+#[test]
+fn e2e_mcp_resolves_project_from_path_hint() {
+    let fx = Fixture::new();
+    fx.trust();
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let mut mcp = Mcp::start(elsewhere.path());
+    mcp.initialize();
+
+    let proj = fx.path().to_string_lossy().to_string();
+    let text = mcp.call_tool_text(
+        "reliary_find_references",
+        json!({ "name": "beta", "def_only": true, "path": proj }),
+    );
+    assert!(
+        text.contains("other.rs"),
+        "a `path` argument must select the project regardless of the server's CWD \
+         (expected beta's definition in other.rs): {}",
+        text
+    );
+    assert!(mcp.is_alive());
+}
+
+/// A client that advertises the `roots` capability (OpenCode does) must receive
+/// a `roots/list` request, and the returned workspace root must become the index
+/// for path-less tool calls.
+#[test]
+fn e2e_mcp_resolves_project_from_roots() {
+    let fx = Fixture::new();
+    fx.trust();
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let mut mcp = Mcp::start(elsewhere.path());
+
+    mcp.send_raw(&json!({
+        "jsonrpc": "2.0",
+        "id": 900,
+        "method": "initialize",
+        "params": { "protocolVersion": "2024-11-05", "capabilities": { "roots": {} } }
+    }));
+    let init = mcp.read_response(Duration::from_secs(30));
+    assert_eq!(init["id"], 900, "initialize must be answered first: {}", init);
+
+    // The server must now ask for the roots.
+    let req = mcp.read_response(Duration::from_secs(30));
+    assert_eq!(
+        req["method"], "roots/list",
+        "a client advertising roots must be asked for them: {}",
+        req
+    );
+    let rid = req["id"].clone();
+    let uri = format!("file://{}", fx.path().to_string_lossy());
+    mcp.send_raw(&json!({
+        "jsonrpc": "2.0",
+        "id": rid,
+        "result": { "roots": [{ "uri": uri, "name": "fixture" }] }
+    }));
+
+    // A tool call with no `path` must now resolve via the client root.
+    let text = mcp.call_tool_text(
+        "reliary_find_references",
+        json!({ "name": "beta", "def_only": true }),
+    );
+    assert!(
+        text.contains("other.rs"),
+        "the client-advertised root must select the project (expected beta in other.rs): {}",
+        text
+    );
+    assert!(mcp.is_alive());
+}
+
+/// Negative control for the stub-shadowing / stub-creation bug: a server with no
+/// index anywhere must report so, and must NOT create a 0-table `index.sqlite`.
+#[test]
+fn e2e_mcp_no_index_does_not_create_a_stub() {
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let mut mcp = Mcp::start(elsewhere.path());
+    mcp.initialize();
+
+    let text = mcp.call_tool_text("reliary_search", json!({ "query": "alpha" }));
+    assert!(
+        text.contains("no index"),
+        "an unindexed server must report no index: {}",
+        text
+    );
+    assert!(
+        !elsewhere.path().join(".reliary").exists(),
+        "a read query must never create a stub index directory"
+    );
+    assert!(mcp.is_alive());
+}
+
+/// The CLI and the MCP server must agree on which project a query targets: a
+/// project trusted at `<root>` is addressable from a subdirectory of it.
+#[test]
+fn e2e_mcp_walks_up_from_subdirectory() {
+    let fx = Fixture::new();
+    fx.trust();
+    let sub = fx.path().join("src");
+    let mut mcp = Mcp::start(&sub);
+    mcp.initialize();
+
+    let text = mcp.call_tool_text(
+        "reliary_find_references",
+        json!({ "name": "beta", "def_only": true }),
+    );
+    assert!(
+        text.contains("other.rs"),
+        "a server started in a subdirectory must find the project index above it: {}",
+        text
+    );
 }
 
 #[test]

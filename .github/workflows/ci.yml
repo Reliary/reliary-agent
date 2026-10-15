@@ -286,3 +286,27 @@ jobs:
 
       - name: binary size
         run: ls -lh target/release/reliary
+
+      # The integration layer must not be silently deleted or emptied. Layer 2
+      # (a real OpenCode agent) runs nightly; guard that its script and workflow
+      # still exist and carry their negative controls.
+      - name: integration e2e assets present
+        run: |
+          for f in Dockerfile.e2e scripts/e2e_docker_checks.sh \
+                   scripts/e2e_opencode.sh .github/workflows/e2e-opencode.yml; do
+            [ -s "$f" ] || { echo "FAIL: $f is missing or empty"; exit 1; }
+          done
+          grep -q -- '--network none' .github/workflows/ci.yml || { echo "FAIL: Layer 1 must run offline"; exit 1; }
+          grep -q 'negative control' scripts/e2e_docker_checks.sh \
+            && grep -q 'negative control' scripts/e2e_opencode.sh \
+            || { echo "FAIL: an e2e layer lost its negative control"; exit 1; }
+          echo "integration e2e assets present"
+
+      # Layer 1 integration test: the shipped binary is driven exactly as an
+      # agent would, in a clean Ubuntu container with --network none. Covers
+      # install → trust → query → MCP handshake → init/uninstall round-trip.
+      # Offline and keyless, so it gates every push.
+      - name: Docker integration test (offline)
+        run: |
+          docker build -f Dockerfile.e2e -t reliary-e2e .
+          docker run --rm --network none reliary-e2e
