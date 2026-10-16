@@ -70,12 +70,13 @@ pub fn beta() -> i32 {
 
     /// Build the index without starting an MCP server.
     pub fn trust(&self) {
-        let out = Command::new(binary_path())
-            .args(["trust", "."])
+        let mut cmd = Command::new(binary_path());
+        cmd.args(["trust", "."])
             .current_dir(self.path())
-            .env("NO_RELIARY_WATCHER", "1")
-            .output()
-            .expect("run trust");
+            .env("NO_RELIARY_WATCHER", "1");
+        let no_envs: &[(&str, &str)] = &[];
+        apply_xdg_isolation(&mut cmd, self.path(), no_envs);
+        let out = cmd.output().expect("run trust");
         assert!(
             out.status.success(),
             "trust failed: {}{}",
@@ -94,10 +95,28 @@ pub fn beta() -> i32 {
 }
 
 /// Run the binary as a subprocess with a controlled environment.
+///
+/// XDG isolation: `init`/`doctor` honor `XDG_CONFIG_HOME` (and `dirs`
+/// honors `XDG_DATA_HOME`), so a runner-exported XDG var would redirect
+/// writes away from the fake HOME and every integration assertion would
+/// read empty air. Both default to the fake home rooted at `cwd` unless
+/// the caller passes them explicitly in `envs`.
+pub fn apply_xdg_isolation(cmd: &mut Command, cwd: &Path, envs: &[(&str, &str)]) {
+    let has = |k: &str| envs.iter().any(|(ek, _)| *ek == k);
+    if !has("XDG_CONFIG_HOME") {
+        cmd.env("XDG_CONFIG_HOME", cwd.join(".config"));
+    }
+    if !has("XDG_DATA_HOME") {
+        cmd.env("XDG_DATA_HOME", cwd.join(".local/share"));
+    }
+}
+
+/// Run the binary as a subprocess with a controlled environment.
 pub fn run_cli(args: &[&str], cwd: &Path, envs: &[(&str, &str)]) -> std::process::Output {
     let mut cmd = Command::new(binary_path());
     cmd.args(args).current_dir(cwd);
     cmd.env("NO_RELIARY_WATCHER", "1");
+    apply_xdg_isolation(&mut cmd, cwd, envs);
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -114,6 +133,7 @@ pub fn run_cli_stdin(args: &[&str], cwd: &Path, envs: &[(&str, &str)], input: &s
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    apply_xdg_isolation(&mut cmd, cwd, envs);
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -146,17 +166,20 @@ impl Mcp {
     /// `RELIARY_RESULT_CACHE=0` keeps every identical call a real call;
     /// `RELIARY_NO_TRUNCATE=1` keeps assertions on full output stable.
     pub fn start(cwd: &Path) -> Mcp {
-        let mut child = Command::new(binary_path())
-            .arg("mcp")
+        let mut cmd = Command::new(binary_path());
+        cmd.arg("mcp")
             .current_dir(cwd)
             .env("NO_RELIARY_WATCHER", "1")
             .env("RELIARY_RESULT_CACHE", "0")
             .env("RELIARY_NO_TRUNCATE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn reliary mcp");
+            .stderr(Stdio::null());
+        // XDG isolation (same class as run_cli): the MCP server resolves the
+        // index from CWD/roots, but auto-trust and config paths honor XDG.
+        let no_envs: &[(&str, &str)] = &[];
+        apply_xdg_isolation(&mut cmd, cwd, no_envs);
+        let mut child = cmd.spawn().expect("spawn reliary mcp");
 
         let stdin = child.stdin.take().expect("child stdin");
         let stdout: ChildStdout = child.stdout.take().expect("child stdout");

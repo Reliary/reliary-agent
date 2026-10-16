@@ -6,7 +6,7 @@
 //! Run: `cargo test -p reliary-agent --test e2e_cli`
 mod common;
 
-use common::{binary_path, run_cli, run_cli_stdin, Fixture};
+use common::{apply_xdg_isolation, binary_path, run_cli, run_cli_stdin, Fixture};
 use std::path::{Path, PathBuf};
 
 fn stdout_of(out: &std::process::Output) -> String {
@@ -318,16 +318,18 @@ fn init_args(home: &Path, args: &[&str], answers: &str) -> std::process::Output 
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let mut child = Command::new(binary_path())
-        .args(args)
+    let mut cmd = Command::new(binary_path());
+    cmd.args(args)
         .current_dir(home)
         .env("HOME", home)
         .env("NO_RELIARY_WATCHER", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn init");
+        .stderr(Stdio::piped());
+    // XDG isolation: see common::apply_xdg_isolation. This spawner predates
+    // the shared helper and sets HOME directly, so apply isolation here.
+    apply_xdg_isolation(&mut cmd, home, &[]);
+    let mut child = cmd.spawn().expect("spawn init");
     child
         .stdin
         .as_mut()

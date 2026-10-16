@@ -2009,11 +2009,10 @@ fn do_update(check_only: bool) {
             std::process::exit(1);
         }
     };
-    let tmp_dir = staging.path().to_path_buf();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp_dir, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::set_permissions(staging.path(), std::fs::Permissions::from_mode(0o700));
     }
     // `keep()` prevents auto-delete; cleanup is explicit so error paths that
     // `exit()` still remove the dir deterministically via `cleanup`.
