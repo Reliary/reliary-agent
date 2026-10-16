@@ -27,11 +27,12 @@ use clap::{Parser, Subcommand, ValueEnum, CommandFactory};
 use clap_complete::generate;
 use std::io::{Write, IsTerminal};
 
-/// Simple ANSI color helpers — respects NO_COLOR env var
+/// Simple ANSI color helpers — single gate via `ux::colors_enabled()`
+/// (NO_COLOR + CLICOLOR + TERM=dumb + stderr TTY). P1.1: every command honors
+/// the same rule; previously `ux.rs`/`init.rs` emitted raw escapes always.
 mod color {
-    fn no_color() -> bool {
-        std::env::var("NO_COLOR").is_ok() || std::env::var("TERM").map(|t| t == "dumb").unwrap_or(false)
-    }
+    fn on() -> bool { crate::ux::colors_enabled() }
+    fn no_color() -> bool { !on() }
     pub fn green(s: &str) -> String {
         if no_color() { s.to_string() } else { format!("\x1b[32m{}\x1b[0m", s) }
     }
@@ -207,9 +208,13 @@ mod tests {
         assert!(!color::is_enabled(), "is_enabled should return false with NO_COLOR");
         std::env::remove_var("NO_COLOR");
 
-        // Test without NO_COLOR
-        assert!(color::green("test").contains("\x1b[32m"), "Without NO_COLOR, green should have ANSI");
-        assert!(color::is_enabled(), "is_enabled should return true without NO_COLOR");
+        // P1.1: without NO_COLOR but with piped test stderr, the TTY gate
+        // disables color. CLICOLOR_FORCE=1 re-enables explicitly.
+        assert!(!color::is_enabled(), "piped stderr must disable color (TTY gate)");
+        std::env::set_var("CLICOLOR_FORCE", "1");
+        assert!(color::green("test").contains("\x1b[32m"), "CLICOLOR_FORCE=1 must force ANSI");
+        assert!(color::is_enabled(), "is_enabled should return true with CLICOLOR_FORCE=1");
+        std::env::remove_var("CLICOLOR_FORCE");
     }
 
     #[test]
@@ -376,7 +381,11 @@ mod tests {
 
     #[test]
     fn color_module_unit_tests() {
-        // Test all color functions with and without NO_COLOR
+        // Test all color functions with and without NO_COLOR.
+        // P1.1: the gate is NO_COLOR + CLICOLOR + TERM + stderr TTY. Under
+        // `cargo test` stderr is piped, so colors are OFF even without
+        // NO_COLOR — assert the invariant (no escapes when disabled), and
+        // CLICOLOR_FORCE re-enables explicitly.
         std::env::set_var("NO_COLOR", "1");
         assert_eq!(color::green("hello"), "hello");
         assert_eq!(color::red("hello"), "hello");
@@ -389,7 +398,11 @@ mod tests {
 
         assert!(color::green("hello").contains("hello"));
         assert!(color::red("hello").contains("hello"));
-        assert!(color::is_enabled());
+        // No test TTY: without NO_COLOR the gate still disables (piped stderr).
+        assert!(!color::is_enabled(), "piped stderr must disable color (TTY gate)");
+        std::env::set_var("CLICOLOR_FORCE", "1");
+        assert!(color::is_enabled(), "CLICOLOR_FORCE=1 must re-enable color");
+        std::env::remove_var("CLICOLOR_FORCE");
     }
 
     #[test]
@@ -421,6 +434,9 @@ fn pipe_to_pager(text: &str) {
 }
 
 // P17: Shared DB path helper. Used by both main and read_summary.
+// This is the CREATE location: `trust <path>`/`index <path>` build the index
+// at exactly `<path>/.reliary/index.sqlite`. Query commands should prefer
+// `cli_index_db_path`, which walks up to an existing index.
 pub fn index_db_path(path: &str) -> String {
     format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
 }
@@ -432,10 +448,48 @@ pub fn index_db_path_fallible(path: &str) -> Option<std::path::PathBuf> {
     if p.exists() { Some(p) } else { None }
 }
 
-pub fn run_index(path: &str) {
+/// JIT-build the occurrence table for a lazy index (once). Several CLI
+/// commands (`verify`, `pack`, `bench gen`) read from `occurrence`, which
+/// `trust` intentionally leaves empty; without this they return wrong/empty
+/// answers until some other command happens to build it. Idempotent: no-op
+/// when rows already exist.
+fn ensure_occurrence_built(db: &rusqlite::Connection) {
+    let has_any: i64 = db
+        .query_row("SELECT EXISTS(SELECT 1 FROM occurrence LIMIT 1)", [], |r| r.get(0))
+        .unwrap_or(1);
+    if has_any == 0 {
+        if let Err(e) = reliary_search::lazy_occurrence::build_all_occurrence(db) {
+            eprintln!("warning: could not build occurrence table: {}", e);
+        }
+    }
+}
+
+/// Resolve a *query* command's index by walking up from `path` to the nearest
+/// usable index. This is the CLI counterpart of the MCP resolver: it prevents a
+/// sub-directory invocation (`cd src && reliary impact foo`) from creating or
+/// reading a nested `.reliary/` that shadows the real project above it. Unlike
+/// the MCP `resolve`, it never falls back to the CWD/env — a CLI `--path` names
+/// the tree to search. Returns `None` when no usable index exists at or above.
+pub fn cli_index_db_path(path: &str) -> Option<String> {
+    crate::index_root::nearest_index_root(std::path::Path::new(path))
+        .map(|root| crate::index_root::db_path_for(&root).to_string_lossy().to_string())
+}
+
+/// Like [`cli_index_db_path`], but falls back to the literal `<path>/.reliary`
+/// (the path a `trust` would create). Used where the command must still report
+/// a concrete path in its "no index" message.
+pub fn cli_index_db_path_or_literal(path: &str) -> String {
+    cli_index_db_path(path).unwrap_or_else(|| index_db_path(path))
+}
+
+/// Build the index for `path`. Returns `true` on success. Callers that print a
+/// success banner (e.g. `trust`) must check this — the old `()` return made a
+/// failed index build invisible and printed "✓ Project trusted".
+pub fn run_index(path: &str) -> bool {
     let db_path_str = index_db_path(path);
     if let Some(parent) = std::path::Path::new(&db_path_str).parent() {
         let _ = std::fs::create_dir_all(parent);
+        crate::paths::ensure_reliary_ignored(parent);
     }
     // Rename existing index to .bak (recovery if create_new_db fails)
     let bak_path = format!("{}.bak", db_path_str);
@@ -450,7 +504,7 @@ pub fn run_index(path: &str) {
                 // leave a broken empty DB in place.
                 let _ = std::fs::rename(&bak_path, &db_path_str);
                 eprintln!("{} Database schema creation failed (old index restored)", color::red("✗"));
-                return;
+                return false;
             }
             let result = crate::ux::with_spinner(&format!("indexing {}", path), || {
                 reliary_search::ingest::index_directory(&db, path)
@@ -459,21 +513,29 @@ pub fn run_index(path: &str) {
                 Ok(count) => {
                     let _ = std::fs::remove_file(&bak_path);
                     // M4/V73: seed the persisted generation so the first stamp
-                    // is non-zero and distinct from "no index".
-                    let _ = reliary_search::schema::bump_index_gen(&db);
+                    // is non-zero and distinct from "no index". A silent failure
+                    // here leaves the freshness stamp stale — AGENTS.md tells
+                    // the agent an unchanged stamp means the index may be stale,
+                    // so a real rebuild would look stale. Surface it.
+                    if let Err(e) = reliary_search::schema::bump_index_gen(&db) {
+                        eprintln!("warning: could not update the index generation stamp: {}", e);
+                    }
                     eprintln!("{} {} files indexed", color::green("✓"), count);
+                    true
                 }
                 Err(e) => {
                     // V61: restore the old index on ingest failure.
                     drop(db);
                     let _ = std::fs::rename(&bak_path, &db_path_str);
                     eprintln!("{} Indexing error: {} (old index restored)", color::red("✗"), e);
+                    false
                 }
             }
         }
         Err(e) => {
             let _ = std::fs::rename(&bak_path, &db_path_str);
             eprintln!("{} DB create error: {} (old index restored)", color::red("✗"), e);
+            false
         }
     }
 }
@@ -482,24 +544,29 @@ pub fn run_index(path: &str) {
 /// Use this once after major dedup work (e.g., after deleting many files or
 /// running reindex on big directories).
 pub fn run_vacuum(path: &str) {
-    let db_path = index_db_path(path);
-    if !std::path::Path::new(&db_path).exists() {
-        eprintln!("{} no index at {}", color::red("✗"), db_path);
-        return;
-    }
+    let db_path = match cli_index_db_path(path) {
+        Some(p) => p,
+        None => {
+            eprintln!("{} no index at or above {}", color::red("✗"), path);
+            std::process::exit(2);
+        }
+    };
     let before = match std::fs::metadata(&db_path) {
         Ok(m) => m.len(),
-        Err(e) => { eprintln!("{} stat: {}", color::red("✗"), e); return; }
+        Err(e) => { eprintln!("{} stat: {}", color::red("✗"), e); std::process::exit(1); }
     };
     eprintln!("vacuuming {} ({} bytes)...", db_path, before);
+    // WAL + busy_timeout so a VACUUM cannot fail immediately with SQLITE_BUSY
+    // when the MCP watcher is active.
     match rusqlite::Connection::open(&db_path) {
         Ok(db) => {
+            let _ = db.execute_batch("PRAGMA busy_timeout=5000;");
             if let Err(e) = db.execute_batch("VACUUM;") {
                 eprintln!("{} VACUUM failed: {}", color::red("✗"), e);
-                return;
+                std::process::exit(1);
             }
         }
-        Err(e) => { eprintln!("{} open: {}", color::red("✗"), e); return; }
+        Err(e) => { eprintln!("{} open: {}", color::red("✗"), e); std::process::exit(1); }
     }
     let after = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
     let saved = before.saturating_sub(after);
@@ -511,24 +578,23 @@ pub fn run_vacuum(path: &str) {
 /// by default; this command materializes the occurrence table for users who
 /// want every phrase to be queryable instantly (no JIT cost on first query).
 pub fn run_build_occurrences(path: &str) {
-    let db_path = index_db_path(path);
-    if !std::path::Path::new(&db_path).exists() {
-        eprintln!("{} no index at {}", color::red("✗"), db_path);
-        return;
-    }
+    let db_path = match cli_index_db_path(path) {
+        Some(p) => p,
+        None => { eprintln!("{} no index at or above {}", color::red("✗"), path); std::process::exit(2); }
+    };
     let db = match rusqlite::Connection::open(&db_path) {
-        Ok(d) => d,
-        Err(e) => { eprintln!("{} open: {}", color::red("✗"), e); return; }
+        Ok(d) => { let _ = d.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;"); d }
+        Err(e) => { eprintln!("{} open: {}", color::red("✗"), e); std::process::exit(1); }
     };
     let start = std::time::Instant::now();
     let unresolved = match reliary_search::lazy_occurrence::count_unresolved_phrases(&db) {
         Ok(n) => n,
-        Err(e) => { eprintln!("{} count: {}", color::red("✗"), e); return; }
+        Err(e) => { eprintln!("{} count: {}", color::red("✗"), e); std::process::exit(1); }
     };
     eprintln!("building occurrence rows for {} unresolved phrases...", unresolved);
     let built = match reliary_search::lazy_occurrence::build_all_occurrence(&db) {
         Ok(n) => n,
-        Err(e) => { eprintln!("{} build: {}", color::red("✗"), e); return; }
+        Err(e) => { eprintln!("{} build: {}", color::red("✗"), e); std::process::exit(1); }
     };
     eprintln!("{} {} rows in {:?}", color::green("✓"), built, start.elapsed());
 }
@@ -537,14 +603,13 @@ pub fn run_build_occurrences(path: &str) {
 /// Walks every file in the corpus and ensures all 4 lazy tables are populated.
 /// Used by `reliary build-all <path>` for users who want zero query-time JIT cost.
 pub fn run_build_all(path: &str) {
-    let db_path = index_db_path(path);
-    if !std::path::Path::new(&db_path).exists() {
-        eprintln!("{} no index at {}", color::red("✗"), db_path);
-        return;
-    }
+    let db_path = match cli_index_db_path(path) {
+        Some(p) => p,
+        None => { eprintln!("{} no index at or above {}", color::red("✗"), path); std::process::exit(2); }
+    };
     let db = match rusqlite::Connection::open(&db_path) {
-        Ok(d) => d,
-        Err(e) => { eprintln!("{} open: {}", color::red("✗"), e); return; }
+        Ok(d) => { let _ = d.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;"); d }
+        Err(e) => { eprintln!("{} open: {}", color::red("✗"), e); std::process::exit(1); }
     };
     let start = std::time::Instant::now();
 
@@ -552,11 +617,11 @@ pub fn run_build_all(path: &str) {
     let file_ids: Vec<i64> = {
         let mut stmt = match db.prepare_cached("SELECT id FROM file_map") {
             Ok(s) => s,
-            Err(e) => { eprintln!("{} prepare: {}", color::red("✗"), e); return; }
+            Err(e) => { eprintln!("{} prepare: {}", color::red("✗"), e); std::process::exit(1); }
         };
         let rows = match stmt.query_map([], |r| r.get::<_, i64>(0)) {
             Ok(r) => r,
-            Err(e) => { eprintln!("{} query: {}", color::red("✗"), e); return; }
+            Err(e) => { eprintln!("{} query: {}", color::red("✗"), e); std::process::exit(1); }
         };
         rows.filter_map(|x| x.ok()).collect()
     };
@@ -577,80 +642,48 @@ pub fn run_build_all(path: &str) {
 
 /// Re-index a single file after edit. Called by gate.js hooks.
 pub fn run_reindex_file(file: &str) {
-    // Walk up from the file to find the .reliary root
-    let start = std::path::Path::new(file);
-    let mut current = if start.is_dir() {
-        start.to_path_buf()
-    } else {
-        match start.parent() {
-            Some(p) => p.to_path_buf(),
-            None => {
-                eprintln!("{} cannot determine parent of {}", color::red("✗"), file);
-                return;
-            }
-        }
-    };
-    let mut idx_path: Option<String> = None;
-    loop {
-        let candidate = current.join(".reliary").join("index.sqlite");
-        if candidate.exists() {
-            idx_path = Some(candidate.to_string_lossy().to_string());
-            break;
-        }
-        if !current.pop() {
-            break;
-        }
-    }
-    let idx_path = match idx_path {
+    // Walk up from the file to the nearest *usable* index. The old inline loop
+    // accepted any file named `index.sqlite` (including a 0-byte stub), so a
+    // stub shadowed the real project and reindex failed with "schema mismatch".
+    let idx_path = match cli_index_db_path(file) {
         Some(p) => p,
         None => {
-            eprintln!("{} no .reliary index found for {}", color::yellow("⚠"), file);
-            return;
+            eprintln!("{} no usable .reliary index found for {}", color::yellow("⚠"), file);
+            std::process::exit(1);
         }
     };
     match reliary_core::safe_read(file) {
         Ok(content) => {
             let count = crate::reindex::reindex_single_file(&idx_path, file, &content);
+            // A legitimately empty/whitespace file yields 0 tokens; only treat
+            // it as a failure when the file actually has indexable content.
+            let had_content = !content.trim().is_empty();
             if count > 0 {
                 eprintln!("{} reindexed {} tokens from {}", color::green("✓"), count, file);
-            } else {
+            } else if had_content {
                 eprintln!("{} reindex failed for {}", color::red("✗"), file);
+                std::process::exit(1);
+            } else {
+                eprintln!("{} {} is empty (nothing to index)", color::yellow("⊙"), file);
             }
         }
-        Err(e) => eprintln!("{} cannot read {}: {}", color::red("✗"), file, e),
+        Err(e) => {
+            eprintln!("{} cannot read {}: {}", color::red("✗"), file, e);
+            std::process::exit(1);
+        }
     }
 }
 
 /// Who calls this identifier (file + identifier). Returns list of files referencing it.
 pub fn run_who_calls(file: &str, identifier: &str) {
-    let start = std::path::Path::new(file);
-    let mut current = if start.is_dir() {
-        start.to_path_buf()
-    } else {
-        match start.parent() {
-            Some(p) => p.to_path_buf(),
-            None => {
-                println!("[]");
-                return;
-            }
-        }
-    };
-    let mut idx_path: Option<String> = None;
-    loop {
-        let candidate = current.join(".reliary").join("index.sqlite");
-        if candidate.exists() {
-            idx_path = Some(candidate.to_string_lossy().to_string());
-            break;
-        }
-        if !current.pop() {
-            break;
-        }
-    }
-    let idx_path = match idx_path {
+    // Walk up to the nearest *usable* index (skip stubs). A missing index or a
+    // query failure must not masquerade as "no callers" — print to stderr and
+    // exit non-zero so callers can distinguish the two.
+    let idx_path = match cli_index_db_path(file) {
         Some(p) => p,
         None => {
-            println!("[]");
-            return;
+            eprintln!("{} no usable .reliary index found for {}", color::red("✗"), file);
+            std::process::exit(1);
         }
     };
     if let Ok(db) = rusqlite::Connection::open(&idx_path) {
@@ -671,29 +704,47 @@ pub fn run_who_calls(file: &str, identifier: &str) {
             .collect();
         println!("{}", serde_json::to_string(&refs).unwrap_or_else(|_| "[]".to_string()));
     } else {
-        println!("[]");
+        eprintln!("{} cannot open index at {}", color::red("✗"), idx_path);
+        std::process::exit(1);
     }
 }
 
 fn open_index_or_prompt(path: &str) -> Option<rusqlite::Connection> {
-    let db_path = index_db_path(path);
-    if !std::path::Path::new(&db_path).exists() {
-        eprint!("{} No project index found. Build it now? [Y/n] ", color::yellow("⚠"));
-        std::io::stdout().flush().ok();  // GUARDED: intentional
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).ok();  // GUARDED: intentional
-        if input.trim().to_lowercase() != "n" {
-            run_index(path);
-        } else {
-            return None;
+    // Prefer an existing index at or above `path` (so `cd src && reliary search`
+    // uses the project index rather than creating a nested one). Only if none
+    // exists do we offer to build it at exactly `path`.
+    //
+    // P1.2 fail-closed: on a non-TTY stdin without --yes, refuse to prompt
+    // (exit 2 + remediation) instead of auto-accepting on EOF. `CI
+    // `reliary search … < /dev/null` must never silently run `run_index`.
+    let assume_yes = std::env::var("RELIARY_YES").is_ok();
+    let db_path = match cli_index_db_path(path) {
+        Some(p) => p,
+        None => {
+            if !assume_yes && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                eprintln!("{} No project index found and stdin is not a TTY.", color::red("✗"));
+                eprintln!("  Run `reliary trust {}` to build it, or re-run with `--yes`.", path);
+                std::process::exit(2);
+            }
+            if !assume_yes {
+                eprint!("{} No project index found. Build it now? [Y/n] ", color::yellow("⚠"));
+                std::io::stdout().flush().ok();  // GUARDED: intentional
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).ok();  // GUARDED: intentional
+                if input.trim().to_lowercase() == "n" {
+                    return None;
+                }
+            }
+            let _ = run_index(path);
+            index_db_path(path)
         }
-    }
+    };
 
     let db = rusqlite::Connection::open(&db_path).ok()?;
     let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
     if reliary_search::schema::open_existing_db_safe(&db).is_err() {
         eprintln!("{} Index schema mismatch or corrupt. Rebuilding...", color::yellow("⚠"));
-        run_index(path);
+        let _ = run_index(path);
         let db = rusqlite::Connection::open(&db_path).ok()?;
         let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
         reliary_search::schema::open_existing_db_safe(&db).ok()?;
@@ -749,6 +800,12 @@ struct Cli {
     /// Suppress non-error output
     #[arg(short, long, global = true)]
     quiet: bool,
+
+    /// Assume "yes" for all prompts (non-interactive / CI).
+    /// Without this flag, prompts on a non-TTY stdin fail closed (exit 2)
+    /// instead of auto-accepting — P1.2.
+    #[arg(long, global = true)]
+    yes: bool,
 }
 
 /// Reference list of all user-facing CLI subcommand names. CI guardrail verifies each
@@ -777,7 +834,7 @@ enum BenchAction {
 enum Commands {
     /// BM25 search against FTS5 index
     Search { query: String, #[arg(default_value = ".")] path: String },
-    /// Build FTS5 index from directory
+    /// Build FTS5 index from directory (rebuild; for first-time setup use `trust`)
     Index { path: String },
     /// Re-index a single file after edit. Called by gate.js hooks after each modification.
     ReindexFile { file: String },
@@ -823,7 +880,12 @@ enum Commands {
         fix: bool,
     },
     /// View project intelligence
-    Status,
+    Status {
+        /// Project directory (default: current). P1.4: every other command
+        /// takes a path; status hardcoded `./.reliary` before.
+        #[arg(long, default_value = ".")]
+        path: String,
+    },
     /// Clean caches and state
     Clean {
         /// Clean system-wide state
@@ -833,10 +895,10 @@ enum Commands {
         #[arg(long)]
         all: bool,
     },
-    /// Tail reliary logs
+    /// Tail reliary logs (requires RELIARY_LOG_FILE to be set)
     Logs {
-        /// Follow log file in real-time
-        #[arg(long)]
+        /// Follow log file in real-time (mutually exclusive with --level)
+        #[arg(long, conflicts_with = "level")]
         tail: bool,
         /// Filter by log level (error, warn, info, debug, trace)
         #[arg(long)]
@@ -892,7 +954,9 @@ enum Commands {
     Uninstall,
     /// Dead code detection
     Dead { path: String },
-    /// Quick project setup: creates .reliary/ and builds index
+    /// Quick project setup: creates .reliary/ and builds index.
+    /// `trust` is first-time setup (dir + gitignore + index + validate);
+    /// `index` rebuilds an existing project. For a fresh checkout run trust.
     Trust {
         /// Project directory (default: current)
         #[arg(default_value = ".")]
@@ -1108,6 +1172,36 @@ fn read_prefix(path: &std::path::Path, n: usize) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Resolve the "effective" command for the content-reader passthrough check.
+/// The shipped hooks wrap commands as `bash -c '<original>'`, so a raw
+/// `wrap bash -c 'cat src/x.rs'` has `program == "bash"`. This unwraps a
+/// POSIX shell `-c <script>` one level and returns the inner program + args so
+/// the `cat/head/tail/…` guard applies. A non-shell program is returned as-is.
+///
+/// Only a SIMPLE inner command with no shell metacharacters is unwrapped —
+/// `bash -c 'cat a && rm b'` must not be mistaken for a bare `cat`.
+fn effective_command(program: &str, args: &[String]) -> (String, Vec<String>) {
+    if !matches!(program, "bash" | "sh" | "zsh" | "dash") {
+        return (program.to_string(), args.to_vec());
+    }
+    let Some(ci) = args.iter().position(|a| a == "-c") else {
+        return (program.to_string(), args.to_vec());
+    };
+    let Some(script) = args.get(ci + 1) else {
+        return (program.to_string(), args.to_vec());
+    };
+    // Reject anything with shell syntax — only a plain `cmd arg arg` unwraps.
+    if script.contains(['&', '|', ';', '>', '<', '`', '$', '\n', '(', ')']) {
+        return (program.to_string(), args.to_vec());
+    }
+    let mut toks = script.split_whitespace();
+    let Some(first) = toks.next() else {
+        return (program.to_string(), args.to_vec());
+    };
+    let inner: Vec<String> = toks.map(|s| s.to_string()).collect();
+    (first.to_string(), inner)
+}
+
 fn exec_wrap(cmd: &[String]) {
     if cmd.is_empty() {
         eprintln!("Usage: reliary wrap <command> [args...]");
@@ -1124,10 +1218,18 @@ fn exec_wrap(cmd: &[String]) {
     // Non-source targets (logs, data dumps) still compress.
     let program_name_v67 = std::path::Path::new(program).file_name()
         .and_then(|n| n.to_str()).unwrap_or(program);
-    if matches!(program_name_v67, "cat" | "head" | "tail" | "less" | "more" | "bat") {
-        let file_args: Vec<&String> = args.iter()
-            .filter(|a| !a.starts_with('-'))
-            .collect();
+    // V80: the shipped hooks rewrite every command to
+    // `reliary wrap bash -c '<original>'`, so `program` is `bash`/`sh` and the
+    // V67 content-reader guard never fired — a `cat <source>` issued by an
+    // agent through the hook had its closing `}` lines dropped, producing a
+    // broken edit. Resolve the effective (inner) command first, then apply the
+    // passthrough check to it.
+    let (eff_program, eff_arg_strings): (String, Vec<String>) =
+        effective_command(program_name_v67, args);
+    let eff_program_name = std::path::Path::new(&eff_program).file_name()
+        .and_then(|n| n.to_str()).unwrap_or(&eff_program).to_string();
+    if matches!(eff_program_name.as_str(), "cat" | "head" | "tail" | "less" | "more" | "bat") {
+        let file_args: Vec<&String> = eff_arg_strings.iter().filter(|a| !a.starts_with('-')).collect();
         if file_args.len() == 1 {
             let path = std::path::Path::new(file_args[0].as_str());
             if path.is_file() {
@@ -1137,7 +1239,9 @@ fn exec_wrap(cmd: &[String]) {
                 if let Ok(sample) = read_prefix(path, 65536) {
                     let text = String::from_utf8_lossy(&sample);
                     if reliary_search::lazy_occurrence::is_source_like(&text) {
-                        // Passthrough: run the command directly, no compression.
+                        // Passthrough the ORIGINAL command (program + args), not
+                        // the unwrapped inner form — this preserves quoting and
+                        // redirections the shell `-c` string carried.
                         let output = match std::process::Command::new(program)
                             .args(args)
                             .stdin(std::process::Stdio::inherit())
@@ -1151,9 +1255,8 @@ fn exec_wrap(cmd: &[String]) {
                                 std::process::exit(1);
                             }
                         };
-                        // V74: a signal-killed child (None) is NOT success — use 128+signal if we
-    // can get the signal number, else 1.
-    std::process::exit(output.code().unwrap_or(1));
+                        // V74: a signal-killed child (None) is NOT success.
+                        std::process::exit(output.code().unwrap_or(1));
                     }
                 }
             }
@@ -1200,6 +1303,7 @@ fn exec_wrap(cmd: &[String]) {
     // Store original in content cache (best-effort, doesn't fail the wrap)
     let cache_path = std::path::Path::new(".reliary/cache.sqlite");
     std::fs::create_dir_all(".reliary").ok();  // GUARDED: intentional
+    crate::paths::ensure_reliary_ignored(std::path::Path::new(".reliary"));
     let hash = open_or_create(cache_path)
         .ok()
         .and_then(|conn| reliary_core::store(&conn, &raw).ok());
@@ -1252,10 +1356,10 @@ fn exec_wrap(cmd: &[String]) {
 }
 
 fn open_or_create(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();  // GUARDED: intentional
-    }
-    reliary_core::open(path)
+    // Delegate to the shared helper so the `.gitignore` safety write happens on
+    // every cache creation path (this file previously had a duplicate that
+    // missed it).
+    crate::paths::open_or_create(path)
 }
 
 fn dummy_conn() -> rusqlite::Connection {
@@ -1608,12 +1712,16 @@ fn validate_config(workdir: &str) {
     if let Ok(content) = reliary_core::safe_read(path.to_string_lossy().as_ref()) {
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(obj) = parsed.as_object() {
+                // Accept both the nested `features` object and the flat
+                // `features.<name>` keys that `set_config` writes — the two
+                // shapes must agree, otherwise the tool warns about the very
+                // keys it just wrote.
+                let valid_features: Vec<&str> = config::FEATURE_DEFAULTS.iter().map(|(k, _)| *k).collect();
                 for key in obj.keys() {
-                    match key.as_str() {
-                        "mode" | "features" | "apiMode" | "privacyMode" | "apiBaseUrl" => {}
-                        unknown => {
-                            eprintln!("{} Unknown config key '{}' in {}", color::yellow("⚠"), unknown, path.display());
-                        }
+                    let ok = matches!(key.as_str(), "mode" | "features" | "apiMode" | "privacyMode" | "apiBaseUrl")
+                        || key.strip_prefix("features.").map(|f| valid_features.contains(&f)).unwrap_or(false);
+                    if !ok {
+                        eprintln!("{} Unknown config key '{}' in {}", color::yellow("⚠"), key, path.display());
                     }
                 }
                 // Validate mode value
@@ -1625,7 +1733,6 @@ fn validate_config(workdir: &str) {
                     }
                 }
                 // Validate features (reads from config::FEATURE_DEFAULTS to avoid drift)
-                let valid_features: Vec<&str> = config::FEATURE_DEFAULTS.iter().map(|(k, _)| *k).collect();
                 if let Some(features) = obj.get("features") {
                     if let Some(fobj) = features.as_object() {
                         for (k, v) in fobj {
@@ -1656,8 +1763,16 @@ fn do_trust(path: &str) {
         }
         println!("{} Created .reliary/ in {}", color::green("✓"), path);
     }
-    // Build index
-    run_index(path);
+    // Idempotent in BOTH branches: existing installs (created before this
+    // safety write existed) get the self-ignore too. Never overwrites an
+    // existing .reliary/.gitignore.
+    crate::paths::ensure_reliary_ignored(&reliary_dir);
+    // Build index. If it fails, the project is NOT trusted — do not print the
+    // success banner or exit 0.
+    if !run_index(path) {
+        eprintln!("{} Failed to trust {}: the index could not be built", color::red("✗"), path);
+        std::process::exit(1);
+    }
     // Arc 50: opt-in eager build (all lazy tables + occurrences materialized at trust time)
     if std::env::var("RELIARY_EAGER_INDEX").is_ok() {
         println!("{} Eager indexing enabled; building lazy tables...", color::yellow("!"));
@@ -1760,6 +1875,20 @@ fn args_after_flag(flag: &str) -> Option<Vec<String>> {
 /// then removes it. Produces no output and never affects the exit status of
 /// the real command.
 fn unlink_when_unlocked(path: &std::path::Path) -> ! {
+    // V80 security gate: this private mode is reachable from ANY command line
+    // (`reliary status --internal-unlink /etc/hosts`), which made it an
+    // arbitrary-file-deletion primitive. The ONLY legitimate caller is the
+    // Windows self-update janitor, which deletes the renamed-aside `.old`
+    // binary. Refuse anything else so the flag cannot delete user data.
+    let allowed = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.ends_with(".old") || n.ends_with(".exe.old"))
+        .unwrap_or(false);
+    if !allowed {
+        eprintln!("[internal-unlink] refusing to delete {} (only self-update .old files)", path.display());
+        std::process::exit(2);
+    }
     // ~30s of 100ms polls. A binary that is still locked after that is not
     // worth a longer-lived background process.
     for _ in 0..300 {
@@ -1772,6 +1901,9 @@ fn unlink_when_unlocked(path: &std::path::Path) -> ! {
 }
 
 
+/// Exit codes: 0 up-to-date (or updated ok), 1 error, 2 update available
+/// (with `--check`). P1.3: `update` previously always exited 0, breaking
+/// `set -e` and version-watch scripts.
 fn do_update(check_only: bool) {
     println!("{} Checking for updates...", color::bold(""));
     let current = VERSION;
@@ -1780,7 +1912,7 @@ fn do_update(check_only: bool) {
         .build()
     {
         Ok(c) => c,
-        Err(e) => { eprintln!("{} Could not build HTTP client: {}", color::red("✗"), e); return; }
+        Err(e) => { eprintln!("{} Could not build HTTP client: {}", color::red("✗"), e); std::process::exit(1); }
     };
     let release: serde_json::Value = match client
         .get(RELEASES_URL)
@@ -1792,18 +1924,18 @@ fn do_update(check_only: bool) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("{} Could not parse GitHub response: {}", color::red("✗"), e);
-                    return;
+                    std::process::exit(1);
                 }
             },
             Err(e) => {
                 eprintln!("{} Could not read GitHub response: {}", color::red("✗"), e);
-                return;
+                std::process::exit(1);
             }
         },
         Err(e) => {
             eprintln!("{} Could not check for updates: {}", color::red("✗"), e);
             eprintln!("  Install manually from: https://github.com/Reliary/reliary-agent/releases");
-            return;
+            std::process::exit(1);
         }
     };
 
@@ -1831,7 +1963,7 @@ fn do_update(check_only: bool) {
     }
     if check_only {
         println!("  Run 'reliary update' to install");
-        return;
+        std::process::exit(2);
     }
 
     // Platform triple must match the asset names produced by
@@ -1842,7 +1974,7 @@ fn do_update(check_only: bool) {
         eprintln!("{} No prebuilt binary for {}-{}", color::red("✗"),
                   std::env::consts::OS, std::env::consts::ARCH);
         eprintln!("  Build from source: cargo install reliary-agent");
-        return;
+        std::process::exit(1);
     };
     let asset_name = release_asset_name(tag, os_name, arch_name, archive_ext);
     let download_url = format!(
@@ -1863,23 +1995,29 @@ fn do_update(check_only: bool) {
     let Some(expected_digest) = expected_digest else {
         eprintln!("{} Release {} has no {} with a published digest", color::red("✗"), tag, asset_name);
         eprintln!("  Install manually from: https://github.com/Reliary/reliary-agent/releases");
-        return;
+        std::process::exit(1);
     };
 
     // Private 0700 staging dir — never a shared /tmp path.
-    let tmp_dir = std::env::temp_dir().join(format!("reliary-update-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-    #[cfg(unix)]
-    let mkdir = {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new().mode(0o700).create(&tmp_dir)
+    // F3 hardening: `tempfile::TempDir` gives an unpredictable name (no
+    // pid-guessable path) and removes the pre-create `remove_dir_all` that
+    // made the old path a symlink race. 0700 enforced on Unix below.
+    let staging = match tempfile::Builder::new().prefix("reliary-update-").tempdir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{} Could not create staging dir: {}", color::red("✗"), e);
+            std::process::exit(1);
+        }
     };
-    #[cfg(not(unix))]
-    let mkdir = std::fs::create_dir_all(&tmp_dir);
-    if let Err(e) = mkdir {
-        eprintln!("{} Could not create staging dir {}: {}", color::red("✗"), tmp_dir.display(), e);
-        return;
+    let tmp_dir = staging.path().to_path_buf();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp_dir, std::fs::Permissions::from_mode(0o700));
     }
+    // `keep()` prevents auto-delete; cleanup is explicit so error paths that
+    // `exit()` still remove the dir deterministically via `cleanup`.
+    let tmp_dir = staging.keep();
     let cleanup = || { let _ = std::fs::remove_dir_all(&tmp_dir); };
 
     println!("  Downloading {}...", asset_name);
@@ -1898,7 +2036,7 @@ fn do_update(check_only: bool) {
     if let Err(e) = dl_ok {
         eprintln!("{} Download failed: {}", color::red("✗"), e);
         cleanup();
-        return;
+        std::process::exit(1);
     }
 
     match sha256_file(&archive) {
@@ -1908,12 +2046,12 @@ fn do_update(check_only: bool) {
             eprintln!("  expected sha256:{}", expected_digest);
             eprintln!("  actual   sha256:{}", actual);
             cleanup();
-            return;
+            std::process::exit(1);
         }
         Err(e) => {
             eprintln!("{} Could not hash download: {}", color::red("✗"), e);
             cleanup();
-            return;
+            std::process::exit(1);
         }
     }
     println!("  {} checksum verified", color::green("✓"));
@@ -1941,15 +2079,18 @@ fn do_update(check_only: bool) {
             false
         }
     } else {
+        // F3 hardening: `--no-absolute-filenames` + `--no-same-owner` so a
+        // tampered archive cannot write outside the staging dir or claim
+        // ownership. The asset is hash-verified, this is defense in depth.
         std::process::Command::new("tar")
-            .args(["-xzf", &archive.to_string_lossy(), "-C", &tmp_dir.to_string_lossy()])
+            .args(["--no-absolute-filenames", "--no-same-owner", "-xzf", &archive.to_string_lossy(), "-C", &tmp_dir.to_string_lossy()])
             .status()
             .is_ok_and(|s| s.success())
     };
     if !extract_ok {
         eprintln!("{} Extract failed", color::red("✗"));
         cleanup();
-        return;
+        std::process::exit(1);
     }
 
     // The archive contains a single top-level file named after the asset
@@ -1963,7 +2104,7 @@ fn do_update(check_only: bool) {
     if !extracted_bin.is_file() {
         eprintln!("{} Unexpected archive layout (no {})", color::red("✗"), extracted_bin.display());
         cleanup();
-        return;
+        std::process::exit(1);
     }
 
     let binary = std::env::current_exe().unwrap_or_default();
@@ -2013,6 +2154,8 @@ fn do_update(check_only: bool) {
     } else {
         eprintln!("{} Install failed — try manually:", color::red("✗"));
         eprintln!("  cargo install reliary-agent --force");
+        cleanup();
+        std::process::exit(1);
     }
     cleanup();
 }
@@ -2054,38 +2197,48 @@ fn main() {
     let cli = Cli::parse();
     let fmt = format_config(&cli.format);
     let cfg = reliary_core::FormatConfig::new(fmt);
+    // P1.2: --yes is honored by every prompt site via env (open_index_or_prompt,
+    // clean, init). Set once here so subcommand handlers stay simple.
+    if cli.yes {
+        std::env::set_var("RELIARY_YES", "1");
+    }
 
     // Validate config on startup — only for commands that touch the index.
     // Lightweight commands (status, completions, man, --version) skip the disk read.
     match &cli.command {
         Commands::Config { .. } | Commands::Init { dry_run: _ } | Commands::Doctor { .. }
-        | Commands::Status | Commands::Completions { .. } | Commands::Man { outdir: _ } => {}
+        | Commands::Status { .. } | Commands::Completions { .. } | Commands::Man { outdir: _ } => {}
         _ => validate_config("."),
     }
 
     match &cli.command {
         Commands::Search { query, path } => {
-            if let Some(db) = open_index_or_prompt(path) {
-                let results = reliary_search::search::search_fts5(&db, query, 10);
-                if results.is_empty() {
-                    println!("No results found.");
-                } else {
-                    let lines: Vec<String> = results.iter()
-                        .map(|r| format!("{:.4} {}", r.score, r.file))
-                        .collect();
-                    let output = cfg.format_output("search results", &lines);
-                    pipe_to_pager(&output);
-                }
+            // P2.2: no-index (exit 2 + remediation) vs empty (exit 0) distinct.
+            // Previously both printed text and exited 0.
+            let Some(db) = open_index_or_prompt(path) else {
+                // open_index_or_prompt already printed the remediation (or, on a
+                // TTY decline, returned None). Exit 2 = no index, not no hits.
+                eprintln!("{} No index — run `reliary trust {}` to build it.", color::red("✗"), path);
+                std::process::exit(2);
+            };
+            let results = reliary_search::search::search_fts5(&db, query, 10);
+            // Honor -f json for the empty case too (was hardcoded text).
+            let lines: Vec<String> = results.iter()
+                .map(|r| format!("{:.4} {}", r.score, r.file))
+                .collect();
+            if matches!(fmt, reliary_core::OutputFormat::Json) {
+                println!("{}", cfg.format_output("search results", &lines));
+            } else if results.is_empty() {
+                println!("No results found.");
             } else {
-                let tokens = reliary_search::tokenize(query);
-                let lines: Vec<String> = tokens.iter()
-                    .map(|t| format!("{} (stemmed: {})", t, reliary_search::porter_stem(t)))
-                    .collect();
-                println!("{}", cfg.format_output("search tokens (no index)", &lines));
+                let output = cfg.format_output("search results", &lines);
+                pipe_to_pager(&output);
             }
         }
         Commands::Index { path } => {
-            run_index(path);
+            if !run_index(path) {
+                std::process::exit(1);
+            }
         }
         Commands::ReindexFile { file } => {
             run_reindex_file(file);
@@ -2102,19 +2255,20 @@ fn main() {
         Commands::WhoCalls { file, identifier } => {
             run_who_calls(file, identifier);
         }
-        Commands::Compress { text, gentle: _ } => {
+        Commands::Compress { text, gentle } => {
             let input_buf: String = match text {
                 Some(ref t) if !t.is_empty() && t != "---stdin---" => t.clone(),
                 _ => {
                     match reliary_core::safe_read_stdin() {
+                        // P2.2: stdin failure is an error (exit 1), not silent ok.
                         Ok(buf) => buf,
-                        Err(e) => { eprintln!("{} stdin: {}", color::red("✗"), e); return; }
+                        Err(e) => { eprintln!("{} stdin: {}", color::red("✗"), e); std::process::exit(1); }
                     }
                 }
             };
             let input: &str = &input_buf;
             if !input.is_empty() {
-                let result = reliary_compress::compress_reasoning(input, None);
+                let result = reliary_compress::compress_reasoning_mode(input, None, *gentle);
                 if let Some(compressed) = result {
                     println!("{}", cfg.format_output("compressed", &[compressed]));
                 } else {
@@ -2127,7 +2281,7 @@ fn main() {
             // Use safe_read with size cap (Bug 36: OOM risk on huge files)
             let content = match reliary_core::safe_read(file) {
                 Ok(c) => c,
-                Err(e) => { eprintln!("{} {}", color::red("✗"), e); return; }
+                Err(e) => { eprintln!("{} {}", color::red("✗"), e); std::process::exit(1); }
             };
             let risk_result = reliary_risk::compute_file_risk(file, &content);
             let risk_fmt = match fmt { reliary_core::OutputFormat::Json => "json", _ => "default" };
@@ -2151,7 +2305,7 @@ fn main() {
                             print!("{}", sliced);
                         }
                     }
-                    Err(e) => { eprintln!("{} {}", color::red("✗"), e); }
+                    Err(e) => { eprintln!("{} {}", color::red("✗"), e); std::process::exit(1); }
                 }
             } else if *auto {
                 // Auto-mode: gate + hotspot
@@ -2165,7 +2319,7 @@ fn main() {
                             color::yellow("ℹ"));
                         match reliary_pack::generate_pack_hotspot(path, reliary_pack::PackFormat::L2L3, 15) {
                             Ok(pack) => { print!("{}", pack); }
-                            Err(e) => { eprintln!("{} {}", color::red("✗"), e); }
+                            Err(e) => { eprintln!("{} {}", color::red("✗"), e); std::process::exit(1); }
                         }
                     }
                     Ok(reliary_pack::GateDecision::Full) => {
@@ -2173,15 +2327,15 @@ fn main() {
                             color::green("✓"), top_k);
                         match reliary_pack::generate_pack_hotspot(path, reliary_pack::PackFormat::L2L3, *top_k) {
                             Ok(pack) => { print!("{}", pack); }
-                            Err(e) => { eprintln!("{} {}", color::red("✗"), e); }
+                            Err(e) => { eprintln!("{} {}", color::red("✗"), e); std::process::exit(1); }
                         }
                     }
-                    Err(e) => { eprintln!("{} {}", color::red("✗"), e); }
+                    Err(e) => { eprintln!("{} {}", color::red("✗"), e); std::process::exit(1); }
                 }
             } else if strategy == "hotspot" {
                 match reliary_pack::generate_pack_hotspot(path, reliary_pack::PackFormat::L2L3, *top_k) {
                     Ok(pack) => { print!("{}", pack); }
-                    Err(e) => { eprintln!("{} {}", color::red("✗"), e); }
+                    Err(e) => { eprintln!("{} {}", color::red("✗"), e); std::process::exit(1); }
                 }
             } else {
                 let pack_format = if format == "full" {
@@ -2191,18 +2345,25 @@ fn main() {
                 };
                 match reliary_pack::generate_pack(path, pack_format) {
                     Ok(pack) => { print!("{}", pack); }
-                    Err(e) => { eprintln!("{} {}", color::red("✗"), e); }
+                    Err(e) => { eprintln!("{} {}", color::red("✗"), e); std::process::exit(1); }
                 }
             }
         }
         Commands::Doctor { fix } => {
             ux::doctor(*fix, match fmt { reliary_core::OutputFormat::Json => "json", _ => "default" });
         }
-        Commands::Status => {
-            ux::status(match fmt { reliary_core::OutputFormat::Json => "json", _ => "default" });
+        Commands::Status { path } => {
+            ux::status_at(path, match fmt { reliary_core::OutputFormat::Json => "json", _ => "default" });
         }
         Commands::Clean { global, all } => {
-            if !*global && !*all {
+            // P1.2 fail-closed: destructive prompt needs TTY or --yes.
+            let assume_yes = cli.yes || std::env::var("RELIARY_YES").is_ok();
+            let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+            if !*global && !*all && !assume_yes {
+                if !tty {
+                    eprintln!("{} Refusing to wipe project state without a TTY. Re-run with `--yes`.", color::red("✗"));
+                    std::process::exit(2);
+                }
                 eprint!("{} Wipe all project state (.reliary)? [y/N] ", color::yellow("⚠"));
                 std::io::stdout().flush().ok();  // GUARDED: intentional
                 let mut input = String::new();
@@ -2212,7 +2373,11 @@ fn main() {
                     return;
                 }
             }
-            if *all {
+            if *all && !assume_yes {
+                if !tty {
+                    eprintln!("{} Refusing to wipe ALL state without a TTY. Re-run with `--yes`.", color::red("✗"));
+                    std::process::exit(2);
+                }
                 eprint!("{} Wipe ALL state (project + global ~/.reliary)? [y/N] ", color::yellow("⚠"));
                 std::io::stdout().flush().ok();  // GUARDED: intentional
                 let mut input = String::new();
@@ -2249,26 +2414,37 @@ fn main() {
             };
             let path = std::path::Path::new(".reliary/cache.sqlite");
             std::fs::create_dir_all(".reliary").ok();  // GUARDED: intentional
+            crate::paths::ensure_reliary_ignored(std::path::Path::new(".reliary"));
             match reliary_core::open(path).and_then(|conn| reliary_core::store(&conn, &input)) {
                 Ok(hash) => {
                     let _ = reliary_core::evict(&open_or_create(path).unwrap_or_else(|_| dummy_conn()),
                         reliary_core::default_ttl(), reliary_core::default_max_entries());
                     println!("{}", hash);
                 }
-                Err(e) => { eprintln!("{} cache-store: {}", color::red("✗"), e); }
+                Err(e) => { eprintln!("{} cache-store: {}", color::red("✗"), e); std::process::exit(1); }
             }
         }
         Commands::CacheRetrieve { hash } => {
+            // F5: fall back to the tee file (content-addressed by the same
+            // SHA-256) when the DB cache misses — this wires `read_tee`
+            // (hash-gated, basename-only, 10MB-capped) to its honest use:
+            // recovering raw output the compressor referenced.
             let path = std::path::Path::new(".reliary/cache.sqlite");
             match open_or_create(path) {
                 Ok(conn) => {
                     match reliary_core::retrieve(&conn, hash) {
                         Ok(Some(content)) => print!("{}", content),
-                        Ok(None) => { eprintln!("{} not found: {}", color::yellow("⚠"), hash); std::process::exit(1); }
+                        Ok(None) => match crate::tee::read_tee(hash) {
+                            Ok(content) => print!("{}", content),
+                            Err(_) => { eprintln!("{} not found: {}", color::yellow("⚠"), hash); std::process::exit(1); }
+                        },
                         Err(e) => { eprintln!("{} cache-retrieve: {}", color::red("✗"), e); std::process::exit(1); }
                     }
                 }
-                Err(_) => { eprintln!("{} not found: {}", color::yellow("⚠"), hash); std::process::exit(1); }
+                Err(_) => match crate::tee::read_tee(hash) {
+                    Ok(content) => print!("{}", content),
+                    Err(_) => { eprintln!("{} not found: {}", color::yellow("⚠"), hash); std::process::exit(1); }
+                },
             }
         }
         Commands::CacheStats => {
@@ -2277,7 +2453,7 @@ fn main() {
                 Ok(conn) => {
                     match reliary_core::stats(&conn) {
                         Ok((count, bytes)) => println!("entries: {}\nbytes: {}", count, bytes),
-                        Err(e) => { eprintln!("{} cache-stats: {}", color::red("✗"), e); }
+                        Err(e) => { eprintln!("{} cache-stats: {}", color::red("✗"), e); std::process::exit(1); }
                     }
                 }
                 Err(_) => println!("entries: 0\nbytes: 0"),
@@ -2303,8 +2479,12 @@ fn main() {
                     println!("{}", config::set_config(k, v, *local, root_str));
                 }
                 (None, None) => {
-                    let resolved_mode = config::resolve_mode_with_source(root.as_deref().or(Some(".")));
-                    let resolved_features = config::resolve_features_with_source(root.as_deref());
+                    // Default to the current directory so the PROJECT config is
+                    // read when `--root` is omitted. The old code passed `None`,
+                    // so `reliary config` never reflected project-scoped settings.
+                    let wd = root.as_deref().or(Some("."));
+                    let resolved_mode = config::resolve_mode_with_source(wd);
+                    let resolved_features = config::resolve_features_with_source(wd);
 
                     if fmt == reliary_core::OutputFormat::Json {
                         let mut map = serde_json::Map::new();
@@ -2412,9 +2592,8 @@ fn main() {
             do_update(*check);
         }
         Commands::Bench { action, index, out, gt, seed, tol, path } => {
-            let index_path = index.clone().unwrap_or_else(|| {
-                format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
-            });
+            // Default to the nearest existing index at/above `path`.
+            let index_path = index.clone().unwrap_or_else(|| cli_index_db_path_or_literal(path));
             match action {
                 BenchAction::Gen => {
                     if !std::path::Path::new(&index_path).exists() {
@@ -2450,7 +2629,7 @@ fn main() {
             }
         }
         Commands::Map { path, out, max_files, max_symbols } => {
-            let db_path = format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'));
+            let db_path = cli_index_db_path_or_literal(path);
             if !std::path::Path::new(&db_path).exists() {
                 eprintln!("cannot open index at {} → run `reliary trust {}` to build it", db_path, path);
                 std::process::exit(2);
@@ -2588,7 +2767,7 @@ fn main() {
             if diff_exit != 0 { std::process::exit(diff_exit); }
         }
         Commands::TestPlan { files, symbols, path, diff, json } => {
-            let db_path = format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'));
+            let db_path = cli_index_db_path_or_literal(path);
             if !std::path::Path::new(&db_path).exists() {
                 eprintln!("cannot open index at {} → run `reliary trust {}` to build it", db_path, path);
                 std::process::exit(2);
@@ -2660,7 +2839,7 @@ fn main() {
             }
         }
         Commands::Impact { name, path, json } => {
-            let db_path = format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'));
+            let db_path = cli_index_db_path_or_literal(path);
             if !std::path::Path::new(&db_path).exists() {
                 eprintln!("cannot open index at {} → run `reliary trust {}` to build it", db_path, path);
                 std::process::exit(2);
@@ -2697,8 +2876,13 @@ fn main() {
                             .file_name().map(|x| x.to_string_lossy().to_string())
                             .unwrap_or_else(|| imp.def_file.clone());
                         println!("{} is defined at {}:{}", imp.symbol, def_base, imp.def_line);
+                        // Honest framing: caller detection is textual-reference
+                        // based (token presence), NOT a semantic call graph — it
+                        // misses reflection/DI/framework wiring. Absence is not
+                        // proof of no callers, so never label a symbol "dead"
+                        // from this alone.
                         if imp.callers.is_empty() {
-                            println!("callers: none (dead code?)");
+                            println!("callers: none found in the index (textual references only; may still be used via reflection, DI, or framework wiring — not proof of dead code)");
                         } else {
                             let caller_list: Vec<String> = imp.callers.iter().take(12)
                                 .map(|(f, l)| {
@@ -2709,6 +2893,7 @@ fn main() {
                                 })
                                 .collect();
                             println!("callers ({}): {}", imp.callers.len(), caller_list.join(", "));
+                            println!("  (textual references; a complete call graph would also include reflection/DI/framework wiring)");
                         }
                         if !imp.test_files.is_empty() {
                             let tests: Vec<String> = imp.test_files.iter()
@@ -2747,7 +2932,7 @@ fn main() {
             let path = &eff_path;
             let tol = &eff_tol;
             let json = &eff_json;
-            let db_path = format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'));
+            let db_path = cli_index_db_path_or_literal(path);
             if !std::path::Path::new(&db_path).exists() {
                 eprintln!("cannot open index at {} → run `reliary trust {}` to build it", db_path, path);
                 std::process::exit(2);
@@ -2760,6 +2945,11 @@ fn main() {
                 eprintln!("index at {} is not usable: {}", db_path, e);
                 std::process::exit(2);
             }
+            // V80: symbol claims are checked against the occurrence table, which
+            // `trust` does not populate (lazy index). JIT-build it once so the
+            // CLI gives the same answer as the MCP tools instead of reporting a
+            // true claim as FALSE.
+            ensure_occurrence_built(&db);
             let summary = verify::verify_text(&db, &claim_str, *tol);
             if *json {
                 let claims: Vec<serde_json::Value> = summary.claims.iter().map(|(c, v)| {
@@ -2809,31 +2999,52 @@ fn main() {
             // trailing_var_arg can swallow --path/--max-iters if passed after
             // the task. Extract them manually and strip from the task.
             let mut eff_path = path.clone();
+            let mut eff_dry = *dry_run;
+            let mut eff_json = *json;
+            let mut eff_iters = *max_iters;
+            let mut eff_verify: Option<String> = verify.clone();
             let mut task_parts: Vec<String> = Vec::new();
             let mut it = task.iter();
+            // trailing_var_arg swallows flags after the task; accept both the
+            // value form (`--path X`) and the inline form (`--path=X`), and
+            // honor --dry-run/--json/--verify/--max-iters wherever they appear.
             while let Some(t) = it.next() {
-                if t == "--path" || t == "-p" {
-                    if let Some(v) = it.next() { eff_path = v.clone(); }
-                } else if t == "--max-iters" {
-                    if let Some(_v) = it.next() {}
-                } else if !t.starts_with("--") {
-                    task_parts.push(t.clone());
+                let (flag, inline) = match t.split_once('=') {
+                    Some((f, v)) if f.starts_with("--") => (f, Some(v.to_string())),
+                    _ => (t.as_str(), None),
+                };
+                match flag {
+                    "--path" | "-p" => {
+                        if let Some(v) = inline { eff_path = v; }
+                        else if let Some(v) = it.next() { eff_path = v.clone(); }
+                    }
+                    "--max-iters" => {
+                        let v = inline.or_else(|| it.next().cloned());
+                        if let Some(v) = v { eff_iters = v.parse().unwrap_or(eff_iters); }
+                    }
+                    "--verify" => {
+                        eff_verify = inline.or_else(|| it.next().cloned());
+                    }
+                    "--dry-run" => { eff_dry = true; }
+                    "--json" => { eff_json = true; }
+                    _ if !t.starts_with('-') => task_parts.push(t.clone()),
+                    _ => {} // unknown flag: drop it (and don't leak its value into the task)
                 }
             }
             let task_str = task_parts.join(" ");
             // Deterministic mode: try recipes first (no LLM needed). If the
             // task isn't recipe-able, report instead of spawning an LLM.
-            match deterministic_fix::run_deterministic(&eff_path, &task_str) {
+            match deterministic_fix::run_deterministic_opts(&eff_path, &task_str, eff_dry) {
                 Ok(code) => {
-                    if *json {
-                        println!("{{\"deterministic\":true,\"exit\":{}}}", code);
+                    if eff_json {
+                        println!("{{\"deterministic\":true,\"exit\":{},\"dry_run\":{}}}", code, eff_dry);
                     }
                     std::process::exit(code);
                 }
                 Err(msg) if msg.starts_with("no deterministic recipe") => {
                     // Fall back to the LLM agent for unknown tasks.
                     eprintln!("[fix] {} — falling back to LLM agent", msg);
-                    match fix_agent::run(&eff_path, &task_str, *max_iters, *dry_run, *json, verify.as_deref()) {
+                    match fix_agent::run(&eff_path, &task_str, eff_iters, eff_dry, eff_json, eff_verify.as_deref()) {
                         Ok(_code) => {}
                         Err(e) => {
                             eprintln!("reliary fix failed: {}", e);
@@ -2885,7 +3096,9 @@ fn main() {
             if let Some(dir) = outdir {
                 let path = std::path::Path::new(dir);
                 std::fs::create_dir_all(path).ok();  // GUARDED: intentional
-                let file_path = path.join("reliary-agent.1");
+                // P2.3: filename matches the shipped binary (`reliary.1`),
+                // not the legacy crate name — `man reliary` must find it.
+                let file_path = path.join("reliary.1");
                 let mut file = match std::fs::File::create(&file_path) {
                     Ok(f) => f,
                     Err(e) => {
@@ -2920,7 +3133,7 @@ fn main() {
                         println!("{}", reliary_core::build_state_block(&state, state.turn_count));
                     }
                 }
-                Err(e) => eprintln!("✗ Session file error: {}", e),
+                Err(e) => { eprintln!("✗ Session file error: {}", e); std::process::exit(1); }
             }
         }
         Commands::Classify { file, line, stem } => {

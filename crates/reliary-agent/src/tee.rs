@@ -45,14 +45,25 @@ pub fn save_tee(raw: &str) -> std::io::Result<Option<String>> {
 }
 
 /// V14: Read a tee file by hash.
-#[allow(dead_code)]
+/// F5 hardening: gated to `TEE_DIR.join(basename)` — an absolute or
+/// `/`-containing input can no longer read arbitrary files. 10MB cap so a
+/// huge tee file cannot OOM the reader.
 pub fn read_tee(hash_or_path: &str) -> std::io::Result<String> {
-    // If it looks like a path, use directly; otherwise treat as hash.
-    let path = if hash_or_path.contains('/') || hash_or_path.ends_with(".log") {
-        PathBuf::from(hash_or_path)
-    } else {
-        PathBuf::from(TEE_DIR).join(hash_or_path)
-    };
+    // Basename only: strip any directory the caller smuggled in.
+    let base: &str = hash_or_path.rsplit('/').next().unwrap_or(hash_or_path);
+    let base: &str = base.rsplit('\\').next().unwrap_or(base);
+    if base.is_empty() || base == "." || base == ".." || base.starts_with('.') {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid tee name"));
+    }
+    // Hashes are hex; refuse anything else (no traversal alphabet at all).
+    if !base.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "tee name must be hex"));
+    }
+    let path = PathBuf::from(TEE_DIR).join(base);
+    let meta = std::fs::metadata(&path)?;
+    if meta.len() > 10 * 1024 * 1024 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "tee file too large"));
+    }
     std::fs::read_to_string(&path)
 }
 

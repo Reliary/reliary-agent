@@ -18,13 +18,17 @@ Same input bytes always produce the same output bytes (BTreeMap ordering, first-
 ## The `wrap` path (`reliary wrap <cmd>`)
 
 - Command executes, exit code propagates on both success and failure.
-- Raw stdout is stored in `.reliary/cache.sqlite`; the output footer carries the retrieval hash (`reliary cache-retrieve <hash>`).
+- Raw stdout is stored in `.reliary/cache.sqlite`; the output footer carries the retrieval hash (`reliary cache-retrieve <hash>`, falling back to the tee file on a cache miss).
 - Test runners collapse: passing suites print `[reliary: N tests passed]`.
 - **Edit safety**: content readers on source-like files (`cat`/`head`/`tail`/`less`/`bat <source.rs>`) pass through uncompressed — the model never builds edits from mangled code.
+
+## The `sift` path (`reliary sift`)
+
 - Flags: `--llm` (plain markers), `--aggressive` (drop last 30% of kept lines).
+- Never emits more bytes than the raw input (hard no-inflation guarantee).
 
 ## Benchmarks
 
-46.3% average across the 6 fixtures in the V14 benchmark. Suite and raw fixtures: `~/src/sift/scripts/bench_vs_rtk.py`.
+Mean 31.6% / median 3.9% byte reduction on 20 RTK comparison fixtures, concentrated on repeated and ANSI-heavy output. See `docs/BENCHMARKS.md` for the current numbers.
 
 Part of the [reliary-agent](https://github.com/Reliary/reliary-agent) workspace. See the main repository for full documentation.

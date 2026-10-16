@@ -174,6 +174,16 @@ pub fn is_source_like(content: &str) -> bool {
                 || lower.starts_with("class ") || lower.starts_with("static ")
                 || lower.starts_with("func ") || lower.starts_with("package ")
                 || lower.starts_with("type ") || lower.starts_with("trait ")
+                // V78: C#/Java/Kotlin declaration forms. A declaration-only file
+                // (interfaces, DTOs, enums) has no `(`, `{`-at-end or assignment
+                // on its lines, so its code ratio was 0 and the file was rejected
+                // as "not source" — every symbol in it silently unsearchable.
+                || lower.starts_with("public ") || lower.starts_with("private ")
+                || lower.starts_with("protected ") || lower.starts_with("internal ")
+                || lower.starts_with("interface ") || lower.starts_with("record ")
+                || lower.starts_with("enum ") || lower.starts_with("namespace ")
+                || lower.starts_with("using ") || lower.starts_with("sealed ")
+                || lower.starts_with("abstract ") || lower.starts_with("partial ")
         };
         let has_assignment = trimmed.contains('=') && trimmed.ends_with(';')
             && !trimmed.starts_with('=');
@@ -410,6 +420,7 @@ pub fn ensure_occurrence_for_phrase(
             // `StructuralResult` in a fn's return type inherited the fn's def
             // flag, and def-lookup returned the fn line for struct queries.
             let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
+            crate::ingest::reset_comment_state();
             for line in &lines {
                 let (open_count, close_count) = crate::ingest::count_braces(line);
                 let prev_depth = brace_depth;
@@ -425,7 +436,13 @@ pub fn ensure_occurrence_for_phrase(
             let line_tag = line_tags.get(li).copied().unwrap_or(0);
             let line_def = line_is_def.get(li).copied().unwrap_or(false);
             let line_def_name = line_def_names.get(li).cloned().flatten();
-                for (col, token) in crate::scan_identifiers(line).into_iter().enumerate() {
+                // V79: strip comments/strings before tokenizing, matching
+                // ingest and the other two JIT paths. Scanning the raw line made
+                // a name inside a string/comment (`panic!("write_vocab")`) a
+                // phantom occurrence, and diverged the `col` ordinal from the
+                // file-path build.
+                let code_line = crate::structural::strip_strings_and_comments(line);
+                for (col, token) in crate::scan_identifiers(&code_line).into_iter().enumerate() {
                     let stemmed = crate::stem_identifier(&token);
                     if stemmed != phrase_text {
                         continue;
@@ -596,6 +613,7 @@ fn ensure_occurrence_for_file_impl(
     let mut line_is_def: Vec<bool> = Vec::with_capacity(lines.len());
     let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
     let mut brace_depth: i32 = 0;
+    crate::ingest::reset_comment_state();
     for line in &lines {
         let (open_count, close_count) = crate::ingest::count_braces(line);
         let prev_depth = brace_depth;
@@ -837,6 +855,7 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
     let mut line_is_def: Vec<bool> = Vec::with_capacity(lines.len());
     let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
     let mut brace_depth: i32 = 0;
+    crate::ingest::reset_comment_state();
     for line in &lines {
         let (open_count, close_count) = crate::ingest::count_braces(line);
         let prev_depth = brace_depth;
@@ -901,7 +920,9 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
             // P4-3: use pre-built block_ids array (hoisted out of the loop).
             let block_id = block_ids.get(li).copied().unwrap_or(0);
 
-            for (col, token) in crate::scan_identifiers(line).into_iter().enumerate() {
+            // V79: strip comments/strings before tokenizing (see the other path).
+            let code_line = crate::structural::strip_strings_and_comments(line);
+            for (col, token) in crate::scan_identifiers(&code_line).into_iter().enumerate() {
                 // V41: use stem_identifier to preserve snake_case identifiers.
                 // porter_stem strips the `al` suffix from `structural` → `structur`,
                 // which makes `classify_structural` unsearchable. stem_identifier

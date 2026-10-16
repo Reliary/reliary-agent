@@ -33,6 +33,18 @@ pub struct VerifySummary {
     pub claims: Vec<(Claim, Verdict)>,
 }
 
+/// Source-file extensions the verifier recognises in `file:line` citations.
+/// Grammar-free: this is a citation-shape list, not language analysis, and it
+/// mirrors the Python verifier (`bench/deterministic_verify.py`) so the two
+/// agree. The pattern is built once from this list.
+const SRC_EXT: &str =
+    "rs|py|go|ts|tsx|js|jsx|c|cc|cpp|h|hpp|java|rb|php|cs|kt|swift|scala|m|mm|dart|lua|pl|sh|bash|tex";
+
+fn src_ext_pattern() -> &'static str {
+    static R: OnceLock<String> = OnceLock::new();
+    R.get_or_init(|| format!("[A-Za-z0-9_./-]+\\.(?:{})", SRC_EXT))
+}
+
 fn re_sym_at_file_line() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
@@ -41,9 +53,10 @@ fn re_sym_at_file_line() -> &'static Regex {
         // "X defined at f:l" both capture X, not "defined".
         // V74: a leading `Type::` is captured in group 1 so `Runtime::block_on`
         // verifies `block_on` (the old non-capturing group verified `Runtime`).
-        Regex::new(
-            r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s+(?:is\s+)?(?:defined|declared|located|found|called)?\s*(?:at|in)\s+([A-Za-z0-9_./-]+\.rs):(\d+)",
-        )
+        Regex::new(&format!(
+            r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s+(?:is\s+)?(?:defined|declared|located|found|called)?\s*(?:at|in)\s+({}):(\d+)",
+            src_ext_pattern()
+        ))
         .expect("re_sym_at_file_line")
     })
 }
@@ -51,36 +64,47 @@ fn re_sym_at_file_line() -> &'static Regex {
 fn re_sym_in_file_line() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
-        Regex::new(
-            r"([A-Za-z_][A-Za-z0-9_]*)\s+(?:is\s+)?defined\s+in\s+([A-Za-z0-9_./-]+\.rs)\s+at\s+line\s+(\d+)",
-        )
+        Regex::new(&format!(
+            r"([A-Za-z_][A-Za-z0-9_]*)\s+(?:is\s+)?defined\s+in\s+({})\s+at\s+line\s+(\d+)",
+            src_ext_pattern()
+        ))
         .expect("re_sym_in_file_line")
     })
 }
 
 fn re_file_line() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"([A-Za-z0-9_./-]+\.rs):(\d+)").expect("re_file_line"))
+    R.get_or_init(|| {
+        Regex::new(&format!(r"({}):(\d+)", src_ext_pattern())).expect("re_file_line")
+    })
 }
 
 fn re_paren_file_line() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"\(([A-Za-z0-9_./-]+\.rs):(\d+)\)").expect("re_paren_file_line"))
+    R.get_or_init(|| {
+        Regex::new(&format!(r"\(({}):(\d+)\)", src_ext_pattern())).expect("re_paren_file_line")
+    })
 }
 
 fn re_file_at_lines() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
-        Regex::new(r"([A-Za-z0-9_./-]+\.rs)\s+(?:at\s+)?lines?\s+(\d+(?:\s*,\s*\d+)*)")
-            .expect("re_file_at_lines")
+        Regex::new(&format!(
+            r"({})\s+(?:at\s+)?lines?\s+(\d+(?:\s*,\s*\d+)*)",
+            src_ext_pattern()
+        ))
+        .expect("re_file_at_lines")
     })
 }
 
 fn re_file_paren_lines() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
-        Regex::new(r"([A-Za-z0-9_./-]+\.rs)\s*\(\s*lines?\s+(\d+(?:\s*,\s*\d+)*)")
-            .expect("re_file_paren_lines")
+        Regex::new(&format!(
+            r"({})\s*\(\s*lines?\s+(\d+(?:\s*,\s*\d+)*)",
+            src_ext_pattern()
+        ))
+        .expect("re_file_paren_lines")
     })
 }
 
@@ -95,6 +119,19 @@ const ENGLISH_STOP: &[&str] = &[
 
 fn basename(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+/// Escape LIKE metacharacters (`\`, `%`, `_`) with a backslash so a filename is
+/// matched literally (paired with `ESCAPE '\'`).
+fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c == '\\' || c == '%' || c == '_' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Extract all verifiable claims from text. Mirrors the Python extractor:
@@ -162,16 +199,28 @@ pub fn extract_claims(text: &str) -> Vec<Claim> {
 
 /// Verify one claim against the index (±tol lines).
 pub fn verify_claim(db: &Connection, claim: &Claim, tol: i32) -> Verdict {
+    // Clamp tolerance and the line number so `line - 1 - tol` / `line - 1 + tol`
+    // cannot overflow (a huge client-supplied line or tol panicked the server).
+    let tol = tol.clamp(0, 10_000);
+    let line = claim.line.clamp(0, 50_000_000);
+    let claim = &Claim { symbol: claim.symbol.clone(), file: claim.file.clone(), line };
     if claim.symbol.is_empty() {
         // file:line-only claim: the file must exist in the index AND the
         // claimed line must be within the file's line count. Previously any
         // line number verified as long as the file existed (foo.rs:99999 OK).
+        // V79: match the basename exactly (the claim stores a basename). `_` and
+        // `%` are LIKE metacharacters, so `foo_bar.rs` used to match `fooXbar.rs`;
+        // and an unordered LIMIT 1 picked an arbitrary same-named file. Now the
+        // suffix is matched with an explicit ESCAPE and the shortest path wins
+        // deterministically.
+        let suffix = format!("%/{}", escape_like(&claim.file));
         let file_info: Option<(String, i64)> = db
             .query_row(
                 "SELECT fm.file_path, COALESCE(fs.content_len, 0) FROM file_map fm
                  LEFT JOIN file_stats fs ON fs.file_id = fm.id
-                 WHERE fm.file_path LIKE ?1 LIMIT 1",
-                params![format!("%/{}", claim.file)],
+                 WHERE (fm.file_path = ?1 OR fm.file_path LIKE ?2 ESCAPE '\\')
+                 ORDER BY LENGTH(fm.file_path) ASC, fm.file_path ASC LIMIT 1",
+                params![claim.file, suffix],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
             )
             .optional()
@@ -181,19 +230,38 @@ pub fn verify_claim(db: &Connection, claim: &Claim, tol: i32) -> Verdict {
             return Verdict::False { actual: None };
         };
         if content_len > 0 {
-            // content_len is bytes; a generous line bound avoids false negatives
-            // on long lines. Exact check is via occurrence rows when available.
-            let line_exists: i64 = db
+            // Sound line bound: a file of `content_len` bytes has at most
+            // `content_len` lines (every line is >= 1 byte), so a claim beyond
+            // that is impossible. The old `content_len/8 + 1000` bound was ~8x
+            // too generous and rubber-stamped e.g. `foo.rs:5000` in a 300-line
+            // file.
+            if claim.line as i64 > content_len {
+                return Verdict::False { actual: None };
+            }
+            // Tighter check when the occurrence table is populated for this
+            // file: the claimed line must actually hold a token. Only apply it
+            // when the file HAS occurrence rows — on a lazy index the table is
+            // empty and this would produce false negatives.
+            let has_occ: i64 = db
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM occurrence o JOIN file_map f ON f.id=o.file_id
-                                   WHERE f.file_path = ?1 AND o.line BETWEEN ?2 AND ?3 LIMIT 1)",
-                    params![path, claim.line - 1 - tol, claim.line - 1 + tol],
-                    |r| r.get(0),
+                                   WHERE f.file_path = ?1 LIMIT 1)",
+                    params![path], |r| r.get(0),
                 )
-                .inspect_err(|e| eprintln!("[verify] line existence check failed: {}", e))
                 .unwrap_or(0);
-            if line_exists == 0 && claim.line as i64 > content_len / 8 + 1000 {
-                return Verdict::False { actual: None };
+            if has_occ > 0 {
+                let line_exists: i64 = db
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM occurrence o JOIN file_map f ON f.id=o.file_id
+                                       WHERE f.file_path = ?1 AND o.line BETWEEN ?2 AND ?3 LIMIT 1)",
+                        params![path, claim.line - 1 - tol, claim.line - 1 + tol],
+                        |r| r.get(0),
+                    )
+                    .inspect_err(|e| eprintln!("[verify] line existence check failed: {}", e))
+                    .unwrap_or(1);
+                if line_exists == 0 {
+                    return Verdict::False { actual: None };
+                }
             }
         }
         return Verdict::Verified { actual: None };
@@ -333,6 +401,65 @@ mod tests {
     fn empty_text_no_claims() {
         assert!(extract_claims("").is_empty());
         assert!(extract_claims("no claims here at all").is_empty());
+    }
+
+    #[test]
+    fn extracts_claims_for_non_rust_languages() {
+        // V78: the extractor was hardcoded to `.rs`, so `verify` silently found
+        // no claims on a .NET/Java/TS corpus. Every source extension the index
+        // handles must be recognised.
+        for (text, sym, file, line) in [
+            ("RoleConfigurationController at RoleConfigurationController.cs:16", "RoleConfigurationController", "RoleConfigurationController.cs", 16),
+            ("handleRequest defined in Server.java at line 42", "handleRequest", "Server.java", 42),
+            ("fetchUser at api/client.ts:99", "fetchUser", "client.ts", 99),
+            ("Process at worker.go:7", "Process", "worker.go", 7),
+            ("Widget at widget.py:3", "Widget", "widget.py", 3),
+        ] {
+            let claims = extract_claims(text);
+            let hit = claims.iter().any(|c| c.symbol == sym && c.file == file && c.line == line);
+            assert!(hit, "no claim parsed from {:?} (got {:?})", text, claims);
+        }
+    }
+
+    #[test]
+    fn line_bound_rejects_impossible_lines() {
+        // A file:line far beyond a small file's line count must be FALSE, not
+        // rubber-stamped. Build a tiny index and query an absurd line.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("reliary_v79v_{}", nanos));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("small.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+        let db = Connection::open(dir.join("i.sqlite")).unwrap();
+        reliary_search::schema::create_new_db(&db).unwrap();
+        reliary_search::ingest::index_directory(&db, dir.to_str().unwrap()).unwrap();
+
+        let far = Claim { symbol: String::new(), file: "small.rs".into(), line: 5000 };
+        assert!(matches!(verify_claim(&db, &far, 1), Verdict::False { .. }),
+            "a line beyond the file must be FALSE");
+        // Negative control: a real line still verifies.
+        let ok = Claim { symbol: String::new(), file: "small.rs".into(), line: 1 };
+        assert!(matches!(verify_claim(&db, &ok, 1), Verdict::Verified { .. }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn huge_tol_does_not_overflow() {
+        let db = Connection::open_in_memory().unwrap();
+        reliary_search::schema::create_new_db(&db).unwrap();
+        // Must not panic.
+        let c = Claim { symbol: String::new(), file: "x.rs".into(), line: i32::MAX };
+        let _ = verify_claim(&db, &c, i32::MAX);
+        let _ = verify_claim(&db, &c, i32::MIN);
+    }
+
+    #[test]
+    fn non_source_citations_are_not_claims() {
+        // Negative control: prose/README citations must not become claims, or
+        // the extractor would credit locations that are not code.
+        let claims = extract_claims("see README.md:12 and notes.txt:3 for details");
+        assert!(claims.iter().all(|c| c.file != "README.md" && c.file != "notes.txt"),
+            "non-source citations leaked: {:?}", claims);
     }
 
     #[test]

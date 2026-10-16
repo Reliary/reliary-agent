@@ -37,8 +37,14 @@ pub fn block_id_at(db: &Connection, file_id: i64, line: i32) -> rusqlite::Result
     // Arc 35 lazy mode: if blocks for this file haven't been built yet,
     // JIT-build them now. Idempotent — no-op if already populated.
     if crate::lazy_tables::ensure_blocks_for_file(db, file_id).is_err() { eprintln!("[symbol] ensure_blocks_for_file failed for file_id={}", file_id); }
-    // V51: convert 1-indexed MCP param to 0-indexed (block table uses 0-indexed lines).
-    let line_0idx = line.saturating_sub(1);
+    // V79: `line` is ALREADY 0-indexed — every caller passes the handler's
+    // `anchor_line - 1` (the internal pipeline convention: occurrence rows,
+    // block rows, and file_meta lines are all 0-indexed). The old
+    // `line.saturating_sub(1)` here double-converted, so the anchor block
+    // resolved one line early (often to None → empty results) for every tool
+    // that uses an anchor. The block table uses 0-indexed lines, so no
+    // conversion is needed.
+    let line_0idx = line;
     // V60: require end_line >= line so gap lines (blank/comment between
     // blocks) don't resolve to a block that already ended.
     let mut stmt = db.prepare_cached(
@@ -261,33 +267,43 @@ pub fn stem(token: &str) -> String {
 pub fn phrase_id_for(db: &Connection, raw_name: &str) -> rusqlite::Result<Option<i64>> {
     let stem = stem(raw_name);
     let mut stmt = db.prepare_cached("SELECT id FROM phrases WHERE phrase = ?1 LIMIT 1")?;
-    // Try stemmed first.
-    let stemmed_pid: Option<i64> = {
-        let mut rows = stmt.query(params![stem])?;
-        rows.next()?.map(|r| r.get::<_, i64>(0)).transpose()?
+    let mut lookup = |key: &str| -> rusqlite::Result<Option<i64>> {
+        let mut rows = stmt.query(params![key])?;
+        rows.next()?.map(|r| r.get::<_, i64>(0)).transpose()
     };
-    if let Some(pid) = stemmed_pid {
-        // Verify this phrase_id has occurrence data. If stale (0 rows),
-        // try the unstemmed literal as fallback.
-        // V54: COUNT(*) → EXISTS with LIMIT 1 — early-exit instead of full scan.
-        let has_occ: i64 = db.query_row(
+    let has_occ = |pid: i64| -> bool {
+        db.query_row(
             "SELECT EXISTS(SELECT 1 FROM occurrence WHERE phrase_id = ?1 LIMIT 1)",
-            params![pid], |r| r.get(0)
-        ).unwrap_or(0);
-        if has_occ > 0 {
+            params![pid], |r| r.get::<_, i64>(0),
+        ).unwrap_or(0) > 0
+    };
+
+    let stemmed_pid = lookup(&stem)?;
+    // Try the unstemmed literal too (e.g. "consume" instead of "consum").
+    let lower = raw_name.to_ascii_lowercase();
+    let literal_pid = if lower == stem { None } else { lookup(&lower)? };
+
+    // Prefer a phrase that actually HAS occurrence rows (the literal is often
+    // the "real" phrase when a stem collided). V54: EXISTS with LIMIT 1.
+    if let Some(pid) = stemmed_pid {
+        if has_occ(pid) {
             return Ok(Some(pid));
         }
-        eprintln!("[guard:phrase_id_for] stemmed phrase_id={} for '{}' (stem='{}') has 0 occurrence rows, trying fallback", pid, raw_name, stem);
-    } else {
-        eprintln!("[guard:phrase_id_for] no stemmed match for '{}' (stem='{}'), trying fallback", raw_name, stem);
     }
-    // Try unstemmed literal (e.g., "consume" instead of "consum").
-    let lower = raw_name.to_ascii_lowercase();
-    let mut rows2 = stmt.query(params![lower])?;
-    if let Some(r) = rows2.next()? {
-        return Ok(Some(r.get(0)?));
+    if let Some(pid) = literal_pid {
+        if has_occ(pid) {
+            return Ok(Some(pid));
+        }
     }
-    Ok(None)
+    // Neither has occurrence rows yet — this is the LAZY index (trust does not
+    // build occurrence; it is JIT-built on first query). The OLD code returned
+    // None here whenever the stemmed pid was found but unbuilt, so a valid
+    // symbol looked absent and callers that expected to JIT never got a pid
+    // (circular). Return the stemmed pid (preferred) so the caller can JIT.
+    if let Some(pid) = stemmed_pid {
+        return Ok(Some(pid));
+    }
+    Ok(literal_pid)
 }
 
 /// Look up file_id from file_path.
@@ -985,6 +1001,18 @@ fn is_likely_entry_point(name: &str) -> bool {
 /// definition using itself). Returns up to `limit` (phrase, file, line, col) tuples.
 /// Grammar-free equivalent of "unused symbols".
 pub fn dead_symbols(db: &Connection, limit: usize, path_filter: Option<&str>, functions_only: bool) -> rusqlite::Result<Vec<(String, String, i32, i32)>> {
+    // V80: deadness is decided from the occurrence table, which trust does NOT
+    // populate (lazy index). On a fresh index this returned "0 dead items"
+    // indistinguishably from a genuinely clean project. Build the table once
+    // (idempotent) before deciding.
+    let has_any_occ: i64 = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM occurrence LIMIT 1)", [], |r| r.get(0),
+    ).unwrap_or(1);
+    if has_any_occ == 0 {
+        if let Err(e) = crate::lazy_occurrence::build_all_occurrence(db) {
+            eprintln!("[dead_symbols] JIT occurrence build failed: {}", e);
+        }
+    }
     // Find every is_def=1 occurrence where the phrase has no occurrences in any
     // block OTHER than this occurrence's own block. That's the "no inbound from
     // other blocks" criterion.
@@ -1192,6 +1220,28 @@ mod tests {
     use super::*;
     use crate::ingest::DetectBlocksOut;
     use crate::ingest::detect_blocks;
+
+    #[test]
+    fn phrase_id_for_returns_pid_on_fresh_lazy_index() {
+        // V80: on a freshly trusted index (no occurrence rows), a stemmed phrase
+        // whose stem != the literal must still resolve so the caller can JIT.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("reliary_phid_{}", nanos));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn load_config() -> i32 { parse_config() }\n").unwrap();
+        let db = rusqlite::Connection::open(dir.join("i.sqlite")).unwrap();
+        crate::schema::create_new_db(&db).unwrap();
+        crate::ingest::index_directory(&db, dir.to_str().unwrap()).unwrap();
+
+        // No occurrence rows exist yet (trust does not build them).
+        let occ: i64 = db.query_row("SELECT COUNT(*) FROM occurrence", [], |r| r.get(0)).unwrap();
+        assert_eq!(occ, 0, "fresh index must have no occurrence rows");
+
+        let pid = phrase_id_for(&db, "load_config").expect("query ok");
+        assert!(pid.is_some(), "a stemmed phrase present in `phrases` must resolve even before JIT");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn test_cosine_identical() {

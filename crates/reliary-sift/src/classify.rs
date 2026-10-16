@@ -442,10 +442,21 @@ pub fn is_decorative_separator(text: &str) -> bool {
 /// Returns true if this line should be dropped from output entirely.
 pub fn should_drop(line: &Line) -> bool {
     if line.is_error { return false; }
-    if line.text.trim().is_empty() { return true; }
+    let t = line.text.trim();
+    if t.is_empty() { return true; }
     if line.is_separator { return true; }
     if line.is_progress { return true; }
-    if line.text.trim().len() <= 2 { return true; }
+    // V80: the blanket "drop any line <= 2 chars" rule corrupted diffs and
+    // JSON — a lone `}`, a diff `+}`, `);`, `});` were removed, so the output
+    // no longer applied/parsed. Only drop a short line when it carries NO
+    // structural punctuation.
+    if t.len() <= 2 {
+        let structural = t.chars().any(|c| matches!(
+            c, '{' | '}' | '(' | ')' | '[' | ']' | '<' | '>' | '+' | '-'
+              | '"' | '\'' | ':' | ',' | ';' | '=' | '/'
+        ));
+        return !structural;
+    }
     false
 }
 
@@ -918,7 +929,15 @@ mod tests {
         assert!(should_drop(&sep));
     }
     #[test]
-    fn should_drop_short() { assert!(should_drop(&l("hi"))); }
+    fn should_drop_short() {
+        // A plain 2-char word is dropped...
+        assert!(should_drop(&l("hi")));
+        // ...but a short line carrying structural punctuation is NOT, so diffs
+        // and JSON stay valid (V80).
+        for keep in ["}", "+}", "});", ");", "}", "],", "}}"] {
+            assert!(!should_drop(&l(keep)), "{:?} must not be dropped", keep);
+        }
+    }
     #[test]
     fn groups_empty() { assert_eq!(skeleton_groups(&[]).len(), 0); }
     #[test]

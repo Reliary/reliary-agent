@@ -389,7 +389,13 @@ pub fn run(path: &str, task: &str, max_iters: usize, dry_run: bool, json_out: bo
             if let Some(tpl) = verify {
                 if !applied.is_empty() && !dry_run {
                     let first_file = applied[0].split(':').next().unwrap_or("");
-                    let cmd = tpl.replace("{file}", first_file);
+                    // F6 hardening: the substituted filename comes from the
+                    // local file_map (a malicious repo can plant `foo;rm -rf`
+                    // names). Shell-escape it so it is always one argv word.
+                    // (Single-quote wrap + close-quote escaping; template
+                    // metachars are the operator's own intent.)
+                    let escaped = format!("'{}'", first_file.replace('\'', "'\\''"));
+                    let cmd = tpl.replace("{file}", &escaped);
                     let status = std::process::Command::new("sh")
                         .arg("-c")
                         .arg(&cmd)

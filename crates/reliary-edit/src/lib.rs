@@ -13,6 +13,12 @@ use std::path::{Path, PathBuf};
 /// Apply a source edit to `file` (relative to `root`).
 /// Returns Ok(true) if a change was made, Ok(false) if no match, Err on I/O.
 pub fn apply_edit(root: &str, file: &str, old: &str, new: &str) -> Result<bool, String> {
+    // An empty or whitespace-only `old` matches at offset 0 (`content.find("")`
+    // == Some(0)), so a malformed LLM edit would PREPEND `new` to the file and
+    // report success. Require a non-empty anchor.
+    if old.trim().is_empty() {
+        return Err("apply_edit: `old` text is empty — refusing to edit".to_string());
+    }
     let full: PathBuf = if Path::new(file).is_absolute() {
         PathBuf::from(file)
     } else {
@@ -150,5 +156,34 @@ mod tests {
         // old text present exactly (fn foo() ...) so exact match hits.
         let ok = apply_edit(root, p.to_str().unwrap(), "fn foo()", "fn bar()").unwrap();
         assert!(ok);
+    }
+}
+
+#[cfg(test)]
+mod v80_tests {
+    use super::*;
+    #[test]
+    fn empty_old_is_refused() {
+        let d = std::env::temp_dir().join(format!("reliary_edit_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("a.rs");
+        std::fs::write(&f, "fn foo() {}\n").unwrap();
+        let r = apply_edit(d.to_str().unwrap(), "a.rs", "", "XXX");
+        assert!(r.is_err(), "empty old must be refused, got {:?}", r);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "fn foo() {}\n", "file must be unchanged");
+        let r2 = apply_edit(d.to_str().unwrap(), "a.rs", "   \n  ", "XXX");
+        assert!(r2.is_err(), "whitespace-only old must be refused");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    #[test]
+    fn normal_edit_still_works() {
+        let d = std::env::temp_dir().join(format!("reliary_edit2_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("a.rs");
+        std::fs::write(&f, "fn foo() { 1 }\n").unwrap();
+        let r = apply_edit(d.to_str().unwrap(), "a.rs", "1", "2").unwrap();
+        assert!(r);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "fn foo() { 2 }\n");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

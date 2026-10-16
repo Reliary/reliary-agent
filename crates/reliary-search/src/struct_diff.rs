@@ -41,10 +41,14 @@ fn def_rows(db: &Connection) -> BTreeMap<(String, String), (String, i32)> {
     let mut out: BTreeMap<(String, String), (String, i32)> = BTreeMap::new();
     let mut stmt = db
         .prepare_cached(
+            // V80: ORDER BY so the line/display recorded for a (symbol, file)
+            // key is deterministic. Without it `or_insert` kept whichever row
+            // SQLite yielded first, so reported lines/order varied run to run.
             "SELECT p.phrase, f.file_path, o.line FROM occurrence o
              JOIN phrases p ON p.id = o.phrase_id
              JOIN file_map f ON f.id = o.file_id
-             WHERE o.is_def = 1 AND o.tag IN (1, 2) AND f.is_source = 1",
+             WHERE o.is_def = 1 AND o.tag IN (1, 2) AND f.is_source = 1
+             ORDER BY p.phrase, f.file_path, o.line",
         )
         .unwrap();
     let mut rows = stmt.query([]).unwrap();
@@ -52,15 +56,16 @@ fn def_rows(db: &Connection) -> BTreeMap<(String, String), (String, i32)> {
         let phrase: String = r.get(0).unwrap_or_default();
         let path: String = r.get(1).unwrap_or_default();
         let line: i32 = r.get(2).unwrap_or(0);
-        // V74: dedup per (symbol, file) — keying on the line made pure line
-        // moves show as add+remove, and basename-only keys collided across
-        // crates. Use the last two path segments (enough to disambiguate
-        // same-named files without depending on the checkout root).
+        // V80: dedup per (symbol, file). Two segments collided for
+        // `crates/a/src/foo.rs` vs `crates/b/src/foo.rs` (both "src/foo.rs"),
+        // silently dropping a symbol and producing false add/remove. Use the
+        // LAST THREE segments — still independent of the checkout root, but no
+        // collision for the common `crates/<x>/src/<file>` layout.
         let segs: Vec<&str> = path.split('/').filter(|x| !x.is_empty()).collect();
-        let rel = if segs.len() >= 2 {
-            format!("{}/{}", segs[segs.len() - 2], segs[segs.len() - 1])
+        let rel = if segs.len() >= 3 {
+            format!("{}/{}/{}", segs[segs.len() - 3], segs[segs.len() - 2], segs[segs.len() - 1])
         } else {
-            segs.last().copied().unwrap_or(&path).to_string()
+            segs.join("/")
         };
         let display = path.rsplit('/').next().unwrap_or(&path).to_string();
         out.entry((phrase, rel)).or_insert((display, line));
@@ -74,9 +79,13 @@ fn edge_rows(db: &Connection) -> BTreeSet<(String, String)> {
     // For each def, extract call patterns from its body via callgraph.
     let mut stmt = db
         .prepare_cached(
+            // V80: ORDER BY before the `.take(500)` cap — otherwise a different
+            // 500 names were chosen per run, changing edges_added/removed for
+            // identical inputs (breaking byte-identical determinism).
             "SELECT DISTINCT p.phrase FROM occurrence o
              JOIN phrases p ON p.id = o.phrase_id
-             WHERE o.is_def = 1 AND o.tag = 1",
+             WHERE o.is_def = 1 AND o.tag = 1
+             ORDER BY p.phrase",
         )
         .unwrap();
     let names: Vec<String> = {

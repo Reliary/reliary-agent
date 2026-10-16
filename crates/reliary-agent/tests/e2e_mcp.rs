@@ -544,11 +544,16 @@ fn e2e_mcp_path_traversal_is_rejected() {
                 None => {
                     // /tmp is a valid absolute path but must still be refused
                     // (outside the workdir). A success here is a real failure.
+                    // P3.1: an escaping path_filter is an explicit scoped-empty
+                    // message ("escapes the project"), not silent whole-tree
+                    // data — so the message itself is the assertion artifact.
                     let content = resp["result"]["content"][0]["text"]
                         .as_str()
                         .unwrap_or("");
+                    let is_explicit_rejection = content.contains("escapes the project");
                     assert!(
-                        !content.contains("outside.rs") && !content.contains("/etc"),
+                        is_explicit_rejection
+                            || (!content.contains("outside.rs") && !content.contains("/etc")),
                         "{} escape {} returned data from outside the workdir: {}",
                         tool,
                         escape,

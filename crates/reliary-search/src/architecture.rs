@@ -117,6 +117,24 @@ fn detect_language(path: &str) -> &'static str {
         "C"
     } else if lower.ends_with(".rb") {
         "Ruby"
+    } else if lower.ends_with(".cs") {
+        "C#"
+    } else if lower.ends_with(".kt") || lower.ends_with(".kts") {
+        "Kotlin"
+    } else if lower.ends_with(".swift") {
+        "Swift"
+    } else if lower.ends_with(".php") {
+        "PHP"
+    } else if lower.ends_with(".scala") {
+        "Scala"
+    } else if lower.ends_with(".dart") {
+        "Dart"
+    } else if lower.ends_with(".m") || lower.ends_with(".mm") {
+        "Objective-C"
+    } else if lower.ends_with(".lua") {
+        "Lua"
+    } else if lower.ends_with(".pl") {
+        "Perl"
     } else if lower.ends_with(".md") {
         "Markdown"
     } else if lower.ends_with(".toml") {
@@ -167,8 +185,12 @@ pub fn get_architecture(
         db.query_row("SELECT COUNT(*) FROM block", [], |r| r.get(0))?;
     let total_occurrences: usize =
         db.query_row("SELECT COUNT(*) FROM occurrence", [], |r| r.get(0))?;
+    // C1 removed the `method_occurrence` table; counting it made the whole
+    // architecture tool fail with "no such table". Derive the method count from
+    // the occurrence table instead (methods are is_def rows inside impl/class
+    // bodies, tag 3).
     let total_methods: usize =
-        db.query_row("SELECT COUNT(*) FROM method_occurrence", [], |r| r.get(0))?;
+        db.query_row("SELECT COUNT(*) FROM occurrence WHERE tag = 3", [], |r| r.get(0))?;
 
     // Languages.
     let mut file_paths: Vec<String> = Vec::with_capacity(total_files);

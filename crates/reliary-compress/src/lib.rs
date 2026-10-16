@@ -109,6 +109,13 @@ impl CompressionDict {
 /// Inline reasoning compression — port of gate.js v0.3.0 compressReasoning.
 /// Returns compressed text if at least 40% smaller, else None.
 pub fn compress_reasoning(text: &str, dict: Option<&CompressionDict>) -> Option<String> {
+    compress_reasoning_mode(text, dict, false)
+}
+
+/// V80: `gentle` mode raises the bar to a 50% reduction (more conservative —
+/// keeps more text). Previously the CLI `--gentle` flag was parsed and then
+/// ignored (`gentle: _`), so it silently behaved identically to the default.
+pub fn compress_reasoning_mode(text: &str, dict: Option<&CompressionDict>, gentle: bool) -> Option<String> {
     let original_len = text.len();
     if original_len < 200 { return None; }
     if text.contains("```") { return None; }
@@ -119,8 +126,10 @@ pub fn compress_reasoning(text: &str, dict: Option<&CompressionDict>) -> Option<
     // D2: Single combined regex instead of 10 separate.
     t = COMBINED_PATTERN.replace_all(&t, " ").into_owned();
     t = t.split_whitespace().collect::<Vec<_>>().join(" ");
-    // M7: Integer comparison instead of f64 — t.len() * 5 < original_len * 3.
-    if t.len() * 5 < original_len * 3 { Some(t) } else { None }
+    // M7: Integer comparison instead of f64.
+    // Default: ≥40% smaller (t*5 < orig*3). Gentle: ≥50% smaller (t*2 < orig).
+    let ok = if gentle { t.len() * 2 < original_len } else { t.len() * 5 < original_len * 3 };
+    if ok { Some(t) } else { None }
 }
 
 // ============================================================================

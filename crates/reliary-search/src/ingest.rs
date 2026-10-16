@@ -16,6 +16,16 @@ pub const SKIP_DIRS: &[&str] = &[
     "target", "node_modules", "dist", "build",
     "vendor", ".next", ".cache", "out",
     "__pycache__", ".venv", "venv", ".gradle",
+    // V80: build-output / generated-code directories. A .NET repo's `obj/`
+    // holds thousands of generated `.cs` files (assembly attributes, designer
+    // stubs) — indexing them flooded the pack and made `diff`'s call-edge pass
+    // effectively hang. Same for the other ecosystems' caches. Deliberately
+    // excludes `bin/` (Rust's `src/bin/` is real source) and `packages/`
+    // (monorepo workspace layouts), which are ambiguous.
+    "obj", ".vs", "TestResults",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
+    "coverage", ".nyc_output", ".parcel-cache", ".turbo", ".svelte-kit",
+    "Pods", "DerivedData", ".dart_tool", "bazel-out", ".terraform",
 ];
 
 use rusqlite::{params, Connection};
@@ -30,6 +40,16 @@ use crate::{scan_identifiers, stem_identifier, is_likely_binary};
 // Static assert ensures single-threaded usage (count_unmatched is always
 // called from a serial per-file loop, never concurrent on the same file).
 thread_local! { static IN_BLOCK_COMMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+/// Reset the per-thread block-comment state. MUST be called at the start of
+/// every per-file scan: the state is carried across the lines of one file
+/// (so a `/* …` spanning lines is tracked), but if a file ends with an
+/// unterminated `/*` the flag would otherwise leak into the NEXT file on the
+/// same thread. Under `index_directory`'s Rayon `par_iter` that made indexing
+/// scheduling-dependent — the same tree produced different indexes.
+pub fn reset_comment_state() {
+    IN_BLOCK_COMMENT.with(|in_bc| in_bc.set(false));
+}
 
 /// Count unmatched occurrences of a byte in a line (outside strings).
 /// A-HIGH-6: skips `//` comments, `/* */` block comments (multi-line via
@@ -160,6 +180,9 @@ pub fn extract_file_phrases(
     let mut lines_is_def: Vec<bool> = Vec::with_capacity(lines.len());
     let mut defined_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
     let mut brace_depth: i32 = 0;
+    // Per-file comment state must start clean (a prior file may have ended
+    // mid-block-comment on this thread under Rayon).
+    reset_comment_state();
     for line in lines.iter() {
         let (open_count, close_count) = count_braces(line);
         let prev_depth = brace_depth;
@@ -358,6 +381,7 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
         let mut line_tags: Vec<u8> = Vec::with_capacity(lines.len());
         let mut defined_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
         let mut brace_depth: i32 = 0;
+        reset_comment_state();
         for (li, line) in lines.iter().enumerate() {
             let _ = li;
             // V52: Use unified count_braces (single byte-scan) instead of two count_unmatched calls.
@@ -733,4 +757,34 @@ pub fn index_directory(db: &Connection, dir: &str) -> Result<usize, String> {
     }
 
     { crate::lazy_occurrence::bump_gen_if_inserted(count); Ok(count) }
+}
+#[cfg(test)]
+mod comment_state_tests {
+    use super::*;
+
+    #[test]
+    fn block_comment_state_does_not_leak_between_files() {
+        // A file ending inside an unterminated `/*` must not corrupt the next
+        // file's brace count on the same thread.
+        reset_comment_state();
+        let (o1, c1) = count_braces("/* unterminated comment with a { brace");
+        assert_eq!(o1, 0, "braces inside a /* comment must not count");
+        assert_eq!(c1, 0);
+        // The next file starts clean — WITHOUT the reset this would inherit the
+        // still-open block comment and report 0 braces for the brace below.
+        reset_comment_state();
+        let (o2, c2) = count_braces("fn foo() {");
+        assert_eq!((o2, c2), (1, 0), "reset must clear inherited block-comment state");
+    }
+
+    #[test]
+    fn negative_control_without_reset_leaks() {
+        // Prove the guard is load-bearing: simulate the buggy behaviour by NOT
+        // resetting, and confirm the state leaks.
+        reset_comment_state();
+        let _ = count_braces("/* open");
+        let (o, _) = count_braces("fn foo() {");
+        assert_eq!(o, 0, "without reset the brace is (wrongly) inside the comment");
+        reset_comment_state();
+    }
 }

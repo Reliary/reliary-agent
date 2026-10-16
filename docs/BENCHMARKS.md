@@ -37,9 +37,10 @@ corpus. The reproducible, corpus-independent wins are cost (~42% lower billed
 than grep), tool-output size (~4× smaller), and zero dead-ends.
 
 **Prompt fairness.** Condition A receives the shipped routing prompt (~300
-words); B and C receive ~100-word prompts. An ablation with a minimal ~120-word
-prompt for A (`M`) scored F1 0.707 vs A's 0.816 — the tool contributes most of
-the gap, the routing prompt the remainder.
+words); B and C receive ~100-word prompts. A same-tree ablation with a minimal
+~120-word prompt for A (`M`, seeds 42/17/123/456, 2026-10-16) scored F1 0.885
+vs A's 0.920 — the tool contributes most of the gap, the routing prompt the
+remainder (~0.035).
 
 Reproduce locally (~$0.05):
 

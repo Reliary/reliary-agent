@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use rusqlite::{params, Connection};
@@ -70,21 +70,34 @@ fn active_root() -> std::path::PathBuf {
 
 /// A `path` argument used purely as a module-prefix filter is only meaningful
 /// when it stays inside the project: indexed file paths are absolute under the
-/// root, so a filter that escapes (`../../etc`) can never match anything. Treat
-/// an escaping filter as no filter — it must not be echoed as if it were a valid
-/// scope, and must never be used to read files outside the project.
-fn safe_module_filter(filter: Option<&str>) -> Option<String> {
-    let f = filter?;
-    if f.is_empty() || f == "." {
-        return None;
-    }
+/// root, so a filter that escapes (`../../etc`) can never match anything.
+///
+/// P3.1: the old behavior mapped an escaping filter to `None` (whole codebase,
+/// no message) — the agent thought it scoped, got everything, and could not
+/// tell. Now escaping filters are an explicit scoped-empty: `Err(filter)` so
+/// the caller echoes the rejected scope instead of a silent whole-codebase
+/// dump. Never used to read files outside the project.
+fn safe_module_filter(filter: Option<&str>) -> Result<Option<String>, String> {
+    let f = match filter {
+        None => return Ok(None),
+        Some(f) if f.is_empty() || f == "." => return Ok(None),
+        Some(f) => f,
+    };
     let root = active_root();
     let candidate = root.join(f);
     let inside = candidate
         .canonicalize()
         .map(|c| c.starts_with(&root))
         .unwrap_or(false);
-    if inside { Some(f.to_string()) } else { None }
+    if inside { Ok(Some(f.to_string())) } else { Err(f.to_string()) }
+}
+
+/// Format the explicit scoped-empty for an escaping filter.
+fn escaping_filter_msg(filter: &str) -> String {
+    format!(
+        "path_filter {:?} escapes the project — no files can match it. Scoped to nothing; pass a module prefix inside the project (e.g. \"src/\").",
+        filter
+    )
 }
 
 // V54: thread-local cached SQLite connection for the active project. The stdio
@@ -412,6 +425,19 @@ fn hit_with_qualified_name(
 /// generated parameter doesn't exactly match any indexed symbol.
 fn closest_symbols(db: &Connection, name: &str, limit: usize) -> Vec<String> {
     if name.is_empty() { return Vec::new(); }
+    // Char-boundary-safe prefix truncation: the byte-index loop below slices
+    // `&name[..end]`, which panics (and, under panic=abort, kills the whole
+    // server) on a multibyte name whose truncation lands inside a character.
+    // Build the list of valid char-boundary stops >= 3 bytes once.
+    let prefix_stops: Vec<usize> = {
+        let mut v: Vec<usize> = name
+            .char_indices()
+            .map(|(i, _)| i)
+            .filter(|&i| i >= 3 && i < name.len())
+            .collect();
+        v.reverse(); // longest first, matching the old (3..len).rev() order
+        v
+    };
 
     // V56: use the in-memory phrase index (SWAR/memchr, no SQLite LIKE scans).
     // Fall back to SQL only if the index isn't loadable.
@@ -443,7 +469,7 @@ fn closest_symbols(db: &Connection, name: &str, limit: usize) -> Vec<String> {
             return out;
         }
         // Progressive prefix truncation (same semantics as the SQL version).
-        for end in (3..name.len()).rev() {
+        for &end in &prefix_stops {
             let prefix = &name[..end];
             for p in idx.find_prefix(prefix) {
                 let s = p.to_string();
@@ -477,7 +503,7 @@ fn closest_symbols(db: &Connection, name: &str, limit: usize) -> Vec<String> {
 
     // Fallback: original SQL path.
     // Try 1: progressive prefix truncation (strips chars from end until we get ≥1 match)
-    for end in (3..name.len()).rev() {
+    for &end in &prefix_stops {
         let prefix = &name[..end];
         let like = format!("{}%", prefix);
         if let Ok(mut stmt) = db.prepare_cached(
@@ -546,14 +572,14 @@ pub fn tool_definitions() -> &'static Vec<serde_json::Value> {
             // 4. CALL_GRAPH: Who calls X? What does X call? Absorbs callgraph, callgraph_v2, trace_path, call_graph.
             serde_json::json!({ "name": "reliary_call_graph", "description": "PRIMARY call-graph tool. Who calls X? What does X call? Returns callers and callees with source. Use for 'who calls X' and 'what does X call' questions. Set direction='inbound' for callers, 'outbound' for callees, 'both' for full graph. Set depth=2-3 for multi-hop call chains (entry points like block_on/spawn/run auto-expand to depth 3). Pass anchor_file/anchor_line to disambiguate when multiple symbols share the same name.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string"}, "anchor_file": {"type": "string", "description": "Optional. Path to the file containing the definition."}, "anchor_line": {"type": "integer", "description": "Optional. 1-based line of the definition."}, "direction": {"type": "string", "enum": ["inbound", "outbound", "both"], "default": "both"}, "depth": {"type": "integer", "default": 1, "description": "Recursion depth. Entry-point names (block_on, run, start, etc.) auto-expand to depth 3."}, "summary": {"type": "boolean", "description": "Set to true for compact output: caller/callee names only, no source text."}, "path": {"type": "string", "description": "Project directory to query. Defaults to the client's workspace root, else '.'."} }, "required": ["name"] } }),
             // 5. LIST_METHODS: List all methods on a type.
-            serde_json::json!({ "name": "reliary_list_methods", "description": "List all methods declared on a type. Scans for impl blocks and returns method names with file:line. Use for 'list methods on Type X' questions.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Type name (e.g. 'Sleep', 'BufWriter', 'Runtime')"} }, "required": ["name"] } }),
+            serde_json::json!({ "name": "reliary_list_methods", "description": "List all methods declared on a type. Scans for impl blocks and returns method names with file:line. Use for 'list methods on Type X' questions. Example: {\"name\": \"Sleep\"}.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Type name (e.g. 'Sleep', 'BufWriter', 'Runtime')"}, "path": {"type": "string", "description": "Project directory to query. Defaults to the client's workspace root, else '.'."} }, "required": ["name"] } }),
             // 6. FIND_DEAD_CODE: Find unused/orphaned functions. Absorbs dead_symbols, dead.
             serde_json::json!({ "name": "reliary_find_dead_code", "description": "Find unused/orphaned functions in a module or codebase. Cross-references against the full index. Pass path='io/util' to scope to a module. Use 'summary' format for a high-level overview, 'list' for detailed results. Use for 'find dead code', 'find unused functions' questions.", "inputSchema": { "type": "object", "properties": { "path": {"type": "string", "description": "Project directory (also selects which project to query) and/or module prefix to scope (e.g. 'io/util', 'runtime/scheduler'). Use '.' for the whole codebase."}, "format": {"type": "string", "enum": ["list", "summary"], "default": "list"}, "limit": {"type": "integer", "default": 30}, "functions_only": {"type": "boolean", "default": true} }, "required": ["path"] } }),
             // 7. DESCRIBE: Explain a symbol — purpose, signature, callers, methods, surprise facts. Absorbs pack, pack_query, plan, risk.
             serde_json::json!({ "name": "reliary_describe", "description": "Explain a symbol: its purpose, signature, location, callers, and methods. methods=true → 'list methods on Type X' (replaces list_methods). dead_only=true → 'find dead code in module X' (replaces find_dead_code). Use for 'explain X', 'what does X do', 'list methods on X', 'find dead code in X'.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol to describe (e.g. 'block_on', 'Sleep', 'BufWriter')"}, "file": {"type": "string", "description": "File path to show structure of (alternative to name)"}, "context": {"type": "string", "description": "Optional filter: 'callers', 'signature', 'behavior'"}, "path": {"type": "string", "description": "Project directory to query. Defaults to the client's workspace root, else '.'."}, "methods": {"type": "boolean", "default": false, "description": "List methods on a type. Replaces list_methods."}, "dead_only": {"type": "boolean", "default": false, "description": "Find dead code in a module. Replaces find_dead_code. Pass path to scope to a module."}, "limit": {"type": "integer", "default": 30, "description": "Max dead code items to return"}, "functions_only": {"type": "boolean", "default": true} } } }),
             serde_json::json!({ "name": "reliary_similar", "description": "Find functions structurally similar to the named function (near-clone detection via hypervector token-set similarity). Use for 'find duplicate code', 'similar functions to X', 'is this copied elsewhere'.", "inputSchema": { "type": "object", "properties": { "name": { "type": "string", "description": "Function name" }, "path": { "type": "string" }, "limit": { "type": "integer", "default": 8 } }, "required": ["name"] } }),
             // 9. VERIFY: mechanically verify claims (symbol at file:line) against the index.
-            serde_json::json!({ "name": "reliary_verify", "description": "Mechanically verify claims about the codebase against the index. Pass text containing 'symbol at file.rs:line' claims; returns VERIFIED or FALSE with the actual location. Use before asserting a location, or to check a statement from another source.", "inputSchema": { "type": "object", "properties": { "text": { "type": "string", "description": "Claim text, e.g. 'classify_structural at structural.rs:31'" }, "path": { "type": "string" }, "tol": { "type": "integer", "default": 1, "description": "Line tolerance" } }, "required": ["text"] } }),
+            serde_json::json!({ "name": "reliary_verify", "description": "Mechanically verify claims about the codebase against the index. Pass text containing 'symbol at file.rs:line' claims; returns VERIFIED or FALSE with the actual location. Use before asserting a location, or to check a statement from another source.", "inputSchema": { "type": "object", "properties": { "text": { "type": "string", "description": "Claim text, e.g. 'classify_structural at structural.rs:31'" }, "path": { "type": "string", "description": "Project directory. Defaults to the client workspace root, else '.'." }, "tol": { "type": "integer", "default": 1, "description": "Line tolerance: how many lines off a claim may be and still verify" } }, "required": ["text"] } }),
         ]
     })
 }
@@ -796,10 +822,13 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
             // V54: cached connection. V77: resolve via the `path` hint so an
             // agent can name the project it means (the resolver walks up from
             // the hint; a read-only search needs no traversal gate).
+            // M1: honor the advertised `limit` (schema default 15) instead of a
+            // hardcoded 10. Clamp to a sane range so a huge value can't OOM.
+            let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(15).clamp(1, 200) as usize;
             let hint = if path.is_empty() || path == "." { None } else { Some(path) };
             match get_cached_db_for(hint) {
                 Some(db) => {
-                    let results = reliary_search::search::search_fts5(&db, query, 10);
+                    let results = reliary_search::search::search_fts5(&db, query, limit);
                         DispatchResult::Success(serde_json::json!({
                         "content": [{ "type": "text", "text": serde_json::to_string(&results.iter().map(|r| serde_json::json!({"file": r.file, "score": r.score})).collect::<Vec<_>>()).unwrap_or_default() }]
                     }))
@@ -835,15 +864,12 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
             // Aliased to callgraph_v2 (best handler). Translate param if needed.
             // V60: honor `direction` — inbound → callers only, outbound → callees only.
             let direction = args.get("direction").and_then(|v| v.as_str()).unwrap_or("both");
+            // M2: honor the advertised `depth` (clamp 1..=3). The v2 handler
+            // reads `depth` from the args map, so just forward it.
             if direction == "inbound" {
                 let mut a = args.clone();
                 a.insert("usage_only".into(), serde_json::Value::Bool(true));
                 return dispatch_tool_call("reliary_find_references", &a);
-            }
-            if direction == "outbound" {
-                let mut a = args.clone();
-                a.insert("summary".into(), serde_json::Value::Bool(true));
-                return dispatch_tool_call("reliary_callgraph_v2", &a);
             }
             dispatch_tool_call("reliary_callgraph_v2", args)
         }
@@ -915,7 +941,8 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                     }
                 };
                 let path_filter = scope.as_deref();
-                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+                // M5: match the advertised default (30), not 100.
+                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(30).clamp(1, 500) as usize;
                 let (db, _dir) = match open_symbol_index(&path) {
                     Ok(t) => t,
                     Err(r) => return r,
@@ -941,13 +968,26 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                 };
                 return result;
             }
+            // M4: the schema advertises `file` as an alternative to `name`.
+            // The pack_query path only knows `name`, so map a file-path query
+            // to a search for that file's symbols before dispatching.
+            if args.get("name").and_then(|v| v.as_str()).map(|s| s.is_empty()).unwrap_or(true) {
+                if let Some(file) = args.get("file").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                    let mut a = args.clone();
+                    a.insert("query".into(), serde_json::Value::String(file.to_string()));
+                    return dispatch_tool_call("reliary_search", &a);
+                }
+            }
             dispatch_tool_call("reliary_pack_query", args)
         }        "reliary_verify" => {
             // V70 P1: mechanical claim verification against the index.
             let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
             if text.is_empty() { return err_missing_param("text"); }
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            let tol = args.get("tol").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
+            // Clamp tol: a client-supplied huge value overflowed the
+            // `line - 1 - tol` arithmetic in verify_claim and panicked the
+            // long-running stdio server (a remote DoS).
+            let tol = args.get("tol").and_then(|v| v.as_i64()).unwrap_or(1).clamp(0, 10_000) as i32;
             let (_db, _dir) = match open_symbol_index(path) {
                 Ok(t) => t,
                 Err(r) => return r,
@@ -1065,8 +1105,10 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
         }
         "reliary_risk" => {
             let file_arg = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
-            // Bug 77: restrict file reads to workdir
-            let fp = match safe_path(file_arg, ".") {
+            // Bug 77: restrict file reads to workdir. F4: scope to the
+            // session's active root, not the server CWD (global-MCP broke).
+            let scope = active_root().to_string_lossy().into_owned();
+            let fp = match safe_path(file_arg, &scope) {
                 Ok(p) => p,
                 Err(e) => return err_invalid_path(&e),
             };
@@ -1097,7 +1139,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 return err_missing_param("old/new/context");
             }
             // Bug 77: restrict file writes to workdir
-            let fp = match safe_path(file_arg, ".") {
+            let fp = match safe_path(file_arg, &active_root().to_string_lossy()) {
                 Ok(p) => p,
                 Err(e) => return err_invalid_path(&e),
             };
@@ -1132,7 +1174,8 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
         }
         "reliary_dead" => {
             let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            let dp = match safe_path(path_arg, ".") {
+            // F4: scope to the active root (see reliary_risk).
+            let dp = match safe_path(path_arg, &active_root().to_string_lossy()) {
                 Ok(p) => p,
                 Err(e) => return err_invalid_path(&e),
             };
@@ -1346,9 +1389,9 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 // Auto-generate the pack (this can take a few seconds for large codebases)
                 match reliary_pack::generate_pack(&sp_str, reliary_pack::PackFormat::L2L3) {
                     Ok(pack) => {
-                        let _ = std::fs::create_dir_all(
-                            std::path::Path::new(&pack_md_path).parent().unwrap_or(std::path::Path::new(".")),
-                        );
+                        let pack_dir = std::path::Path::new(&pack_md_path).parent().unwrap_or(std::path::Path::new("."));
+                        let _ = std::fs::create_dir_all(pack_dir);
+                        crate::paths::ensure_reliary_ignored(pack_dir);
                         let _ = std::fs::write(&pack_md_path, &pack);
                         pack
                     }
@@ -1489,7 +1532,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 }]
             }))
         }
-        _ => DispatchResult::Error(-32601, format!("unknown tool: {}", name)),
+        _ => DispatchResult::Error(-32601, format!("unknown tool: {}. Valid tools: reliary_search, reliary_find_references, reliary_call_graph, reliary_list_methods, reliary_find_dead_code, reliary_describe, reliary_verify", name)),
     }
 }
 
@@ -2004,10 +2047,10 @@ if def_only {
                     if qn.is_empty() { continue; }
                     if !qn.to_ascii_lowercase().contains(&sym_lower) { continue; }
                     if !seen.insert(qn.clone()) { continue; }
-                    let f = obj["file"].as_str().unwrap_or("");
                     let ln = obj["line"].as_i64().unwrap_or(0);
-                    let f_short = std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.to_string());
-                    parts.push((qn, f_short, ln as i32));
+                    // Store the FULL path: the evidence lookup below needs it to
+                    // key file_meta::get. The basename is derived at print time.
+                    parts.push((qn, h.file_path.clone(), ln as i32));
                 }
                 // V77: PascalCase + path_filter → also include scoped trait
                 // implementors (impl/derive). Without this, trait queries
@@ -2020,9 +2063,8 @@ if def_only {
                     for ti in trait_impls.iter().take(8) {
                         let qn = ti.type_name.clone();
                         if !seen.insert(qn.clone()) { continue; }
-                        let f_short = std::path::Path::new(&ti.file).file_name()
-                            .map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| ti.file.clone());
-                        parts.push((qn, f_short, ti.line));
+                        // Full path, consistent with the def part above.
+                        parts.push((qn, ti.file.clone(), ti.line));
                     }
                 }
                 if parts.is_empty() {
@@ -2031,15 +2073,15 @@ if def_only {
                         "content": [{ "type": "text", "text": text }]
                     }));
                 }
-                let summary: Vec<String> = parts.iter().take(8).map(|(qn, f, ln)| format!("{} at {}:{}", qn, f, ln)).collect();
+                // Print the basename (paths are stored in full for evidence lookup).
+                let summary: Vec<String> = parts.iter().take(8).map(|(qn, f, ln)| {
+                    let f_short = std::path::Path::new(f).file_name()
+                        .map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.clone());
+                    format!("{} at {}:{}", qn, f_short, ln)
+                }).collect();
                 // V42: add raw code as evidence — show first hit's source line
                 let first_evidence = parts.first().and_then(|(_, f, ln)| {
                     reliary_search::file_meta::get(f)
-                        .or_else(|| {
-                            // Look up by absolute path
-                            let _abs = std::path::Path::new(f).to_string_lossy().to_string();
-                            None
-                        })
                         .and_then(|meta| meta.lines.get((*ln as usize).saturating_sub(1)).cloned())
                 });
                 let code_evidence = first_evidence.map(|s| format!("\n  {}", s.trim())).unwrap_or_default();
@@ -2132,13 +2174,16 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             if sym.is_empty() { return err_missing_param("name"); }
             let af_raw = args.get("anchor_file").and_then(|v| v.as_str()).unwrap_or("");
             let af = resolve_af(af_raw);
-let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i32; let al = if al_raw > 0 { al_raw - 1 } else { al_raw };
-            // V13: treat empty anchor_file or line=0 as "no anchor" so
-            // find_definition auto-resolves instead of trusting a bogus anchor.
-            let anchor = if af.is_empty() || al == 0 {
+            // V79: build_call_graph expects a 1-indexed anchor (its
+            // validate_and_resolve_anchor and find_function_body both subtract
+            // 1). This handler used to pre-subtract, unlike the sibling v2
+            // handler, so `reliary_callgraph` anchored one line early (wrong
+            // body, wrong callers). Pass the raw 1-indexed value.
+            let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let anchor = if af.is_empty() || al_raw <= 0 {
                 None
             } else {
-                Some((af.clone(), al))
+                Some((af.clone(), al_raw))
             };
             // V13: delegate to callgraph_v2 for Fix C + D (anchor validation, depth-2 expansion)
             let depth = delegate_depth(sym);
@@ -2180,7 +2225,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     // Phase 6: add hint when empty
                     let text = if caller_names.is_empty() && callee_list.is_empty() {
                         format!(
-                            "callers(0)\ncallees(0)\nhint: try reliary_goto_def(\"{}\") first, then pass anchor_file+anchor_line here.",
+                            "callers(0)\ncallees(0)\nhint: try reliary_find_references(\"{}\", def_only=true) first, then pass anchor_file+anchor_line here.",
                             sym
                         )
                     } else {
@@ -2211,7 +2256,12 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             } else {
                 Some((anchor_file.to_string(), anchor_line))
             };
-            let depth_v2 = delegate_depth(sym);
+            // M2: honor the advertised `depth` (clamp 1..=3), falling back to
+            // the entry-point heuristic when absent.
+            let depth_v2 = match args.get("depth").and_then(|v| v.as_u64()).map(|d| d as usize) {
+                Some(d) if d >= 1 => d.min(3).max(delegate_depth(sym).min(3)),
+                _ => delegate_depth(sym),
+            };
             match reliary_search::callgraph_v2::build_call_graph(db, sym, path, anchor, depth_v2) {
                 Ok(mut cg) => {
                     // Phase 1: strip whitespace from source fields (cache-safe cost reduction).
@@ -2333,20 +2383,39 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             }
         }
         "reliary_dead_symbols" => {
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
-            // V77: an escaping filter is dropped (see safe_module_filter) so it
-            // is never echoed as a scope or used to escape the project.
-            let path_filter = safe_module_filter(args.get("path").and_then(|v| v.as_str()));
+            // M5: default to the advertised schema cap (30), not 100.
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(30).clamp(1, 500) as usize;
+            // M3: honor the advertised `format` (list | summary).
+            let summary_mode = args.get("format").and_then(|v| v.as_str()) == Some("summary");
+            // P3.1: an escaping filter is an explicit scoped-empty (message),
+            // never a silent whole-codebase dump.
+            let raw_pf = args.get("path").and_then(|v| v.as_str());
+            let path_filter = match safe_module_filter(raw_pf) {
+                Ok(pf) => pf,
+                Err(bad) => {
+                    return DispatchResult::Success(serde_json::json!({
+                        "content": [{ "type": "text", "text": escaping_filter_msg(&bad) }]
+                    }));
+                }
+            };
             let functions_only = args.get("functions_only").and_then(|v| v.as_bool()).unwrap_or(true);
             match reliary_search::symbol::dead_symbols(db, limit, path_filter.as_deref(), functions_only) {
                 Ok(dead) => {
-                    // V35: Flat text output — same fix as find_references V25.
-                    let mut out = String::with_capacity(1024);
-                    out.push_str(&format!("The answer is: {} dead items in {}:\n", dead.len(), path_filter.as_deref().unwrap_or(".")));
-                    for (stem, file, line, _col) in &dead {
-                        let f_short = file.rsplit('/').next().unwrap_or(file);
-                        out.push_str(&format!("{} at {}:{}\n", stem, f_short, line + 1));
-                    }
+                    let scope = path_filter.as_deref().unwrap_or(".");
+                    let out = if summary_mode {
+                        // One line: names only.
+                        let names: Vec<&str> = dead.iter().take(limit).map(|(s, _, _, _)| s.as_str()).collect();
+                        format!("{} dead items in {}: {}\n", dead.len(), scope, names.join(", "))
+                    } else {
+                        // V35: Flat text output — same fix as find_references V25.
+                        let mut out = String::with_capacity(1024);
+                        out.push_str(&format!("The answer is: {} dead items in {}:\n", dead.len(), scope));
+                        for (stem, file, line, _col) in &dead {
+                            let f_short = file.rsplit('/').next().unwrap_or(file);
+                            out.push_str(&format!("{} at {}:{}\n", stem, f_short, line + 1));
+                        }
+                        out
+                    };
                     DispatchResult::Success(serde_json::json!({
                         "content": [{ "type": "text", "text": out }]
                     }))
@@ -2402,8 +2471,16 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     .unwrap_or("");
                 let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(30) as usize;
                 let functions_only = args.get("functions_only").and_then(|v| v.as_bool()).unwrap_or(true);
-                // V77: drop an escaping filter rather than echoing or honoring it.
-                let safe_pf = safe_module_filter(if dpath.is_empty() { None } else { Some(dpath) });
+                // P3.1: escaping filter → explicit scoped-empty, never silent None.
+                let raw_dpath = if dpath.is_empty() { None } else { Some(dpath) };
+                let safe_pf: Option<String> = match safe_module_filter(raw_dpath) {
+                    Ok(pf) => pf,
+                    Err(bad) => {
+                        return DispatchResult::Success(serde_json::json!({
+                            "content": [{ "type": "text", "text": escaping_filter_msg(&bad) }]
+                        }));
+                    }
+                };
                 let pf: Option<&str> = safe_pf.as_deref();
                 let dir_label = safe_pf.as_deref().unwrap_or(".");
                 return match reliary_search::symbol::dead_symbols(db, limit, pf, functions_only) {
@@ -2857,7 +2934,17 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
         }
         "reliary_brace_debug" => {
             let file_path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            match reliary_search::brace_graph::get_brace_graph(file_path) {
+            if file_path.is_empty() {
+                return err_missing_param("file_path");
+            }
+            // V80: this handler read the raw path with no traversal check —
+            // any client could read files outside the project. Validate it like
+            // its siblings (reliary_call_graph / reliary_brace_graph).
+            let fp = match safe_path(file_path, dir) {
+                Ok(p) => p.to_string_lossy().to_string(),
+                Err(e) => return err_invalid_path(&format!("reliary_brace_debug: {}", e)),
+            };
+            match reliary_search::brace_graph::get_brace_graph(&fp) {
                 Some(graph) => {
                     let all = graph.find_by_role("function_def");
                     let all_struct = graph.find_by_role("type_name");
@@ -3001,6 +3088,7 @@ fn auto_trust_if_needed() -> AutoTrustResult {
             eprintln!("[reliary] auto-indexing {} (git project detected)...", cur.display());
             let t0 = std::time::Instant::now();
             let _ = std::fs::create_dir_all(cur.join(".reliary"));
+            crate::paths::ensure_reliary_ignored(&cur.join(".reliary"));
             let db_path = cur.join(".reliary/index.sqlite");
             match reliary_core::safe_open_db(&db_path.to_string_lossy()) {
                 Ok(db) => {
@@ -3091,20 +3179,70 @@ pub fn serve_stdio() {
     let stdin = io::stdin();
     // V77: id of the in-flight `roots/list` request, if the client supports roots.
     let mut pending_roots: Option<&'static str> = None;
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
+    // F2 hardening: `BufRead::lines()` has no length limit — a single 1GB line
+    // OOMs the server before JSON parsing. Cap a single JSON-RPC message at
+    // 10MB (same budget as `safe_read_stdin`); oversize input is answered with
+    // -32602 and the line is drained, never buffered whole.
+    const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
+    let mut stdin_lock = stdin.lock();
+    use std::io::BufRead as _;
+    let mut raw = Vec::with_capacity(8192);
+    loop {
+        raw.clear();
+        // `Read::take` (fully qualified — avoids `Iterator::take` resolution)
+        // bounds the read; if the newline never arrives within the cap the
+        // message is oversize — drain the remainder and reject it.
+        let n = {
+            let mut limited = std::io::Read::take(std::io::Read::by_ref(&mut stdin_lock), (MAX_LINE_BYTES + 1) as u64);
+            match limited.read_until(b'\n', &mut raw) {
+                Ok(n) => n,
+                Err(_) => break,
+            }
         };
+        if n == 0 { break; } // EOF
+        // Reject only when the cap was hit WITHOUT a terminating newline
+        // (a line of exactly MAX+1 bytes ending in `\n` is legitimate).
+        if n > MAX_LINE_BYTES && !raw.ends_with(b"\n") {
+            // Oversize: drain to the next newline so framing resyncs, then
+            // reject. Bounded per-iteration; total drain equals the line.
+            let mut drain = Vec::new();
+            loop {
+                drain.clear();
+                let m = {
+                    let mut limited = std::io::Read::take(std::io::Read::by_ref(&mut stdin_lock), 8193);
+                    match limited.read_until(b'\n', &mut drain) {
+                        Ok(m) => m,
+                        Err(_) => break,
+                    }
+                };
+                if m == 0 || drain.ends_with(b"\n") || drain.is_empty() { break; }
+            }
+            eprintln!("[mcp] oversize line (>10MB) rejected");
+            respond_error(&serde_json::Value::Null, -32602, "message exceeds 10MB limit");
+            continue;
+        }
+        let line = String::from_utf8_lossy(&raw).into_owned();
         if line.trim().is_empty() { continue; }
 
         let msg: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                // JSON-RPC 2.0: a parse failure is answered with -32700 and a
+                // null id, so the client learns its message was malformed.
+                // (Notifications are exempt, but an unparseable line is never a
+                // valid notification.) Do not exit the loop.
+                eprintln!("[mcp] parse error: {}", e);
+                respond_error(&serde_json::Value::Null, -32700, "Parse error");
+                continue;
+            }
         };
 
         let id = msg.get("id").cloned().unwrap_or(serde_json::Value::Null);
         let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("");
+        // JSON-RPC: a message with a `method` but NO `id` is a NOTIFICATION and
+        // must never be answered. `initialize`/`ping` sent as notifications
+        // (rare, but legal) were previously answered with `id: null`.
+        let is_notification = msg.get("id").is_none();
 
         // A response to our `roots/list` request (no method, matching id).
         if method.is_empty() {
@@ -3228,15 +3366,17 @@ pub fn serve_stdio() {
                     .and_then(|c| c.get("roots"))
                     .is_some();
 
-                respond(&id, serde_json::json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": { "tools": {} },
-                    "serverInfo": {
-                        "name": "reliary",
-                        "version": env!("CARGO_PKG_VERSION"),
-                        "auto_trusted": auto_trusted,
-                    }
-                }));
+                if !is_notification {
+                    respond(&id, serde_json::json!({
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": { "tools": {} },
+                        "serverInfo": {
+                            "name": "reliary",
+                            "version": env!("CARGO_PKG_VERSION"),
+                            "auto_trusted": auto_trusted,
+                        }
+                    }));
+                }
 
                 if client_has_roots {
                     const ROOTS_REQ_ID: &str = "reliary-roots-1";
@@ -3252,20 +3392,26 @@ pub fn serve_stdio() {
                 pending_roots = Some(ROOTS_REQ_ID);
             }
             "ping" => {
-                respond(&id, serde_json::json!({}));
+                if !is_notification { respond(&id, serde_json::json!({})); }
             }
             "tools/list" => {
-                respond(&id, serde_json::json!({ "tools": tool_definitions_filtered() }));
+                if !is_notification {
+                    respond(&id, serde_json::json!({ "tools": tool_definitions_filtered() }));
+                }
             }
             "tools/call" => {
+                // A notification `tools/call` gets no reply, but must still run.
                 let params = match msg.get("params") {
                     Some(p) => p,
-                    None => { respond_error(&id, -32602, "missing params"); continue; }
+                    None => {
+                        if !is_notification { respond_error(&id, -32602, "missing params"); }
+                        continue;
+                    }
                 };
                 handle_tool_call_stdio(&id, params);
             }
             _ => {
-                if !method.starts_with("notifications/") {
+                if !is_notification && !method.starts_with("notifications/") {
                     respond_error(&id, -32601, &format!("method not found: {}", method));
                 }
             }

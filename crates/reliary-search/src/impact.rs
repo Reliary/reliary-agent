@@ -45,11 +45,23 @@ pub fn is_test_path(path: &str) -> bool {
         return true;
     }
     let base = lower.rsplit('/').next().unwrap_or("");
-    base.starts_with("test_")
+    if base.starts_with("test_")
         || base.ends_with("_test.rs") || base.ends_with("_test.py") || base.ends_with("_test.go")
         || base.ends_with("_tests.rs") || base.ends_with("_spec.rs") || base.ends_with("_spec.rb")
         || base.contains(".test.") || base.contains(".spec.")
         || base == "tests.rs" || base == "test.rs"
+    {
+        return true;
+    }
+    // PascalCase suffix convention: `FooTests.cs`, `FooTest.java`, `FooTests.kt`,
+    // `FooSpec.scala` — the dominant C#/Java/Kotlin/Scala style. The capital
+    // `T`/`S` is the grammar-free signal: a lowercased `test`/`spec` (from
+    // `latest.cs`, `contest.cs`) does not match, so ordinary words are not
+    // misread as tests. `base` is already lowercased, so use the raw filename.
+    let stem = path.rsplit('/').next().unwrap_or(path)
+        .rsplit_once('.').map(|(s, _)| s).unwrap_or(path);
+    stem.ends_with("Tests") || stem.ends_with("Test")
+        || stem.ends_with("Specs") || stem.ends_with("Spec")
 }
 
 /// Compute the blast radius for `symbol`.
@@ -111,6 +123,22 @@ mod tests {
         assert!(!is_test_path("src/latest.rs"));     // 'test' inside a word
         assert!(!is_test_path("src/contest.rs"));    // same
         assert!(!is_test_path("src/attestation.py"));
+        // PascalCase suffix must be exactly Test/Tests/Spec/Specs, not a word
+        // that merely ends in those bytes.
+        assert!(!is_test_path("src/Manifest.cs"));   // "...fest" not Test
+        assert!(!is_test_path("src/Contest.cs"));
+        assert!(!is_test_path("src/Prospect.cs"));   // "spect" not Spec
+    }
+
+    #[test]
+    fn test_path_detection_pascalcase_suffix() {
+        // C#/Java/Kotlin/Swift convention: <Subject>Tests.<ext>.
+        assert!(is_test_path("src/RoleConfigurationControllerTests.cs"));
+        assert!(is_test_path("api/UserServiceTest.java"));
+        assert!(is_test_path("app/FooTests.kt"));
+        assert!(is_test_path("core/WidgetSpec.scala"));
+        // Segment rules still apply.
+        assert!(is_test_path("tests/whatever.cs"));
     }
 
     #[test]

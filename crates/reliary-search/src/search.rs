@@ -124,7 +124,12 @@ fn run_terms_query(db: &Connection, terms: &[String], mode: JoinMode, top_n: usi
     );
     let mut stmt = match db.prepare(&sql) {
         Ok(s) => s,
-        Err(_) => return vec![],
+        Err(e) => {
+            // fail-informatively: an empty result and a query failure must not
+            // be indistinguishable to the caller.
+            eprintln!("[search] phrase query prepare failed: {}", e);
+            return vec![];
+        }
     };
     let like_params: Vec<Box<dyn rusqlite::ToSql>> = like_terms
         .into_iter()
@@ -161,7 +166,13 @@ fn run_terms_query(db: &Connection, terms: &[String], mode: JoinMode, top_n: usi
          FROM file_map fm LEFT JOIN file_stats fs ON fs.file_id = fm.id
          WHERE fm.id IN ({})", placeholders
     );
-    let mut fm_stmt = match db.prepare(&fm_sql) { Ok(s) => s, Err(_) => return vec![] };
+    let mut fm_stmt = match db.prepare(&fm_sql) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[search] file_map query prepare failed: {}", e);
+            return vec![];
+        }
+    };
     {
         let param_refs: Vec<&dyn rusqlite::ToSql> = needed_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
         if let Ok(rows) = fm_stmt.query_map(param_refs.as_slice(), |row| {
@@ -275,7 +286,10 @@ pub fn who_calls(db: &Connection, identifier: &str, exclude_file: &str) -> Vec<(
     );
     let mut stmt = match db.prepare(&sql) {
         Ok(s) => s,
-        Err(_) => return vec![],
+        Err(e) => {
+            eprintln!("[search] file lookup prepare failed: {}", e);
+            return vec![];
+        }
     };
     let mut params_v: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(file_ids.len());
     for fid in &file_ids {

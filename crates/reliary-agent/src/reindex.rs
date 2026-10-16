@@ -267,6 +267,11 @@ fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
 
     // V60: the file's occurrence rows changed — invalidate the result cache.
     reliary_search::lazy_occurrence::invalidate_all_phrase_gens();
+    // V79: the on-disk file changed, so the process-wide file_meta and
+    // brace_graph caches hold stale lines/fn_names/impl_targets for it. Without
+    // this, a long-lived MCP server kept serving the pre-edit content forever
+    // (dead-code, callgraph, qualified names all reflected the old file).
+    reliary_search::file_meta::invalidate(&canonical);
     // M4: bump the persisted index generation so the freshness stamp changes
     // for every MCP client on their next call.
     if let Err(e) = reliary_search::schema::bump_index_gen(&db) {

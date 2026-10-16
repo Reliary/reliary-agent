@@ -4,7 +4,8 @@ Thanks for your interest in contributing. Reliary is a single-binary Rust tool t
 
 ## Development setup
 
-Requires Rust 1.74+ (stable).
+Requires Rust 1.80+ (stable). The tree uses `std::sync::LazyLock` (stabilized in
+1.80); edition 2021 throughout, no nightly features.
 
 ```bash
 git clone https://github.com/Reliary/reliary-agent.git
@@ -32,9 +33,10 @@ end-to-end tests live in `crates/*/tests/`:
 
 | File | What it covers |
 |------|----------------|
-| `reliary-agent/tests/e2e_mcp.rs` | Full MCP stdio protocol: handshake, `tools/list` schema, every tool callable, error codes, malformed-input survivability, parallel calls |
-| `reliary-agent/tests/e2e_cli.rs` | CLI subprocess behaviour: `trust`, `search`, `verify`, `status`, `doctor`, `wrap`, `init`/`uninstall` against a fake `HOME`, completions |
+| `reliary-agent/tests/e2e_mcp.rs` | Full MCP stdio protocol: handshake, `tools/list` schema, every tool callable, error codes, malformed-input survivability (including the 10MB line cap), parallel calls |
+| `reliary-agent/tests/e2e_cli.rs` | CLI subprocess behaviour: `trust`, `search`, `verify`, `status --path`, `doctor` (+`--fix`), `wrap`, `cache-retrieve` (DB + tee fallback), `init`/`uninstall` against a fake `HOME`, completions |
 | `reliary-agent/tests/e2e_adversarial.rs` | Hostile input: invalid UTF-8, NUL bytes, unterminated strings/comments, 200 KB lines, deep nesting, path traversal, SQL-injection-shaped symbol names, index integrity, determinism |
+| `reliary-agent/tests/s2_pack_query.rs`, `s3_warmup.rs`, `common/` | Pack-query behaviour, index warmup, shared fixtures and the live MCP client harness |
 
 The e2e tests spawn the real `reliary` binary and require `git` on `PATH`
 (they create throwaway repos). Skip them when iterating on a single module:
@@ -104,9 +106,11 @@ One change per commit. Reference issue numbers at the end of the commit message 
 
 ## Pull request process
 
-1. Create a feature branch from `master-rebuild`.
+1. Create a feature branch from `master-rebuild`. (Note: a fresh clone checks
+   out `master` by default — an older line. All current work lands on
+   `master-rebuild`.)
 2. Make focused commits with clear messages.
-3. Run `cargo test --workspace` and `cargo clippy --workspace -- -D warnings`.
+3. Run `cargo test --workspace --release` and `cargo clippy --workspace --all-targets --release -- -D warnings`.
 4. Update `CHANGELOG.md` for any user-visible change.
 5. Open a PR with a clear description of what the PR changes and why.
 

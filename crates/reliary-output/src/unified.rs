@@ -39,8 +39,13 @@ pub fn compress(text: &str) -> String {
     let strategy = classify::detect_strategy(&raw_lines);
 
     // Stage 3: Apply expert compression per strategy (includes should_drop
-    // inside format_output — progress bars, separators, short lines stripped)
-    let compressed = filter::format_output(&lines, strategy, true);
+    // inside format_output — progress bars, separators, short lines stripped).
+    // LLM mode (drop diff context, keep individual error lines) is the DEFAULT:
+    // `format_output(.., llm=true)`. `RELIARY_SIFT_LLM` was written by the CLI
+    // `--llm` flag but never read — now it is honored, so `RELIARY_SIFT_LLM=0`
+    // selects human-readable output. Absent/unset keeps LLM mode on.
+    let llm = std::env::var("RELIARY_SIFT_LLM").map(|v| v != "0" && v != "false").unwrap_or(true);
+    let compressed = filter::format_output(&lines, strategy, llm);
 
     // Stage 4: Always try output-collapse (cargo/pytest prefix runs) and
     // pick the shorter result. V14: was gated by "didn't help" but real

@@ -169,14 +169,23 @@ fn call_arity_from_line(t: &str) -> Option<usize> {
 fn extract_impl_type(s: &str) -> Option<String> {
     let after_impl = s.strip_prefix("impl")?.trim_start();
     let after_impl = if let Some(rest) = after_impl.strip_prefix('<') {
-        let mut depth = 1;
-        let mut i = 1;
+        // Walk to the matching `>`. `consumed` is the byte offset into
+        // `after_impl` (which begins with `<`), advanced past each visited
+        // char. A bare `impl<` (or an unbalanced `impl<'a`) has no closing `>`
+        // — the old code then sliced `after_impl[i+1..]` past the string end
+        // and panicked (aborting `trust` and every query on that repo). Bail.
+        let mut depth = 1i32;
+        let mut consumed = 1usize;
         for c in rest.chars() {
+            consumed += c.len_utf8();
             if c == '<' { depth += 1; }
-            if c == '>' { depth -= 1; if depth == 0 { break; } }
-            i += c.len_utf8();
+            if c == '>' {
+                depth -= 1;
+                if depth == 0 { break; }
+            }
         }
-        after_impl[i+1..].trim_start()
+        if depth != 0 { return None; }
+        after_impl.get(consumed..)?.trim_start()
     } else { after_impl };
 
     if let Some(for_pos) = after_impl.find(" for ") {
@@ -201,4 +210,47 @@ pub fn clear() {
     let mut c = cache().lock();
     c.0.clear();
     c.1.clear();
+}
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn extract_impl_type_handles_bare_impl() {
+        // V80: `impl<` with no closing `>` used to slice past the end and panic.
+        assert_eq!(extract_impl_type("impl<"), None);
+        assert_eq!(extract_impl_type("impl<'a"), None);
+        // Well-formed generics still resolve.
+        assert_eq!(extract_impl_type("impl<T> Foo"), Some("Foo".to_string()));
+        assert_eq!(extract_impl_type("impl<T> Bar for Baz"), Some("Baz".to_string()));
+    }
+
+    #[test]
+    fn invalidate_forces_recompute() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("reliary_fm_{}", nanos));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.rs");
+        std::fs::write(&f, "fn first() {}\n").unwrap();
+        let p = f.to_str().unwrap();
+        clear();
+
+        let m1 = get(p).expect("cached");
+        assert_eq!(m1.fn_names.iter().filter(|n| *n == "first").count(), 1);
+
+        // Change the file on disk; the cache must still serve the OLD content.
+        std::fs::write(&f, "fn second() {}\n").unwrap();
+        let stale = get(p).expect("cached");
+        assert!(stale.fn_names.iter().any(|n| n == "first"), "cache served stale content");
+
+        // After invalidation the new content is read.
+        invalidate(p);
+        let fresh = get(p).expect("recomputed");
+        assert!(fresh.fn_names.iter().any(|n| n == "second"), "invalidate must refresh content");
+        assert!(!fresh.fn_names.iter().any(|n| n == "first"), "old fn must be gone");
+
+        clear();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

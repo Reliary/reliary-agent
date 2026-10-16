@@ -38,18 +38,39 @@ function gateLog(level, msg) {
 }
 
 // Binary discovery — same locations as before, agent-agnostic.
+// F7 hardening: parity with hooks/claude-pretooluse.sh — a candidate must be
+// an executable regular file owned by us, else it is skipped. (The sh hook
+// enforces 0700 cache + ownership + X_OK; gate.js previously accepted any
+// existsSync path, letting a planted file redirect the hook to an
+// attacker-controlled binary.)
+function isTrustedBin(c) {
+  try {
+    const fs = require("fs");
+    const st = fs.statSync(c);
+    if (!st.isFile()) return false;
+    try { fs.accessSync(c, fs.constants.X_OK); } catch { return false; }
+    try {
+      if (typeof st.uid === "number" && typeof process.getuid === "function"
+          && st.uid !== process.getuid()) return false;
+    } catch {}
+    return true;
+  } catch { return false; }
+}
 let RELIARY_BIN = process.env.RELIARY_BIN_PATH || null;
+if (RELIARY_BIN && !isTrustedBin(RELIARY_BIN)) RELIARY_BIN = null;
 if (!RELIARY_BIN) {
   try {
     const which = execFileSync("which", ["reliary"], { encoding: "utf-8", timeout: 2000 });
-    if (which) RELIARY_BIN = which.trim();
+    const cand = which && which.trim();
+    if (cand && isTrustedBin(cand)) RELIARY_BIN = cand;
   } catch {}
 }
 if (!RELIARY_BIN) {
   // Fall back to the old binary name during the transition window.
   try {
     const which = execFileSync("which", ["reliary-agent"], { encoding: "utf-8", timeout: 2000 });
-    if (which) RELIARY_BIN = which.trim();
+    const cand = which && which.trim();
+    if (cand && isTrustedBin(cand)) RELIARY_BIN = cand;
   } catch {}
 }
 if (!RELIARY_BIN) {
@@ -60,7 +81,7 @@ if (!RELIARY_BIN) {
                    // often run with a reduced PATH. Check it explicitly.
                    join(homedir(), ".local", "bin", "reliary"),
                    join(homedir(), ".local", "bin", "reliary-agent")]) {
-    if (existsSync(c)) { RELIARY_BIN = c; break; }
+    if (isTrustedBin(c)) { RELIARY_BIN = c; break; }
   }
 }
 

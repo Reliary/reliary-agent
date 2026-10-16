@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 
-use reliary_search::schema::SCHEMA_VERSION;
+use reliary_search::schema::{MIN_MIGRATABLE, SCHEMA_VERSION};
 
 /// The index path for a project root.
 pub fn db_path_for(root: &Path) -> PathBuf {
@@ -35,7 +35,12 @@ pub fn is_reliary_index(db_path: &Path) -> bool {
     match Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
         Ok(db) => db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i32>(0))
-            .map(|v| v > 0 && v <= SCHEMA_VERSION)
+            // V79: accept only versions the opener can actually open. The
+            // migration path handles v4→v5; v1-v3 are rejected by
+            // `open_existing_db_safe`. Accepting 1..=5 here let the resolver
+            // select an index the opener then refused ("no index" with an index
+            // present). MIN_MIGRATABLE is the oldest version we can upgrade.
+            .map(|v| (MIN_MIGRATABLE..=SCHEMA_VERSION).contains(&v))
             .unwrap_or(false),
         Err(_) => false,
     }
@@ -44,10 +49,18 @@ pub fn is_reliary_index(db_path: &Path) -> bool {
 /// Walk up from `start` (inclusive) to the nearest ancestor with a usable
 /// index. `start` may be a file (its parent is used).
 pub fn nearest_index_root(start: &Path) -> Option<PathBuf> {
-    let mut cur = if start.is_dir() {
+    // Absolutize a relative start: `Path::new(".").pop()` returns false, so a
+    // walk-up from a relative path (the CLI's default `.`) never climbed to the
+    // parent project. Resolve against the CWD first.
+    let base = if start.is_absolute() {
         start.to_path_buf()
     } else {
-        start.parent()?.to_path_buf()
+        std::env::current_dir().ok()?.join(start)
+    };
+    let mut cur = if base.is_dir() {
+        base
+    } else {
+        base.parent()?.to_path_buf()
     };
     loop {
         if is_reliary_index(&db_path_for(&cur)) {

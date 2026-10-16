@@ -1010,3 +1010,168 @@ fn e2e_cli_doctor_flags_dangling_hook_registration() {
         "doctor must clear the flag once the hook file exists: {}", claude
     );
 }
+
+/// `.reliary/` must be invisible to git after `trust`, so `git add .` cannot
+/// stage the source-derived index or the raw-command cache.
+///
+/// Negative control: with the self-ignore removed, the same `git add .` DOES
+/// stage `.reliary/index.sqlite` — proving the assertion has teeth.
+#[test]
+fn trust_self_ignores_reliary_in_git() {
+    let fx = Fixture::new();
+    fx.trust();
+
+    // The self-ignore file exists and contains the blanket pattern.
+    let gi = fx.path().join(".reliary/.gitignore");
+    assert!(gi.exists(), "trust must write .reliary/.gitignore");
+    assert_eq!(std::fs::read_to_string(&gi).unwrap().trim(), "*");
+
+    // `.reliary/` does not appear in git status (the fixture's own source is
+    // untracked, so we assert on the absence of .reliary, not on emptiness).
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(fx.path())
+        .output()
+        .expect("git status");
+    let status = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        !status.contains(".reliary"),
+        "git status must not mention .reliary, got: {status}"
+    );
+
+    let _ = std::process::Command::new("git")
+        .args(["add", "."]).current_dir(fx.path()).output();
+    let staged = std::process::Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(fx.path())
+        .output()
+        .expect("git diff");
+    let staged = String::from_utf8_lossy(&staged.stdout);
+    assert!(
+        !staged.contains(".reliary"),
+        ".reliary must never be staged, got: {staged}"
+    );
+
+    // Negative control: removing the guard leaks the index.
+    std::fs::remove_file(&gi).unwrap();
+    let _ = std::process::Command::new("git")
+        .args(["add", "."]).current_dir(fx.path()).output();
+    let staged = std::process::Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(fx.path())
+        .output()
+        .expect("git diff");
+    let staged = String::from_utf8_lossy(&staged.stdout);
+    assert!(
+        staged.contains(".reliary/index.sqlite"),
+        "negative control failed: without the guard the index MUST be stageable, got: {staged}"
+    );
+}
+
+/// P1.2: piped stdin with no answers must FAIL CLOSED (exit 2), never auto-accept.
+#[test]
+fn e2e_cli_init_closed_stdin_exits_nonzero() {
+    use std::process::{Command, Stdio};
+    let home = fake_home();
+    // Immediate EOF: no answers at all.
+    let out = Command::new(crate::binary_path())
+        .args(["init"])
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env("NO_RELIARY_WATCHER", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn init");
+    assert!(!out.status.success(), "init with closed stdin must fail closed");
+    assert_eq!(out.status.code(), Some(2), "exit code must be 2, got {:?}", out.status.code());
+    // Nothing was written: no MCP entries added.
+    let claude: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join(".claude.json")).unwrap(),
+    ).unwrap();
+    assert!(claude["mcpServers"]["reliary"].is_null(), "fail-closed init must not wire anything: {}", claude);
+}
+
+/// P1.2: `clean` with closed stdin must refuse (exit 2), not wipe.
+#[test]
+fn e2e_cli_clean_closed_stdin_refuses() {
+    use std::process::{Command, Stdio};
+    let fx = Fixture::new();
+    fx.trust();
+    assert!(fx.path().join(".reliary").exists());
+    let out = Command::new(crate::binary_path())
+        .args(["clean"])
+        .current_dir(fx.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn clean");
+    assert_eq!(out.status.code(), Some(2), "clean with closed stdin must exit 2");
+    assert!(fx.path().join(".reliary").exists(), "fail-closed clean must not delete");
+}
+
+/// P1.4: `status --path` resolves a foreign project.
+#[test]
+fn e2e_cli_status_path_flag() {
+    let fx = Fixture::new();
+    fx.trust();
+    let out = std::process::Command::new(crate::binary_path())
+        .args(["status", "--path", &fx.path().to_string_lossy()])
+        .current_dir("/tmp")
+        .output()
+        .expect("spawn status");
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.contains("files indexed"), "status --path must report the foreign index: {}", text);
+}
+
+/// P2.2: `search` with no index exits 2 (not silent token fallback).
+#[test]
+fn e2e_cli_search_no_index_exits_two() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = std::process::Command::new(crate::binary_path())
+        .args(["search", "foo", &tmp.path().to_string_lossy()])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("spawn search");
+    assert_eq!(out.status.code(), Some(2), "search with no index must exit 2");
+}
+
+/// F5: `cache-retrieve` falls back to the tee file (content-addressed SHA-256).
+#[test]
+fn e2e_cli_cache_retrieve_falls_back_to_tee() {
+    let fx = Fixture::new();
+    fx.trust();
+    // Write a tee file directly (save_tee path) and retrieve it by hash.
+    let raw = "tee-fallback-probe-output";
+    let hash = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(raw.as_bytes()))
+    };
+    let tee_dir = std::path::PathBuf::from("/tmp/reliary-tee");
+    std::fs::create_dir_all(&tee_dir).ok(); // GUARDED: intentional — test setup, failure surfaces as missing file below
+    std::fs::write(tee_dir.join(&hash), raw).unwrap();
+    let out = std::process::Command::new(crate::binary_path())
+        .args(["cache-retrieve", &hash])
+        .current_dir(fx.path())
+        .output()
+        .expect("spawn cache-retrieve");
+    assert!(out.status.success(), "tee fallback must succeed");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), raw);
+    let _ = std::fs::remove_file(tee_dir.join(&hash));
+}
+
+/// F5 negative control: a path-traversal tee name is refused, not read.
+#[test]
+fn e2e_cli_cache_retrieve_rejects_traversal() {
+    let fx = Fixture::new();
+    fx.trust();
+    let out = std::process::Command::new(crate::binary_path())
+        .args(["cache-retrieve", "../../etc/passwd"])
+        .current_dir(fx.path())
+        .output()
+        .expect("spawn cache-retrieve");
+    assert!(!out.status.success(), "traversal tee name must be refused");
+}

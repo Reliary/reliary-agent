@@ -18,7 +18,8 @@ times smaller tool output, at accuracy comparable to grep and clearly ahead of
 
 Prebuilt binaries for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon),
 and Windows (x86_64, aarch64) are attached to every
-[release](https://github.com/Reliary/reliary-agent/releases). Download the
+[release](https://github.com/Reliary/reliary-agent/releases). (Windows aarch64
+is best-effort: its release job may be absent on some tags.) Download the
 archive for your platform from the latest release page, or:
 
 ```bash
@@ -30,7 +31,9 @@ curl -sSfL "https://github.com/Reliary/reliary-agent/releases/download/${VER}/re
 
 Once installed, `reliary update` self-updates from the same releases with
 SHA-256 verification, and detects an existing `cargo install` and points you at
-the right upgrade command instead of clobbering it.
+the right upgrade command instead of clobbering it. Prompts fail closed on
+non-TTY stdin (exit 2) unless `--yes` is given; output honors `NO_COLOR` and
+disables color when piped.
 
 From source (needs a C compiler — the bundled SQLite and rustls build it):
 
@@ -41,8 +44,11 @@ cargo install reliary-agent
 ## Quick start
 
 ```bash
-# Index a project
+# Index a project (first-time setup: creates .reliary/, writes its .gitignore, builds the index)
 reliary trust .
+
+# Rebuild after major changes (trust is for first run; index is rebuild)
+reliary index .
 
 # Start the MCP server (Claude Code, OpenCode, Pi, Cline, anything MCP)
 reliary mcp
@@ -88,8 +94,9 @@ reliary wrap git diff      # drops context lines, keeps hunk headers + changes
 reliary wrap pytest -v     # collapses passing lines to a summary
 ```
 
-For automatic interception with no manual prefix, set `RELIARY_SIFT_BASH=1` and
-install the hook from `crates/reliary-agent/hooks/` for your agent.
+For automatic interception with no manual prefix, install the hook from
+`crates/reliary-agent/hooks/` for your agent. Bash compression is on by
+default; set `RELIARY_SIFT_BASH=0` to disable.
 
 ## Tools
 
@@ -126,14 +133,15 @@ query from a subdirectory finds the project above it. Passing
 ## CLI
 
 ```
-reliary trust [PATH]         Index a project directory
-reliary index [PATH]         Build or refresh the index
+reliary trust [PATH]         First-time setup: create .reliary/, write its .gitignore, build index
+reliary index [PATH]         Rebuild the index (existing project)
 reliary reindex-file PATH    Re-index one file after an edit (used by hooks)
 reliary search QUERY         BM25 search
 reliary mcp                  Start the MCP server on stdio
 reliary wrap [CMD]           Run CMD and compress its output
-reliary sift [--stdin]       Pipe text through the compressor
-reliary compress PATH        IR reasoning compression
+reliary sift [--stdin] [--llm] [--aggressive] [CMD] Pipe text through the compressor
+reliary compress [--gentle] [TEXT] IR reasoning compression (arg text or stdin)
+reliary pack PATH            Codebase symbol pack (signatures + surprise facts)
 reliary dead [PATH]          Cross-file dead-code analysis
 reliary risk FILE            Pre-edit risk analysis
 reliary impact SYMBOL        Blast radius: callers, test files, risk verdict
@@ -145,24 +153,34 @@ reliary fix TASK             Deterministic bug-fix recipes, LLM fallback
 reliary bench                Generate benchmark questions+GT and score results
 reliary init                 Auto-install agent integrations
 reliary uninstall            Remove agent integrations
-reliary doctor               Health check
-reliary status               Index and integration status
+reliary doctor               Health check (`--fix` rebuilds index + writes missing .gitignore)
+reliary status --path DIR    Index and integration status (for DIR, default .)
 reliary logs                 Tail the log output
 reliary config               Show resolved configuration
 reliary clean                Clean caches and state
-reliary update               Self-update from GitHub releases (checksum-verified)
+reliary update               Self-update from GitHub releases (checksum-verified; exit 2 = available with --check)
 reliary completions SHELL    Emit a shell completion script
 reliary man                  Emit the man page
 ```
 
 Run `reliary --help` for the complete, current list.
 
+Exit codes: 0 success; 1 error (including a failed `trust`/`index` build);
+2 means "needs a decision" — no index (run `trust`), or a prompt declined on
+a non-TTY (re-run with `--yes`). `update --check` also uses 2 for "available".
+
+`doctor --fix` must run from the project root (it fixes `./.reliary` only).
+
 ## Key properties
 
 - **Grammar-free**: no tree-sitter, no AST, no per-language code. Structural
   detection on brace/indent/blank-line boundaries works on any text file.
 - **Index-first**: once trusted, queries use the per-project SQLite index at
-  `.reliary/index.sqlite`.
+  `.reliary/index.sqlite`. That directory is local machine state and is
+  git-ignored automatically (a `.reliary/.gitignore` holding `*` is written by
+  `trust`), so `git add .` never stages the index or the command-output cache.
+  The project config `.reliary/config.json` is user-local too; force-add it
+  (`git add -f`) if a team wants to share settings.
 - **Deterministic**: identical inputs produce identical output, so results are
   safe for provider-side KV caching.
 - **Standalone**: one Rust binary, no Python or Node runtime, no daemon.

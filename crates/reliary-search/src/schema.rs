@@ -4,6 +4,11 @@ use rusqlite::Connection;
 
 pub const SCHEMA_VERSION: i32 = 5;
 
+/// Oldest on-disk schema version `run_migrations` can upgrade in place. Older
+/// versions must be rebuilt from source. Used by the index resolver to reject
+/// candidates the opener would refuse anyway.
+pub const MIN_MIGRATABLE: i32 = 4;
+
 pub fn create_new_db(db: &Connection) -> rusqlite::Result<()> {
     // Arc 34: kept MEMORY+OFF despite trying WAL. Bench showed WAL is 12-25%
     // slower per-INSERT on tokio + drivers, and the WAL file + SHM updates
@@ -75,22 +80,71 @@ pub fn index_gen(db: &Connection) -> i64 {
         .unwrap_or(0)
 }
 
+/// Populate `file_phrases` from the packed `phrase_occ.file_blob` entries.
+/// Idempotent (`INSERT OR IGNORE`); used by the v4→v5 migration so a pre-v5
+/// index gains an accurate file→phrase map instead of an empty one.
+fn backfill_file_phrases(db: &Connection) -> rusqlite::Result<()> {
+    // Guard: the table must exist (the upgrade path creates it just before).
+    let exists: i64 = db.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='file_phrases'",
+        [], |r| r.get(0),
+    ).unwrap_or(0);
+    if exists == 0 { return Ok(()); }
+    let mut stmt = db.prepare("SELECT phrase_id, file_blob FROM phrase_occ")?;
+    let mut rows = stmt.query([])?;
+    let mut pairs: Vec<(i64, i64)> = Vec::new();
+    while let Some(r) = rows.next()? {
+        let phrase_id: i64 = r.get(0)?;
+        let blob: Vec<u8> = match r.get(1) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        for (fid, _) in unpack_file_blob(&blob) {
+            pairs.push((fid, phrase_id));
+        }
+    }
+    drop(rows);
+    drop(stmt);
+    const BATCH: usize = 200;
+    for chunk in pairs.chunks(BATCH) {
+        let m = chunk.len();
+        let placeholders = std::iter::repeat_n("(?,?)", m).collect::<Vec<_>>().join(",");
+        let sql = format!("INSERT OR IGNORE INTO file_phrases (file_id, phrase_id) VALUES {}", placeholders);
+        let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(m * 2);
+        for (fid, pid) in chunk {
+            params.push(rusqlite::types::Value::Integer(*fid));
+            params.push(rusqlite::types::Value::Integer(*pid));
+        }
+        db.execute(&sql, rusqlite::params_from_iter(params.iter()))?;
+    }
+    Ok(())
+}
+
 fn run_migrations(db: &Connection) -> rusqlite::Result<()> {
     let version: i32 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version == SCHEMA_VERSION { return Ok(()); }
 
     if version == 4 {
         // Schema v4 → v5: add is_source column to file_map, add file_phrases table.
-        let _ = db.execute_batch(
+        // Errors must propagate: a silent failure left user_version at 4 while
+        // the code assumed v5, so later `file_phrases` queries failed with
+        // "no such table" and reindex could not find which phrases to strip.
+        db.execute_batch(
             "ALTER TABLE file_map ADD COLUMN is_source INTEGER NOT NULL DEFAULT 1;
              CREATE TABLE IF NOT EXISTS file_phrases (
                  file_id INTEGER NOT NULL,
                  phrase_id INTEGER NOT NULL,
                  PRIMARY KEY (file_id, phrase_id)
              );
-             CREATE INDEX IF NOT EXISTS idx_file_phrases_file ON file_phrases(file_id);
-             PRAGMA user_version = 5;"
-        );
+             CREATE INDEX IF NOT EXISTS idx_file_phrases_file ON file_phrases(file_id);"
+        )?;
+        // Backfill file_phrases from the existing phrase_occ blobs. Without this,
+        // reindex (which reads file_phrases to decide which phrase blobs to strip)
+        // appended new entries WITHOUT removing the old ones, so every edited
+        // file accumulated duplicate phrase_occ rows forever, inflating doc_freq
+        // and BM25 IDF.
+        backfill_file_phrases(db)?;
+        db.execute_batch("PRAGMA user_version = 5;")?;
         return Ok(());
     }
 

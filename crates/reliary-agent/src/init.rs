@@ -4,7 +4,15 @@ use std::fs;
 use std::process::Command;
 use serde_json::Value;
 
-fn ok(msg: &str) { println!("  \x1b[32m✓\x1b[0m {}", msg); }
+fn ok(msg: &str) {
+    if crate::ux::colors_enabled() { println!("  \x1b[32m✓\x1b[0m {}", msg); } else { println!("  ✓ {}", msg); }
+}
+fn warn_line(msg: &str) {
+    if crate::ux::colors_enabled() { println!("  \x1b[33m-\x1b[0m {}", msg); } else { println!("  - {}", msg); }
+}
+fn fail_line(msg: &str) {
+    if crate::ux::colors_enabled() { println!("  \x1b[31m✗\x1b[0m {}", msg); } else { println!("  ✗ {}", msg); }
+}
 
 // Embed gate.js at compile time
 
@@ -35,25 +43,47 @@ const EMBEDDED_OPENCODE_PLUGIN: &str = include_str!("../opencode-plugin/index.js
 /// Filename the OpenCode plugin is written under in the reliary data dir.
 const OPENCODE_PLUGIN_FILENAME: &str = "opencode-plugin.js";
 
+/// P1.2: placeholder — the fail-closed logic lives in `ask_yes_no_tty`'s
+/// EOF arm (immediate EOF on non-TTY without --yes → exit 2). Kept as a
+/// named checkpoint so the invariant is greppable.
+fn unattended_check() {}
+
 fn ask_yes_no(prompt: &str, default: bool) -> bool {
+    // P1.2 fail-closed: scripted piped answers ("Y\nN\n") still work — only an
+    // immediate EOF on non-TTY stdin refuses (exit 2) instead of auto-accepting.
+    // A bare `echo | reliary init` or `</dev/null` gets EOF on the first prompt.
+    ask_yes_no_tty(prompt, default)
+}
+
+fn ask_yes_no_tty(prompt: &str, default: bool) -> bool {
     let def_str = if default { "[Y/n]" } else { "[y/N]" };
     print!("{} {}: ", prompt, def_str);
     let _ = io::stdout().flush();
 
     let mut input = String::new();
-    if io::stdin().read_line(&mut input).is_ok() {  // GUARDED: intentional
-        let input = input.trim().to_lowercase();
-        if input.is_empty() {
-            return default;
+    match io::stdin().read_line(&mut input) {  // GUARDED: intentional
+        Ok(0) if !std::io::IsTerminal::is_terminal(&std::io::stdin())
+            && std::env::var("RELIARY_YES").is_err() =>
+        {
+            // Immediate EOF on a pipe (</dev/null, bare `echo |`) with no
+            // --yes: fail closed instead of auto-accepting the default.
+            eprintln!("\n  ✗ No input (stdin closed). Re-run with `--yes` to accept defaults, or answer the prompts.");
+            std::process::exit(2);
         }
-        return input == "y" || input == "yes";
+        Ok(_) => {
+            let input = input.trim().to_lowercase();
+            if input.is_empty() {
+                return default;
+            }
+            input == "y" || input == "yes"
+        }
+        Err(_) => default,
     }
-    default
 }
 
 /// Print a dry-run action and return true to skip the actual work.
 fn dry_run_action(label: &str) -> bool {
-    println!("  \x1b[36m[dry-run]\x1b[0m would {}", label);
+    if crate::ux::colors_enabled() { println!("  \x1b[36m[dry-run]\x1b[0m would {}", label); } else { println!("  [dry-run] would {}", label); }
     true
 }
 
@@ -126,15 +156,24 @@ fn cline_config_path() -> Option<PathBuf> {
     Some(current)
 }
 
-/// Directory OpenCode reads global config from, per platform.
+/// Directory OpenCode reads global config from.
+///
+/// V80: OpenCode resolves global config as `XDG_CONFIG_HOME || ~/.config/opencode`
+/// on EVERY platform (verified against the shipped binary: `XDG_CONFIG_HOME ||
+/// join(home, ".config")`). The old macOS branch used
+/// `~/Library/Application Support/opencode` (the *system-managed* dir), so on
+/// macOS `init` never found the config and `doctor` reported a correctly-wired
+/// install as "not found". Honouring `XDG_CONFIG_HOME` also fixes Linux setups
+/// that set it.
 fn opencode_config_dir() -> Option<PathBuf> {
-    if cfg!(target_os = "windows") {
-        dirs::config_dir().map(|d| d.join("opencode"))
-    } else if cfg!(target_os = "macos") {
-        home_dir().map(|h| h.join("Library/Application Support/opencode"))
-    } else {
-        home_dir().map(|h| h.join(".config/opencode"))
+    // XDG_CONFIG_HOME (absolute) wins on all platforms, when set and non-empty.
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        let p = PathBuf::from(xdg);
+        if !p.as_os_str().is_empty() && p.is_absolute() {
+            return Some(p.join("opencode"));
+        }
     }
+    home_dir().map(|h| h.join(".config").join("opencode"))
 }
 
 /// The OpenCode global config file to use.
@@ -192,10 +231,7 @@ fn install_rel_shim(dry_run: bool) -> bool {
     if created {
         ok(&format!("Installed 'rel' alias → {}", shim.display()));
         if !path_contains(parent) {
-            println!(
-                "  \x1b[33m!\x1b[0m {} is not on your PATH — add it to use 'rel'",
-                parent.display()
-            );
+            warn_line(&format!("{} is not on your PATH — add it to use 'rel'", parent.display()));
         }
     }
     created
@@ -222,9 +258,9 @@ fn remove_rel_shim() {
 }
 
 pub fn run(dry_run: bool) {
-    let bold = "\x1b[1m";
-    let dim = "\x1b[2m";
-    let reset = "\x1b[0m";
+    let bold = if crate::ux::colors_enabled() { "\x1b[1m" } else { "" };
+    let dim = if crate::ux::colors_enabled() { "\x1b[2m" } else { "" };
+    let reset = if crate::ux::colors_enabled() { "\x1b[0m" } else { "" };
 
     println!();
     println!("{}  ╭────────────────────────────────────────────╮{}", bold, reset);
@@ -234,9 +270,18 @@ pub fn run(dry_run: bool) {
     println!("{}  This will configure reliary for your code agents.{}", dim, reset);
     println!("{}  Each integration is optional -- say n to skip any.{}", dim, reset);
     if dry_run {
-        println!("{}  \x1b[36m[dry-run]\x1b[0m{} Showing what would be installed, no changes will be made.", dim, reset);
+        println!("{}  [dry-run]{} Showing what would be installed, no changes will be made.", dim, reset);
     }
     println!();
+
+    // P1.2: non-interactive guard. --dry-run always proceeds (mutates
+    // nothing); --yes accepts defaults. A piped stdin with scripted answers
+    // works (each prompt reads a line; EOF mid-run fails closed per prompt).
+    // Only a fully-closed stdin (</dev/null with no --yes) is refused here —
+    // detected cheaply: non-TTY + zero pending bytes is not portable, so we
+    // let the first prompt's EOF arm handle it instead of guessing here.
+    // (No upfront exit: scripted `init_with("Y\nN\n")` harnesses pipe stdin.)
+    unattended_check();
 
     let mut configured_agents = 0;
 
@@ -257,7 +302,7 @@ pub fn run(dry_run: bool) {
         } else {
             "Found Pi Agent. Install Reliary extension?"
         };
-        if dry_run { dry_run_action("install Pi Agent gate.js"); } else if ask_yes_no(msg, true) {
+        if dry_run { dry_run_action("install Pi Agent gate.js"); configured_agents += 1; } else if ask_yes_no(msg, true) {
             if let Some(data_dir) = get_data_dir() {
                 let target_dir = data_dir.join("reliary");
                 if fs::create_dir_all(&target_dir).is_ok() {
@@ -277,22 +322,22 @@ pub fn run(dry_run: bool) {
                                 ok("Installed gate.js");
                                 configured_agents += 1;
                             } else {
-                                println!("  \x1b[31m✗\x1b[0m Failed to run `pi install`\n");
+                                fail_line("Failed to run `pi install`");
                             }
                         } else {
-                            println!("  \x1b[31m✗\x1b[0m Failed to run `pi install`\n");
+                            fail_line("Failed to run `pi install`");
                         }
                     } else {
-                        println!("  \x1b[31m✗\x1b[0m Failed to write gate.js\n");
+                        fail_line("Failed to write gate.js");
                     }
                 } else {
-                    println!("  \x1b[31m✗\x1b[0m Failed to create directory {:?}\n", target_dir);
+                    fail_line(&format!("Failed to create directory {:?}", target_dir));
                 }
             } else {
-                println!("  \x1b[31m✗\x1b[0m Could not determine data directory\n");
+                fail_line("Could not determine data directory");
             }
         } else {
-            println!("  \x1b[33m-\x1b[0m Skipped\n");
+            warn_line("Skipped");
         }
     }
 
@@ -301,22 +346,22 @@ pub fn run(dry_run: bool) {
         let claude_cfg = home.join(".claude.json");
         let claude_hooks_dir = home.join(".claude/hooks");
         if claude_cfg.exists() {
-            if dry_run { dry_run_action("add Reliary MCP server to Claude Code (~/.claude.json)"); } else if ask_yes_no("Found Claude Code config. Add Reliary MCP server?", true) {
+            if dry_run { dry_run_action("add Reliary MCP server to Claude Code (~/.claude.json)"); configured_agents += 1; } else if ask_yes_no("Found Claude Code config. Add Reliary MCP server?", true) {
                     if inject_mcp_server(&claude_cfg, "reliary", "mcpServers") {
                         ok("Updated ~/.claude.json");
                         configured_agents += 1;
                     } else {
-                        println!("  \x1b[31m✗\x1b[0m Failed to update ~/.claude.json\n");
+                        fail_line("Failed to update ~/.claude.json");
                     }
             } else {
-                println!("  \x1b[33m-\x1b[0m Skipped\n");
+                warn_line("Skipped");
             }
             // Install Claude Code hooks (session reminder + bash sift)
             if dry_run { dry_run_action("install Claude Code hooks (~/.claude/hooks/reliary-*)"); } else if ask_yes_no("Install Claude Code hooks? (session reminder + bash output compression)", true) {
                 if install_claude_hooks(&claude_hooks_dir) {
                     ok("Installed Claude Code hooks (~/.claude/hooks/reliary-*)");
                 } else {
-                    println!("  \x1b[31m✗\x1b[0m Failed to install hooks\n");
+                    fail_line("Failed to install hooks");
                 }
             }
         }
@@ -326,46 +371,46 @@ pub fn run(dry_run: bool) {
     if let Some(cfg_path) = opencode_config_path() {
         if cfg_path.exists() {
             let name = cfg_path.file_name().and_then(|s| s.to_str()).unwrap_or("opencode.json");
-            if dry_run { dry_run_action(&format!("add Reliary MCP server to OpenCode ({})", name)); } else if ask_yes_no("Found OpenCode config. Add Reliary MCP server?", true) {
+            if dry_run { dry_run_action(&format!("add Reliary MCP server to OpenCode ({})", name)); configured_agents += 1; } else if ask_yes_no("Found OpenCode config. Add Reliary MCP server?", true) {
                 if inject_opencode_mcp_server(&cfg_path, "reliary") {
                     ok(&format!("Updated {}", name));
                     configured_agents += 1;
                 } else {
-                    println!("  \x1b[31m✗\x1b[0m Failed to update {}\n", name);
+                    fail_line(&format!("Failed to update {}", name));
                 }
             } else {
-                println!("  \x1b[33m-\x1b[0m Skipped\n");
+                warn_line("Skipped");
             }
 
             // Offer to install the OpenCode plugin (regen-on-edit hook)
             if dry_run { dry_run_action(&format!("install reliary-opencode plugin in {}", name)); } else if ask_yes_no("Install reliary-opencode plugin? (auto-reindex + regen pack after every write/edit)", true) {
                 match inject_opencode_plugin(&cfg_path) {
                     Ok(true) => ok(&format!("Installed reliary-opencode plugin in {}", name)),
-                    Ok(false) => println!("  \x1b[33m-\x1b[0m Plugin already present, skipped\n"),
-                    Err(e) => println!("  \x1b[31m✗\x1b[0m Plugin install failed: {}\n", e),
+                    Ok(false) => warn_line("Plugin already present, skipped"),
+                    Err(e) => fail_line(&format!("Plugin install failed: {}", e)),
                 }
             } else {
-                println!("  \x1b[33m-\x1b[0m Plugin install skipped\n");
+                warn_line("Plugin install skipped");
             }
         } else {
-            println!("  \x1b[33m-\x1b[0m No OpenCode config found (optional)\n");
+            warn_line("No OpenCode config found (optional)");
         }
     } else {
-        println!("  \x1b[33m-\x1b[0m Could not locate OpenCode config dir (optional)\n");
+        warn_line("Could not locate OpenCode config dir (optional)");
     }
     
     // 4. Cline
     if let Some(cfg_path) = cline_config_path() {
         if cfg_path.exists() {
-            if dry_run { dry_run_action("add Reliary MCP server to Cline"); } else if ask_yes_no("Found Cline config. Add Reliary MCP server?", true) {
+            if dry_run { dry_run_action("add Reliary MCP server to Cline"); configured_agents += 1; } else if ask_yes_no("Found Cline config. Add Reliary MCP server?", true) {
                 if inject_mcp_server(&cfg_path, "reliary", "mcpServers") {
                     ok("Updated cline MCP settings");
                     configured_agents += 1;
                 } else {
-                    println!("  \x1b[31m✗\x1b[0m Failed to update cline_mcp_settings.json\n");
+                    fail_line("Failed to update cline_mcp_settings.json");
                 }
             } else {
-                println!("  \x1b[33m-\x1b[0m Skipped\n");
+                warn_line("Skipped");
             }
         }
     }
@@ -380,19 +425,19 @@ pub fn run(dry_run: bool) {
     } else if ask_yes_no("Install the short 'rel' command alias?", true) {
         install_rel_shim(false);
     } else {
-        println!("  \x1b[33m-\x1b[0m Skipped\n");
+        warn_line("Skipped");
     }
 
     // ── Summary ──
-    let dim = "\x1b[2m";
-    let reset = "\x1b[0m";
+    let dim = if crate::ux::colors_enabled() { "\x1b[2m" } else { "" };
+    let reset = if crate::ux::colors_enabled() { "\x1b[0m" } else { "" };
     println!();
     println!("{}  ╭────────────────────────────────────────────╮{}", bold, reset);
     if configured_agents > 0 {
         println!("{}  │   {} agent(s) configured.       ✓          │{}", dim, configured_agents, reset);
     }
-    println!("{}  │   Next: {}reliary doctor{}              │{}", dim, bold, dim, reset);
-    println!("{}  │   Then: {}reliary trust .{}               │{}", dim, bold, dim, reset);
+    println!("{}  │   Next: {}reliary trust .{}              │{}", dim, bold, dim, reset);
+    println!("{}  │   Check: {}reliary doctor{}             │{}", dim, bold, dim, reset);
     println!("{}  ╰────────────────────────────────────────────╯{}", bold, reset);
     println!();
 }
@@ -844,7 +889,16 @@ pub fn uninstall() {
     remove_rel_shim();
 
     // 5. Config
-    if ask_yes_no("Do you want to delete global configuration files? (~/.reliary)", false) {
+    // P1.2: uninstall's delete prompt honors --yes; non-TTY without it refuses.
+    let delete_global = if std::env::var("RELIARY_YES").is_ok() {
+        true
+    } else if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        eprintln!("  ✗ Refusing to delete global config without a TTY. Re-run with `--yes`.");
+        false
+    } else {
+        ask_yes_no("Do you want to delete global configuration files? (~/.reliary)", false)
+    };
+    if delete_global {
         if let Some(home) = home_dir() {
             let config_dir = home.join(".reliary");
             if config_dir.exists() {

@@ -18,14 +18,18 @@ pub fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Hash content for storage key. Returns 16-char hex of 64-bit SipHash.
-/// D26: Keep DefaultHasher for now — speed is adequate for cache key use.
+/// Hash content for storage key. Returns the full SHA-256 hex digest.
+///
+/// V80: was a 64-bit SipHash. `store` uses INSERT OR REPLACE, so a collision
+/// silently OVERWROTE a different entry's content with no verification — and a
+/// 64-bit space collides (birthday) at ~65k entries, well within the 500-entry
+/// cache only if adversarial input is crafted; more importantly the value is a
+/// user-facing retrieval key. SHA-256 makes collisions infeasible.
 pub fn hash_content(content: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    content.hash(&mut h);
-    format!("{:016x}", h.finish())
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(content.as_bytes());
+    format!("{:x}", h.finalize())
 }
 
 /// Open or create the cache database at the given path.

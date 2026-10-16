@@ -30,11 +30,15 @@ pub fn parse_task(task: &str) -> FixTask {
     if t.contains("compiler") || t.contains("build error") || t.contains("cargo check") {
         return FixTask::CompilerErrors;
     }
-    if let Some(rest) = t.split("doc comment").nth(1) {
-        // "add doc comment to X" / "add a doc comment above X"
+    if let Some(pos) = find_ci(task, "doc comment") {
+        // Extract the symbol from the ORIGINAL text (case-preserving); the
+        // lowercased `t` turned `MyType` into `mytype`.
+        let rest = &task[pos + "doc comment".len()..];
         for sep in &[" to ", " above ", " for ", " on "] {
-            if let Some(sym) = rest.split(sep).nth(1) {
-                let sym = sym.trim().trim_matches('"').trim_matches('`').to_string();
+            if let Some(sp) = find_ci(rest, sep) {
+                let sym = rest[sp + sep.len()..].trim().trim_matches('"').trim_matches('`').to_string();
+                // Stop at the first token (drop trailing words like "please").
+                let sym = sym.split_whitespace().next().unwrap_or("").to_string();
                 if !sym.is_empty() {
                     return FixTask::AddDocComment { symbol: sym, text: "Doc comment for this symbol.".to_string() };
                 }
@@ -42,12 +46,13 @@ pub fn parse_task(task: &str) -> FixTask {
         }
     }
     if t.contains("rename ") {
-        // Extract from the original-case task using the same split positions.
-        let orig_lower = task.to_lowercase();
-        if let Some(pos) = orig_lower.find("rename ") {
+        // Split the ORIGINAL text directly (on the case-insensitive form's
+        // word "rename"). Deriving byte offsets from `to_lowercase()` and
+        // slicing the original panicked when a char lowercases to a different
+        // byte length (e.g. 'İ'/'ẞ'/Kelvin 'K').
+        if let Some(pos) = find_ci(task, "rename ") {
             let rest_orig = &task[pos + "rename ".len()..];
-            let rest_low = &orig_lower[pos + "rename ".len()..];
-            if let Some(to_pos) = rest_low.find(" to ") {
+            if let Some(to_pos) = find_ci(rest_orig, " to ") {
                 let from = rest_orig[..to_pos].trim().to_string();
                 let to = rest_orig[to_pos + 4..].trim().trim_matches('"').trim_matches('`').to_string();
                 if !from.is_empty() && !to.is_empty() {
@@ -57,21 +62,44 @@ pub fn parse_task(task: &str) -> FixTask {
         }
     }
     if t.contains("dead") && t.contains("remove") {
-        return FixTask::RemoveUnused { symbol: extract_symbol(&t) };
+        return FixTask::RemoveUnused { symbol: extract_symbol(task) };
     }
     if t.contains("import") {
-        return FixTask::AddImport { import: extract_import(&t) };
+        return FixTask::AddImport { import: extract_import(task) };
     }
     FixTask::Unknown(t.to_string())
 }
 
-fn extract_symbol(t: &str) -> String {
-    // "remove unused X" — last token.
-    t.split_whitespace().last().unwrap_or("").trim_matches('"').to_string()
+/// Case-insensitive `find` that returns a byte offset into the ORIGINAL
+/// `haystack` (safe to slice). Only correct for ASCII-lowercase needles.
+fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
+    let h = haystack.as_bytes();
+    let n = needle.as_bytes();
+    if n.is_empty() || h.len() < n.len() {
+        return None;
+    }
+    'outer: for i in 0..=(h.len() - n.len()) {
+        for j in 0..n.len() {
+            if h[i + j].to_ascii_lowercase() != n[j] {
+                continue 'outer;
+            }
+        }
+        return Some(i);
+    }
+    None
 }
-fn extract_import(t: &str) -> String {
-    // "add import of Y" — after " of "
-    t.split(" of ").nth(1).map(|s| s.trim().to_string()).unwrap_or_default()
+
+fn extract_symbol(orig: &str) -> String {
+    // "remove unused X" — last token, case-preserved from the original text.
+    orig.split_whitespace().last().unwrap_or("").trim_matches('"').to_string()
+}
+fn extract_import(orig: &str) -> String {
+    // "add import of Y" — after " of " (case-insensitive), original case kept.
+    if let Some(p) = find_ci(orig, " of ") {
+        orig[p + 4..].trim().to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// Parse cargo check output into (file, line, code, message) tuples.
@@ -95,18 +123,20 @@ pub fn parse_cargo_errors(out: &str) -> Vec<(String, usize, String, String)> {
 // Deterministic recipes
 // ---------------------------------------------------------------------------
 
-pub fn run_deterministic(path: &str, task: &str) -> Result<i32, String> {
+/// `dry_run`: compute the recipe's changes but DO NOT write anything. `--dry-run`
+/// used to be ignored here, so a "safe preview" silently rewrote files.
+pub fn run_deterministic_opts(path: &str, task: &str, dry_run: bool) -> Result<i32, String> {
     match parse_task(task) {
-        FixTask::CompilerErrors => run_compiler_loop(path, 5),
-        FixTask::AddDocComment { symbol, text } => recipe_add_doc(path, &symbol, &text),
-        FixTask::Rename { from, to } => recipe_rename(path, &from, &to),
-        FixTask::RemoveUnused { symbol } => recipe_remove_unused(path, &symbol),
-        FixTask::AddImport { import } => recipe_add_import(path, &import),
+        FixTask::CompilerErrors => run_compiler_loop(path, 5, dry_run),
+        FixTask::AddDocComment { symbol, text } => recipe_add_doc(path, &symbol, &text, dry_run),
+        FixTask::Rename { from, to } => recipe_rename(path, &from, &to, dry_run),
+        FixTask::RemoveUnused { symbol } => recipe_remove_unused(path, &symbol, dry_run),
+        FixTask::AddImport { import } => recipe_add_import(path, &import, dry_run),
         FixTask::Unknown(t) => Err(format!("no deterministic recipe for task: {}", t)),
     }
 }
 
-fn run_compiler_loop(path: &str, max_rounds: usize) -> Result<i32, String> {
+fn run_compiler_loop(path: &str, max_rounds: usize, dry_run: bool) -> Result<i32, String> {
     let mut fixed = 0usize;
     for _ in 0..max_rounds {
         let out = check_cmd(path, "cargo", &["check", "--message-format=short"]);
@@ -130,7 +160,11 @@ fn run_compiler_loop(path: &str, max_rounds: usize) -> Result<i32, String> {
                 _ => (None, None),
             };
             if let (Some(o), Some(n)) = (old, new) {
-                if let Ok(true) = reliary_edit::apply_edit(path, file, &o, &n) {
+                if dry_run {
+                    eprintln!("[dry-run] would edit {}: {:?} -> {:?}", file, o, n);
+                    applied_any = true;
+                    fixed += 1;
+                } else if let Ok(true) = reliary_edit::apply_edit(path, file, &o, &n) {
                     applied_any = true;
                     fixed += 1;
                 }
@@ -154,7 +188,7 @@ fn check_cmd(path: &str, bin: &str, args: &[&str]) -> String {
     }
 }
 
-fn recipe_add_doc(path: &str, symbol: &str, text: &str) -> Result<i32, String> {
+fn recipe_add_doc(path: &str, symbol: &str, text: &str, dry_run: bool) -> Result<i32, String> {
     // def(symbol) → insert /// text above the definition line.
     let db = open_index(path)?;
     let cands = reliary_search::type_flow::top_candidate_definitions(&db, symbol);
@@ -172,13 +206,17 @@ fn recipe_add_doc(path: &str, symbol: &str, text: &str) -> Result<i32, String> {
     lines.insert(idx, &doc_line);
     let sep = if crlf { "\r\n" } else { "\n" };
     let out = lines.join(sep) + sep;
+    if dry_run {
+        eprintln!("[dry-run] would add `{}` above {}:{}", doc_line, fp, ln + 1);
+        return Ok(0);
+    }
     let tmp = full.with_extension("reliary.tmp");
     std::fs::write(&tmp, &out).map_err(|e| format!("write: {}", e))?;
     std::fs::rename(&tmp, &full).map_err(|e| format!("rename: {}", e))?;
     Ok(0)
 }
 
-fn recipe_rename(path: &str, from: &str, to: &str) -> Result<i32, String> {
+fn recipe_rename(path: &str, from: &str, to: &str, dry_run: bool) -> Result<i32, String> {
     // refs(from) → replace every occurrence in each file (byte-level exact).
     let db = open_index(path)?;
     let Some(pid) = reliary_search::symbol::phrase_id_for(&db, from).ok().flatten() else {
@@ -204,6 +242,12 @@ fn recipe_rename(path: &str, from: &str, to: &str) -> Result<i32, String> {
             writes.push((full, out));
         }
     }
+    if dry_run {
+        for (full, _) in &writes {
+            eprintln!("[dry-run] would rename {} -> {} in {}", from, to, full.display());
+        }
+        return Ok(if writes.is_empty() { 2 } else { 0 });
+    }
     for (full, out) in &writes {
         std::fs::write(full, out).map_err(|e| e.to_string())?;
     }
@@ -217,35 +261,33 @@ fn replace_token(content: &str, from: &str, to: &str) -> String {
     let bytes = content.as_bytes();
     let mut out = String::with_capacity(content.len());
     let mut last = 0usize;
-    let mut i = 0usize;
-    while i + from.len() <= bytes.len() {
-        if &content[i..i + from.len()] == from {
-            let before_ok = i == 0 || {
-                let b = bytes[i - 1];
+    // match_indices yields char-boundary-safe offsets for `from`; the old
+    // byte-by-byte `i += 1` loop sliced `&content[i..i+from.len()]` at arbitrary
+    // byte offsets and panicked on any file containing multibyte UTF-8.
+    for (i, _) in content.match_indices(from) {
+        if i < last { continue; } // overlapping with a prior replacement
+        let before_ok = i == 0 || {
+            let b = bytes[i - 1];
+            !(b.is_ascii_alphanumeric() || b == b'_')
+        };
+        let after_ok = {
+            let j = i + from.len();
+            j >= bytes.len() || {
+                let b = bytes[j];
                 !(b.is_ascii_alphanumeric() || b == b'_')
-            };
-            let after_ok = {
-                let j = i + from.len();
-                j >= bytes.len() || {
-                    let b = bytes[j];
-                    !(b.is_ascii_alphanumeric() || b == b'_')
-                }
-            };
-            if before_ok && after_ok {
-                out.push_str(&content[last..i]);
-                out.push_str(to);
-                last = i + from.len();
-                i = last;
-                continue;
             }
+        };
+        if before_ok && after_ok {
+            out.push_str(&content[last..i]);
+            out.push_str(to);
+            last = i + from.len();
         }
-        i += 1;
     }
     out.push_str(&content[last..]);
     out
 }
 
-fn recipe_remove_unused(path: &str, symbol: &str) -> Result<i32, String> {
+fn recipe_remove_unused(path: &str, symbol: &str, dry_run: bool) -> Result<i32, String> {
     // def(symbol) → confirm 0 callers → delete the function block.
     let db = open_index(path)?;
     let cands = reliary_search::type_flow::top_candidate_definitions(&db, symbol);
@@ -307,6 +349,10 @@ fn recipe_remove_unused(path: &str, symbol: &str) -> Result<i32, String> {
     if content.ends_with('\n') && !joined.ends_with('\n') {
         joined.push('\n');
     }
+    if dry_run {
+        eprintln!("[dry-run] would delete {} at {}:{}", symbol, fp, ln + 1);
+        return Ok(0);
+    }
     std::fs::write(&full, joined).map_err(|e| e.to_string())?;
     Ok(0)
 }
@@ -345,7 +391,7 @@ fn count_braces_outside_strings(line: &str) -> (i32, i32) {
     (o, c)
 }
 
-fn recipe_add_import(path: &str, import: &str) -> Result<i32, String> {
+fn recipe_add_import(path: &str, import: &str, dry_run: bool) -> Result<i32, String> {
     // search(import) → first .rs file → insert "use {import};" near the top.
     let db = open_index(path)?;
     let hits = reliary_search::search::search_fts5(&db, import, 8);
@@ -361,6 +407,10 @@ fn recipe_add_import(path: &str, import: &str) -> Result<i32, String> {
     let insert_at = lines.iter().position(|l| l.starts_with("use ") || l.starts_with("pub use "))
         .unwrap_or(lines.len().min(3));
     lines.insert(insert_at, format!("use {};", import));
+    if dry_run {
+        eprintln!("[dry-run] would add `use {};` to {}", import, h.file);
+        return Ok(0);
+    }
     std::fs::write(&full, lines.join("\n") + "\n").map_err(|e| e.to_string())?;
     Ok(0)
 }
@@ -403,6 +453,9 @@ fn fix_e0252(line: &str, msg: &str) -> (Option<String>, Option<String>) {
     if is_grouped {
         // Grouped import: delete only the duplicated segment.
         if !dup_item.is_empty() && trimmed.contains(dup_item) {
+            // `prefix` already contains the leading `use ` (e.g. "use foo::"),
+            // so do NOT prepend another `use ` (the old code emitted
+            // "use use foo::{b}").
             let (prefix, rest) = match trimmed.split_once('{') {
                 Some(x) => x,
                 None => return (None, None),
@@ -411,15 +464,17 @@ fn fix_e0252(line: &str, msg: &str) -> (Option<String>, Option<String>) {
                 Some(x) => x,
                 None => return (None, None),
             };
+            // Remove ONLY the exact duplicated segment — `ends_with` wrongly
+            // dropped siblings like `data` when the dup was `metadata`.
             let kept: Vec<&str> = inner
                 .split(',')
                 .map(|x| x.trim())
-                .filter(|x| !x.is_empty() && !x.ends_with(dup_item))
+                .filter(|x| !x.is_empty() && *x != dup_item)
                 .collect();
             if kept.is_empty() {
                 return (Some(line.to_string()), Some(String::new()));
             }
-            let new_line = format!("{}use {}{{{}}}{}", 
+            let new_line = format!("{}{}{{{}}}{}",
                 &line[..line.len() - trimmed.len()], prefix, kept.join(", "), suffix);
             return (Some(line.to_string()), Some(new_line));
         }
@@ -437,4 +492,46 @@ fn fix_e0255(_line: &str) -> (Option<String>, Option<String>) {
 /// E0404 (expected trait, found type): no generic fix.
 fn fix_e0404(_line: &str) -> (Option<String>, Option<String>) {
     (None, None)
+}
+
+#[cfg(test)]
+mod v80_tests {
+    use super::*;
+
+    #[test]
+    fn replace_token_handles_multibyte() {
+        // Must not panic on multibyte content and must replace whole tokens.
+        assert_eq!(replace_token("café foo();", "foo", "bar"), "café bar();");
+        assert_eq!(replace_token("let foo_extra = foo;", "foo", "bar"), "let foo_extra = bar;");
+        assert_eq!(replace_token("Ω foo Ω", "foo", "bar"), "Ω bar Ω");
+        assert_eq!(replace_token("foo", "", "x"), "foo"); // empty from is a no-op
+    }
+
+    #[test]
+    fn parse_task_rename_preserves_case_and_unicode() {
+        match parse_task("rename fooBar to newName") {
+            FixTask::Rename { from, to } => {
+                assert_eq!(from, "fooBar");
+                assert_eq!(to, "newName");
+            }
+            other => panic!("expected rename, got {:?}", other),
+        }
+        // Unicode that lowercases to a different byte length must not panic.
+        match parse_task("rename Aİ to bar") {
+            FixTask::Rename { from, to } => { assert_eq!(to, "bar"); let _ = from; }
+            other => panic!("expected rename, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_task_preserves_symbol_case() {
+        match parse_task("add doc comment to MyType") {
+            FixTask::AddDocComment { symbol, .. } => assert_eq!(symbol, "MyType"),
+            other => panic!("expected doc comment, got {:?}", other),
+        }
+        match parse_task("add import of std::collections::HashMap") {
+            FixTask::AddImport { import } => assert_eq!(import, "std::collections::HashMap"),
+            other => panic!("expected import, got {:?}", other),
+        }
+    }
 }

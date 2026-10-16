@@ -5,6 +5,111 @@ All notable changes to Reliary will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.11] - 2026-10-16
+
+### Hardening (security review F2-F8)
+
+- **MCP stdin 10MB line cap (F2).** `serve_stdio` no longer uses unbounded
+  `lines()` — a single 1GB line OOMed the server. Oversize input is rejected
+  with `-32602` and framing resyncs (verified: next message answered).
+- **Self-update staging (F3).** `tempfile::TempDir` (unpredictable name, no
+  pre-create `remove_dir_all` symlink race) + `tar --no-absolute-filenames
+  --no-same-owner` (defense in depth behind the digest gate).
+- **`risk`/`fix`/`dead` scope to the session root (F4).** Hidden dispatch
+  tools pinned `safe_path(…, ".")` (server CWD); now `active_root()` like
+  every other tool. Verified: server in `/tmp` serves `path="$T"` hints.
+- **`read_tee` gated + wired (F5).** Basename-only, hex-only, 10MB-capped;
+  `cache-retrieve` falls back to the tee file on DB miss (was dead code).
+- **`fix --verify` filename escaped (F6).** Substituted `{file}` is
+  single-quote wrapped (malicious repo filenames can't inject).
+- **`gate.js` binary trust (F7).** Ownership + X_OK + regular-file checks,
+  parity with the sh hook (was `existsSync` only).
+- **`logs` 10MB cap + `status` read-only open (F8).**
+
+### UX/DX (P1-P4)
+
+- **Single color gate.** `NO_COLOR` + `CLICOLOR`/`CLICOLOR_FORCE` + `TERM=dumb`
+  + stderr-TTY, honored by every command. Piped output is never colored.
+  Progress and startup lines go to stderr; the fake spinner is TTY-gated.
+- **Fail-closed prompts + `--yes`.** `init`/`clean`/index-offer on closed
+  stdin exit 2 with remediation instead of auto-accepting. Scripted piped
+  answers still work; only immediate EOF refuses. `search` with no index
+  exits 2 (was a silent token fallback + exit 0); `pack`/`compress` errors
+  exit non-zero.
+- **`update` exit codes.** 0 up-to-date/updated, 1 error, 2 available (with
+  `--check`). Previously always 0.
+- **`trust` vs `index` clarified (kept separate).** `trust` = first-time
+  setup; `index` = rebuild. All hints agree. `status` gains `--path`;
+  `doctor --fix` rebuilds via `trust` and writes a missing `.gitignore`;
+  `man` writes `reliary.1`; `logs --tail` conflicts with `--level`.
+- **MCP honesty.** Escaping `path_filter` returns an explicit scoped-empty
+  message (never a silent whole-codebase dump). `list_methods`/`verify`
+  schemas document `path`/`tol`; unknown-tool errors list valid names;
+  empty-call-graph hint points to `def_only` (not deprecated `goto_def`).
+- **`doctor` no false-green.** Binary checks PATH resolvability; unknown
+  `RELIARY_MODE` fails; `claude` hooks-skipped is not a failure; `ignore`
+  checks content + deeper walk and is fixed by `--fix`.
+- **`init --dry-run` honest.** Counts previewed integrations instead of
+  always printing "No agents were configured".
+
+### Security
+
+- **`.reliary/` is now git-ignored automatically.** `trust` (and the MCP auto-trust path) write a self-ignoring `.reliary/.gitignore` containing `*`, so `git add .` can no longer stage `index.sqlite` (source-derived, multi-MB) or `cache.sqlite` (which stores the original text of every command passed through `reliary wrap` — routinely API keys and env dumps). Existing installs get the file on the next `trust` without touching any tracked file, and a user-authored `.reliary/.gitignore` is never overwritten. `doctor` reports if the guard is missing.
+- **`--internal-unlink` was an arbitrary-file-deletion primitive.** The private Windows self-update janitor mode was reachable from any command line (`reliary status --internal-unlink /etc/hosts`) and deleted whatever path it was given. It now refuses any file that is not a `*.old` self-update leftover.
+
+### Fixed
+
+- **`reliary trust` aborted on a file containing a bare `impl<`.** `extract_impl_type` walked generics looking for the closing `>` without checking that one existed, then sliced past the end of the string and panicked — aborting the whole trust run and every later query on that repo. It now bails on unbalanced generics.
+- **Sift compression corrupted diffs and JSON.** The "drop any line ≤ 2 chars" rule removed structurally significant short lines — a lone `}`, a diff `+}`, `);`, `});` — so compressed output no longer applied or parsed. Short lines carrying punctuation are now kept.
+- **`reliary wrap bash -c '<source reader>'` dropped a trailing line.** The passthrough detection failed to recognise the `bash -c` wrapper the shipped hook produces, so `wrap bash -c 'cat file.rs'` compressed a source read and lost a closing brace. The inner command is now detected and passed through.
+- **`reliary verify`, `pack` and `bench gen` returned wrong/empty results on a freshly trusted project.** All three read the occurrence table, which `trust` leaves empty (lazy index). Each now builds it once when empty.
+- **`reliary-memory::recall` / `encode_query` returned a uniform 1.0 similarity.** Query encoding bundled token vectors via `bundle_into` from an all-`-1` accumulator, which keeps the accumulator's bit on ties, so every query matched every memory equally. Now uses the same deterministic majority vote as `encode_tokens`; `recall`/`predict` discriminate.
+- **`doctor` always reported the index as "0d old".** It queried a non-existent `file_map.mtime` column and `unwrap_or(0.0)`-ed the error, so the stale-index warning was dead code. Now uses the index file's own mtime.
+- **macOS and `XDG_CONFIG_HOME` OpenCode installs were reported unwired.** `opencode_config_dir` used `~/Library/Application Support/opencode` on macOS, but OpenCode resolves global config as `XDG_CONFIG_HOME || ~/.config/opencode` on every platform — so a correctly wired install read as "not found". Both `init` and `doctor` now use the same resolution.
+- **The Claude Code hook could break interactive pagers and dropped sibling tool-input fields.** It rewrote `less`/`more`/`bat` (interactive TTY pagers) into a pipeline that cannot serve a TTY, and its `updatedInput` replaced the whole Bash input, discarding `timeout`/`description`/`run_in_background`. Pagers are no longer rewritten and the original input object is preserved.
+- **The shipped `opencode-reliary-sift.js` hook was dead code** that referenced a removed API, was never installed by `init`, and contradicted the docs. Removed; the working OpenCode plugin (`opencode-plugin/`) is what `init` installs.
+- **Content-cache keys were 64-bit SipHash with `INSERT OR REPLACE`.** A collision would silently overwrite another entry's stored content. Now SHA-256.
+- **`safe_read` blocked forever on a FIFO or character device.** A named pipe or `/dev/zero` reports size 0, passed the size cap, and then blocked in `read_to_string`. Only regular files are read now.
+- **CLI commands run from a subdirectory created a nested index instead of using the project's.** `search`, `risk`, `classify`, `vacuum`, `build-occurrences`, `build-all`, `reindex-file`, `who-calls`, `map`, `test-plan`, `impact`, `verify` and `bench` each built `<path>/.reliary` directly with no walk-up (and `reindex-file`/`who-calls` accepted a 0-byte stub). They now share one resolver that walks up to the nearest *usable* index, skipping stubs. A relative start (the default `--path .`) is absolutized first — `Path::pop()` on `.` returned false, so the walk-up never climbed.
+- **Several commands printed an error but exited 0**, so CI could not distinguish failure: `risk`, `vacuum`, `build-all`, `build-occurrences`, `reindex-file` (including a non-empty file that indexed 0 tokens), `who-calls`, `logs`, `session-state`, `cache-store`, `cache-stats`. All now exit non-zero.
+- **`vacuum`/`build-*` opened the DB without WAL or `busy_timeout`**, so they could fail immediately with `SQLITE_BUSY` under the MCP watcher.
+- **A nested `features` object in the config silently discarded the whole file.** `read_config_file` deserialized into `HashMap<String, String>`, so `{"mode":"fast","features":{"compress":false}}` failed to parse and `unwrap_or_default()` dropped everything, including `mode`. Nested objects are now flattened to dotted keys so both shapes work; `validate_config` accepts the flat `features.*` keys `set_config` writes; and `reliary config` reads the project config by default.
+- **The MCP server answered notifications.** JSON-RPC messages with a `method` and no `id` (`initialize`/`ping`/`tools/call` sent as notifications) are no longer replied to, and a malformed JSON line is now answered with `-32700` instead of being silently dropped.
+- **`sift --llm` was a no-op** — `compress_unified` hardcoded LLM mode; `RELIARY_SIFT_LLM=0` now selects the human-readable form.
+- **`reliary-dead` never returned `High` confidence** (it required an ALL-CAPS name, but names are lowercased at extraction). Exported-but-unused symbols are now `High`; the CLI `dead` and MCP `find_dead_code` agree better.
+- **A multibyte symbol name crashed (aborted) the whole MCP server.** `closest_symbols` sliced the name at a byte index without a char-boundary check, so `reliary_find_references(name="café")` hit `end byte index 4 is not a char boundary` and — with `panic = "abort"` — killed every client session. Also fixed two more reachable panics: `similar`'s anchor slice (a stale occurrence line past EOF) and the pack `manual_capture_sentinel` fixed-offset slice.
+- **`reliary fix --dry-run` wrote to files.** The deterministic recipes ignored `dry_run` and wrote unconditionally, so a "safe preview" silently rewrote source. Dry-run is now threaded through every recipe, which previews without writing. `fix` flag parsing also no longer leaks `--flag` values into the task text and honors `--dry-run`/`--json`/`--verify` anywhere on the line.
+- **`trust`/`index` reported success (exit 0) when the index build failed.** `run_index` returned `()`, so a database-open or ingest failure still printed "✓ Project trusted". Both now exit 1.
+- **`reliary_find_dead_code` returned "0 dead items" on a freshly trusted project.** Deadness is read from the occurrence table, which `trust` does not populate (lazy index) — indistinguishable from a clean repo. The tool now builds the table once when empty.
+- **`phrase_id_for` returned `None` for a valid stemmed phrase before its occurrence rows existed**, making symbols look absent on a fresh lazy index before JIT could run.
+- **`apply_edit` with an empty/whitespace-only `old` prepended `new` to the file and reported success** (`content.find("") == Some(0)`) — a malformed LLM edit silently corrupted the file. Now refused.
+- **`fix` E0252 grouped-import repair emitted `use use foo::{b}`** and dropped siblings whose name merely ended with the duplicate. Now removes only the exact duplicated segment.
+- **MCP parameters declared but ignored:** `reliary_search.limit` (hardcoded 10), `reliary_call_graph.depth`, `reliary_find_dead_code.format` (and its default limit was 100 vs the advertised 30), `reliary_describe.file`. `reliary_brace_debug` also read an arbitrary path with no traversal check — now validated.
+- **`parse_pack_entries` used `strip_prefix("///")` on `## ` headers**, so entry names were `"## skeleton"` and cross-reference expansion could never match a name.
+- **`search -f json` printed "No results found." instead of `[]`** for an empty result set.
+- **`impact`/`find_definition` reported "no definition found" for C#/Java-style type declarations.** A type whose declaration line ends in neither `{`, `(`, nor `:` — `public class Foo : Bar` (base list), `public interface IFoo`, `public sealed class Foo` with the brace on the next line, `class Foo<T> where T : X` (constraints) — was never tagged as a definition, so it was invisible to `impact`, `find_definition`, `call_graph`, and qualified names even though the file was indexed. These are the dominant .NET/Java forms. The classifier now recognises a PascalCase identifier preceded by a type keyword (`class`/`interface`/`struct`/`record`/`enum`/`type`/…) as a type definition when no delimiter terminator is present, and `find_definition` accepts a body-less type anchor. Grammar-free and word-boundary-checked, so `Datatype`/`prototype`/`subclass` and method-body locals are not misread.
+- **`verify` was hardcoded to `.rs`.** Its claim regexes only matched `file.rs:line`, so on a `.cs`/`.java`/`.ts`/`.go`/`.py` corpus `verify` silently extracted zero claims and returned no verdicts. All six claim forms now recognise the same source-extension set as the Python verifier (`rs py go ts tsx js jsx c cc cpp h hpp java rb php cs kt swift scala …`), and non-source citations (`README.md:12`) are still rejected.
+- **`test-plan` missed the `<Subject>Tests.<ext>` convention.** `is_test_path` recognised `_test`,`tests/`,`.test.` and `tests.rs`, but not `FooTests.cs` / `FooTest.java` / `FooTests.kt` / `FooSpec.scala` — the standard C#/Java/Kotlin/Scala test naming — so a changed class with a matching `…Tests.cs` returned "no tests found". The PascalCase `Test(s)`/`Spec(s)` suffix is now recognised, with word-boundary guards so `latest`, `contest`, `Manifest`, `Prospect` are not misread as tests.
+- **Declaration-only source files were rejected at ingest.** `is_source_like` counted `public class …`/`interface …`/`record …` lines as non-code (the code-keyword list only had bare `class `/`enum `), so a file of interfaces, DTOs, or enums scored a 0.0 code ratio and was skipped as "not source" — every symbol in it silently unsearchable. Visibility modifiers and the C#/Java declaration keywords now count as code signals.
+- **`list_methods`, `describe(methods)` and `find_references(methods)` returned nothing on non-Rust types.** They were hard-filtered to `%.rs` files and only understood Rust `impl` blocks. Added a language-general type-body member scanner (Rust/Go `name: Type` and C#/Java `Type name;` fields, method definitions via the shared classifier) and dropped the `.rs` filters.
+- **`call_graph` returned no callees on C#/Java/TS/Python.** Callee extraction deliberately dropped every `receiver.Method()` call as a "std method"; in those languages almost every call is dotted, so callees were always empty. Method declarations preceded by a return type (`public async Task<X> Name(`) are now recognised as definitions.
+- **`find_references(usage_only)` for an interface/trait name only matched Rust `impl T for X`/`#[derive]`.** Added C# `: IBar` and Java `implements IBar` detection (grammar-free, word-boundary and class-keyword guarded).
+- **Anchored queries could return empty: `block_id_at` and `best_context_key` double-converted the line.** Both subtracted 1 from an `anchor_line` that callers already pass 0-indexed, so the anchor block/context resolved one line early — often to nothing. Both now use the value as-is.
+- **The per-thread block-comment flag leaked between files.** A file ending in an unterminated `/*` carried the open-comment state into the next file on the same Rayon worker, zeroing its brace counts and making indexing scheduling-dependent. Reset at every per-file scan.
+- **The `file_meta`/brace-graph caches were never invalidated on edit.** A long-lived MCP server served pre-edit lines/fn_names/brace tree forever, so dead-code, callgraph and qualified names reflected the old file. `reindex` now invalidates the edited file.
+- **`verify` could panic the server.** A client-supplied huge/negative `tol` or an absurd line overflowed `line - 1 - tol` (remote DoS). Clamped. The file-line bound was `content_len/8 + 1000` (~8× too generous, so `foo.rs:5000` verified in a small file); now a sound `line <= content_len`. The basename lookup now escapes LIKE metacharacters and breaks ties deterministically.
+- **The v4→v5 migration created `file_phrases` empty and swallowed errors.** It is now backfilled from the existing `phrase_occ` blobs, so a reindex of an upgraded index strips old phrase entries instead of accumulating duplicates.
+- **`reindex` could leave a transaction open on a block-build error** (poisoning later JIT builds on the shared connection) — added an RAII rollback guard.
+- **Silent errors in `search`/`map`.** Prepare/query failures returned an empty result indistinguishably from "no matches"; now logged. A failed `bump_index_gen` after a successful index left the freshness stamp stale; now surfaced.
+- **Determinism: `reliary_similar` used `ORDER BY RANDOM()`** — now `ORDER BY file_path, line`.
+- **The watcher resolved the wrong project root in a monorepo** (preferred `.git` over an existing trusted `.reliary/`), so package edits were silently never reindexed.
+- **`build_callers` used a Rust-only test-path check**, so C#/Java `FooTests.cs` callers were reported as production callers.
+- **`find_references` with `path_filter` printed blank code evidence** (looked up the file by basename while the cache is keyed by full path).
+- **The legacy `reliary_callgraph` handler anchored one line early** (pre-subtracted `anchor_line` while `build_call_graph` expects it 1-indexed), unlike its `_v2` sibling.
+- **The index resolver accepted schema versions the opener rejects** (v1–v3), yielding "no index" with an index present.
+- **`pack`, `diff` and `architecture` were still JS/TS/Rust-shaped and degraded on .NET.** `pack`'s `is_source_file` had no `cs` extension, so a .NET repo packed "(0 symbols)" and a mixed repo silently dropped its whole C# backend; it also re-derived definitions with its own Rust/JS/TS heuristic instead of the shared classifier. `derive_crate_name` used a generic parent directory (`src`) as the label, producing headers like `Foo/src`. A real `diff` on a C# commit reported 0 symbol changes and could hang on repos with generated code; it now skips build-output directories (`obj/` and other ecosystem caches) and reports the real change. `architecture` queried the removed `method_occurrence` table and failed outright; it now derives the count from `occurrence`, and detects C#/Kotlin/Swift/etc.
+- **`namespace App {` was tagged as a type definition named `App`**, so every C#/C++ namespace became a bogus symbol. A namespace is a scope container, not a symbol. Method declarations with a return type and camelCase name (`public int handleRequest(`) are now recognised for Java/Go/Kotlin, with call guards intact.
+
 ## [0.8.10] - 2026-10-15
 
 ### Fixed

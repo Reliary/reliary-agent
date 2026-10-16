@@ -83,9 +83,11 @@ fn extract_words(content: &str, min_len: usize) -> Vec<(String, usize)> {
     result
 }
 
-/// Grammar-free definition detection: captures the NAME after a definition keyword.
-/// Uses line-prefix matching (same as carrion).
-fn extract_definitions(content: &str, min_len: usize) -> Vec<(String, usize)> {
+/// Grammar-free definition detection: captures (name, line, exported).
+/// `exported` is true when the declaration carries a visibility/export
+/// modifier (`pub`, `export`, `public`, …) — an exported-but-unused symbol is
+/// the strongest dead-code signal, so it drives `Confidence::High`.
+fn extract_definitions(content: &str, min_len: usize) -> Vec<(String, usize, bool)> {
     let mut defs = Vec::new();
     for (line_num, line) in content.lines().enumerate() {
         let trimmed = line.trim_start();
@@ -94,11 +96,46 @@ fn extract_definitions(content: &str, min_len: usize) -> Vec<(String, usize)> {
         let name = extract_def_name(trimmed);
         if let Some(n) = name {
             if n.len() >= min_len && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                defs.push((n.to_lowercase(), line_num + 1));
+                defs.push((n.to_lowercase(), line_num + 1, def_is_exported(trimmed)));
             }
         }
     }
     defs
+}
+
+/// Whether a declaration line carries a visibility/export modifier. Grammar-free
+/// prefix scan (the same modifier set `extract_def_name` strips).
+fn def_is_exported(line: &str) -> bool {
+    let mut s = line;
+    loop {
+        let stripped = s
+            .strip_prefix("pub(crate) ")
+            .or_else(|| s.strip_prefix("pub(super) "))
+            .or_else(|| s.strip_prefix("pub "))
+            .or_else(|| s.strip_prefix("export "))
+            .or_else(|| s.strip_prefix("public "))
+            .or_else(|| s.strip_prefix("protected "))
+            .or_else(|| s.strip_prefix("internal "))
+            .or_else(|| s.strip_prefix("virtual "))
+            .or_else(|| s.strip_prefix("override "))
+            .or_else(|| s.strip_prefix("abstract "))
+            .or_else(|| s.strip_prefix("async "))
+            .or_else(|| s.strip_prefix("static "))
+            .or_else(|| s.strip_prefix("extern "))
+            .or_else(|| s.strip_prefix("inline "));
+        match stripped {
+            Some(rest) => {
+                // Mark exported once we pass the first visibility modifier.
+                if s.starts_with("pub") || s.starts_with("export") || s.starts_with("public")
+                    || s.starts_with("protected") || s.starts_with("internal") {
+                    return true;
+                }
+                s = rest;
+            }
+            None => break,
+        }
+    }
+    false
 }
 
 /// Extract the defined name from a line starting with a definition keyword.
@@ -172,9 +209,9 @@ pub fn scan_repo(path: &str, config: &DeadConfig) -> Vec<DeadCandidate> {
         return Vec::new();
     }
 
-    // Global maps: name → total occurrences, name → definition locations.
+    // Global maps: name → total occurrences, name → (definition locations, exported).
     let mut all_counts: HashMap<String, usize> = HashMap::new();
-    let mut all_defs: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+    let mut all_defs: HashMap<String, (Vec<(String, usize)>, bool)> = HashMap::new();
 
     for file_path in &files {
         let content = match fs::read_to_string(file_path) {
@@ -187,15 +224,17 @@ pub fn scan_repo(path: &str, config: &DeadConfig) -> Vec<DeadCandidate> {
             *all_counts.entry(word).or_insert(0) += 1;
         }
 
-        // Collect definitions (with proper name extraction).
-        for (name, line) in extract_definitions(&content, config.min_name_len) {
-            all_defs.entry(name).or_default().push((file_path.clone(), line));
+        // Collect definitions (with proper name extraction + visibility).
+        for (name, line, exported) in extract_definitions(&content, config.min_name_len) {
+            let e = all_defs.entry(name).or_insert((Vec::new(), false));
+            e.0.push((file_path.clone(), line));
+            e.1 = e.1 || exported;
         }
     }
 
     // Test deadness: total_occurrences <= def_occurrences.
     let mut results = Vec::new();
-    for (name, locations) in &all_defs {
+    for (name, (locations, exported)) in &all_defs {
         // Skip dunders and all-digit names.
         if name.starts_with("__") || name.chars().all(|c| c.is_ascii_digit()) {
             continue;
@@ -215,9 +254,12 @@ pub fn scan_repo(path: &str, config: &DeadConfig) -> Vec<DeadCandidate> {
         let is_test_file = |p: &str| config.test_file_patterns.iter().any(|pat| p.contains(pat));
         let def_non_test = locations.iter().filter(|(f, _)| !is_test_file(f)).count();
 
+        // V80: `High` = exported (pub/export/public) but never used — the
+        // strongest signal. The old check required an ALL-CAPS name, but names
+        // are lowercased at extraction, so `High` was unreachable.
         let confidence = if def_non_test == 0 {
             Confidence::Low
-        } else if name.chars().all(|c| c.is_ascii_uppercase() || c == '_') && name.len() >= 5 {
+        } else if *exported {
             Confidence::High
         } else {
             Confidence::Medium
@@ -313,25 +355,29 @@ pub fn analyze_file(file: &str, _content: &str, config: &DeadConfig) -> Vec<Dead
 /// V13: cross-file analysis (carrion-style).
 pub fn analyze_files(files: &[(String, String)], config: &DeadConfig) -> Vec<DeadCandidate> {
     let mut all_counts: HashMap<String, usize> = HashMap::new();
-    let mut all_defs: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+    let mut all_defs: HashMap<String, (Vec<(String, usize)>, bool)> = HashMap::new();
 
     for (file, content) in files {
         for (word, _) in extract_words(content, config.min_name_len) {
             *all_counts.entry(word).or_insert(0) += 1;
         }
-        for (name, line) in extract_definitions(content, config.min_name_len) {
-            all_defs.entry(name).or_default().push((file.clone(), line));
+        for (name, line, exported) in extract_definitions(content, config.min_name_len) {
+            let e = all_defs.entry(name).or_insert((Vec::new(), false));
+            e.0.push((file.clone(), line));
+            e.1 = e.1 || exported;
         }
     }
 
     let mut results = Vec::new();
-    for (name, locations) in &all_defs {
+    for (name, (locations, exported)) in &all_defs {
         if name.starts_with("__") || is_entry_point(name) { continue; }
         let total_occ = *all_counts.get(name).unwrap_or(&0);
         let def_occ = locations.len();
         if total_occ > def_occ { continue; }
 
-        let confidence = if name.chars().all(|c| c.is_ascii_uppercase() || c == '_') && name.len() >= 5 {
+        // V80: exported-but-unused → High (the old ALL-CAPS check was dead code
+        // because names are lowercased at extraction).
+        let confidence = if *exported && name.len() >= 3 {
             Confidence::High
         } else if name.len() >= 5 {
             Confidence::Medium
@@ -505,20 +551,16 @@ mod tests {
 
     #[test]
     fn test_confidence_levels() {
-        // ALL_CAPS constant with no usage → High confidence.
-        // Note: names are lowercased during extraction, so the ALL_CAPS check
-        // in scan_repo tests the ORIGINAL case. analyze_files also lowercases.
-        // The High confidence path requires name.chars().all(is_ascii_uppercase).
-        // Since lowercased "max_buffer_size" is all lowercase, it gets Medium.
+        // V80: High = exported-but-unused; Medium = private-but-unused.
         let files = vec![
-            ("const.rs".to_string(), "const MAX_BUFFER_SIZE: usize = 4096;\n".to_string()),
+            ("exported.rs".to_string(), "pub fn orphan_public() {}\n".to_string()),
+            ("private.rs".to_string(), "fn orphan_private() {}\n".to_string()),
         ];
         let config = DeadConfig::default();
         let results = analyze_files(&files, &config);
-        let candidate = results.iter().find(|c| c.name == "max_buffer_size");
-        assert!(candidate.is_some(), "MAX_BUFFER_SIZE should be flagged");
-        // Names are lowercased → can't be ALL_CAPS → Medium confidence.
-        assert_eq!(candidate.unwrap().confidence, Confidence::Medium,
-                   "lowercased name gets Medium confidence");
+        let pubd = results.iter().find(|c| c.name == "orphan_public").expect("public orphan flagged");
+        assert_eq!(pubd.confidence, Confidence::High, "exported-but-unused is High");
+        let privd = results.iter().find(|c| c.name == "orphan_private").expect("private orphan flagged");
+        assert_eq!(privd.confidence, Confidence::Medium, "private-but-unused is Medium");
     }
 }

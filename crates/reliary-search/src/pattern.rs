@@ -131,16 +131,20 @@ pub fn best_context_key(
     _db: &Connection, _phrase_id: i64, anchor_file: &str, anchor_line: i32, stem: &str,
 ) -> (String, String) {
     // Arc 60 Phase 2: use file_meta cache instead of file read.
-    // V51: anchor_line from MCP is 1-indexed; file_lines is 0-indexed.
+    // V79: `anchor_line` is already 0-indexed — every caller passes the
+    // handler's `anchor_line - 1`, matching `context_key_at` (which uses the
+    // occurrence-table line directly). The old `saturating_sub(1)` here
+    // double-converted and read the line BELOW the anchor, so the anchor's
+    // context key was wrong.
+    let li0 = anchor_line.max(0) as usize;
     let line_text = if let Some(m) = crate::file_meta::get(anchor_file) {
-        let li = anchor_line.saturating_sub(1) as usize;
-        if li < m.lines.len() { m.lines[li].clone() } else { return (String::new(), String::new()); }
+        if li0 < m.lines.len() { m.lines[li0].clone() } else { return (String::new(), String::new()); }
     } else {
         let content = match std::fs::read_to_string(anchor_file) {
             Ok(c) => c,
             Err(_) => return (String::new(), String::new()),
         };
-        match content.lines().nth(anchor_line.saturating_sub(1) as usize) {
+        match content.lines().nth(li0) {
             Some(l) => l.to_string(),
             None => return (String::new(), String::new()),
         }

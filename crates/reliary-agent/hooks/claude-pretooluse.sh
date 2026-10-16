@@ -3,13 +3,15 @@
 # Rewrites high-volume bash commands (git, cargo, pytest, ls, grep, etc.)
 # to pipe through `reliary wrap` for sift compression — the RTK pattern.
 #
-# Opt-in via RELIARY_SIFT_BASH=1. Default OFF (preserves prior behavior).
+# Default ON (RTK parity). Set RELIARY_SIFT_BASH=0 to disable.
 #
 # Skip rewrite if:
-#   - RELIARY_SIFT_BASH != 1
+#   - RELIARY_SIFT_BASH = 0
 #   - command contains shell chaining (|, >, <, &&, ;, ||, $(, `)
 #   - command contains --no-sift
 #   - command is a piped-through command (already starts with `reliary wrap`)
+#   - command is an interactive pager (less/more) or a source read (handled
+#     by the wrap passthrough)
 #
 # Cache safety: identical command → identical compressed output (sift
 # pipeline is now deterministic + first-appearance freeze at MCP layer).
@@ -129,8 +131,12 @@ case "$first_word" in
   # Linters / formatters
   ruff|eslint|prettier|biome|black|isort|flake8|mypy|pylint|shellcheck|golangci-lint|rubocop|clippy-driver|rustfmt)
     should_rewrite=1 ;;
-  # File operations — verbose on large dirs
-  ls|tree|find|fd|rg|ag|grep|ack|delta|bat|less|more|head|tail|wc|du|df|stat|file|xxd)
+  # File operations — verbose on large dirs.
+  # V80: `less`/`more` are interactive TTY pagers — wrapping them in
+  # `reliary wrap bash -c` breaks them (they need the terminal). `head`/`tail`
+  # are left out too: they are frequently used to read a source file, which the
+  # wrap passthrough already handles. `bat` is a pager by default as well.
+  ls|tree|find|fd|rg|ag|grep|ack|delta|wc|du|df|stat|file|xxd)
     should_rewrite=1 ;;
   # Container / k8s
   docker|podman|kubectl|kubectx|minikube|helm|docker-compose|nerdctl)
@@ -150,5 +156,9 @@ fi
 escaped_cmd=$(printf '%s' "$cmd" | sed "s/'/'\\\\''/g")
 new_cmd="'$RELIARY_BIN' wrap bash -c '$escaped_cmd'"
 # Current Claude Code PreToolUse contract: permissionDecision + updatedInput.
-# (The legacy {"tool_input":...} shape is ignored by current versions.)
-jq -n --arg cmd "$new_cmd" '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":$cmd}}}' 
+# updatedInput REPLACES the whole tool input, so preserve any other Bash fields
+# (timeout/description/run_in_background) by starting from the original object
+# and only replacing `command`.
+echo "$input" | jq --arg cmd "$new_cmd" \
+  '(.tool_input // {}) as $ti
+   | {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":($ti + {command:$cmd})}}'

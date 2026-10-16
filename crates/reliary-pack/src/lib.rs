@@ -198,6 +198,16 @@ pub fn generate_pack(path: &str, format: PackFormat) -> Result<String, String> {
     reliary_search::schema::open_existing_db_safe(&db)
         .map_err(|e| format!("index not initialized: {}", e))?;
 
+    // V80: symbols live in the `occurrence` table, which `trust` leaves empty
+    // (lazy index). Build it once so `reliary pack` on a freshly trusted repo
+    // returns symbols instead of "(0 symbols)". Idempotent.
+    let has_any: i64 = db
+        .query_row("SELECT EXISTS(SELECT 1 FROM occurrence LIMIT 1)", [], |r| r.get(0))
+        .unwrap_or(1);
+    if has_any == 0 {
+        let _ = reliary_search::lazy_occurrence::build_all_occurrence(&db);
+    }
+
     // 1. Extract all definition symbols from the index
     let symbols = extract_symbols_from_index(&db)?;
 
@@ -490,7 +500,11 @@ pub fn parse_pack_entries(pack: &str) -> Vec<PackEntry> {
                     body: std::mem::take(&mut current_body),
                 });
             }
-            current_name = Some(line.strip_prefix("///").unwrap_or(line).split('/').next().unwrap_or("").trim().to_string());
+            // Strip the `## ` header marker before taking the name; the old
+            // `strip_prefix("///")` never matched so the name was "## skeleton",
+            // which broke cross-ref expansion (keys never matched entry names).
+            let after = line.strip_prefix("## ").unwrap_or(line);
+            current_name = Some(after.split('/').next().unwrap_or("").trim().to_string());
             current_header = line.to_string();
         } else if current_name.is_some() {
             if !current_body.is_empty() {
@@ -917,13 +931,25 @@ fn extract_symbols_from_index(db: &Connection) -> Result<Vec<Symbol>, String> {
         // Read the source line for the signature
         let signature = read_signature_line(lines, line);
 
-        // GRAMMAR-FREE DEFINITION FILTER:
-        if !is_definition_like(&signature) {
-            continue;
-        }
-
-        // Extract the REAL function name from the signature line
-        let real_name = extract_name_from_signature(&signature);
+        // V80: use the SAME grammar-free classifier that ingest used to write
+        // the is_def=1 flag, instead of the pack's own Rust/JS/TS-shaped
+        // heuristic. The old `is_definition_like`/`extract_name_from_signature`
+        // pair only recognised Rust/JS/TS declarations, so a C#/Java/Kotlin
+        // repo packed 0 symbols and a mixed repo silently dropped its whole
+        // non-JS backend. The classifier handles every language the index does.
+        let ends_with_brace = signature.trim_end().ends_with('{');
+        let classified =
+            reliary_search::structural::classify_structural(&signature, 0, ends_with_brace, false);
+        let real_name = if classified.is_def {
+            classified.defined_name.map(|s| s.to_string()).unwrap_or_default()
+        } else if is_definition_like(&signature) {
+            // Fallback for a definition line the shared classifier does not
+            // flag (e.g. a syntax family it does not model) — keeps the old
+            // heuristic as a backstop so nothing regresses.
+            extract_name_from_signature(&signature)
+        } else {
+            String::new()
+        };
         if real_name.len() < 3 {
             continue;
         }
@@ -1053,12 +1079,18 @@ fn is_source_file(path: &str) -> bool {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
+    // V80: this list is the ONLY gate before a file's symbols can enter the
+    // pack. It omitted `cs`, so a .NET repo packed 0 symbols and a mixed repo
+    // silently dropped its entire C# backend (no warning). It also omitted the
+    // other common source languages the index already handles. Grammar-free:
+    // a citation-shape extension list, mirroring the verify extractor.
     matches!(
         ext,
-        "rs" | "py" | "ts" | "tsx" | "js" | "jsx"
-            | "go" | "java" | "c" | "h" | "cpp" | "cc" | "cxx"
-            | "rb" | "swift" | "kt" | "scala" | "clj" | "ex" | "exs"
-            | "elm" | "fs" | "ml" | "hs" | "lua" | "php" | "pl"
+        "rs" | "py" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
+            | "go" | "java" | "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "hh"
+            | "rb" | "swift" | "kt" | "kts" | "scala" | "clj" | "ex" | "exs"
+            | "elm" | "fs" | "fsx" | "ml" | "mli" | "hs" | "lua" | "php" | "pl"
+            | "cs" | "dart" | "groovy" | "m" | "mm" | "jl" | "r" | "v"
     )
 }
 
@@ -1889,7 +1921,9 @@ fn manual_capture_range(text: &str) -> Option<String> {
 
 fn manual_capture_sentinel(text: &str) -> Option<String> {
     if let Some(idx) = text.find("is_empty") {
-        let after = &text[idx + 9..];
+        // idx + 9 may exceed the string when "is_empty" is the trailing text;
+        // a fixed byte offset then panicked the whole pack build.
+        let after = text.get(idx + 9..)?;
         if let Some(ret_idx) = after.find("return") {
             let after_ret = &after[ret_idx + 6..];
             let end = after_ret
@@ -2322,9 +2356,19 @@ fn derive_crate_name(file_path: &str) -> String {
             return parts[i + 1].to_string();
         }
     }
-    // Fallback: parent directory name
+    // Fallback: the parent directory name, but only when it is a *meaningful*
+    // disambiguator. A generic source-root directory (src, lib, app, source,
+    // tests, …) is not — using it produced headers like `Foo/src`, which reads
+    // as part of the symbol name and is pure noise on flat layouts.
     if parts.len() >= 2 {
-        return parts[parts.len() - 2].to_string();
+        let parent = parts[parts.len() - 2];
+        const GENERIC: &[&str] = &[
+            "src", "lib", "app", "apps", "source", "sources", "test", "tests",
+            "spec", "specs", "bin", "cmd", "main", "code", "internal", "pkg",
+        ];
+        if !GENERIC.contains(&parent) {
+            return parent.to_string();
+        }
     }
     String::new()
 }
@@ -2584,6 +2628,18 @@ mod noise_tests {
                 "expected to be preserved as signal: {:?}",
                 line
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod v80_panic_tests {
+    use super::*;
+    #[test]
+    fn manual_capture_sentinel_no_panic() {
+        // Various edge shapes that put the needle near the end.
+        for t in ["is_empty", "x is_empty", "// is_empty", "if self.is_empty", "is_empty\nreturn x;"] {
+            let _ = manual_capture_sentinel(t); // must not panic
         }
     }
 }

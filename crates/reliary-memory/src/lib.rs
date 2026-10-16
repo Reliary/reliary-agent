@@ -335,14 +335,26 @@ impl MemoryStore {
         hv
     }
 
-    /// Encode a query into a hypervector (sum of token HVs)
+    /// Encode a query into a hypervector.
+    ///
+    /// V80: this used `bundle_into` from an all-`-1` HV. `bundle_into` keeps the
+    /// accumulator's bit on a tie, and every tie starts as `-1`, so the result
+    /// collapsed toward all-`-1` (or, once two tokens tie, stayed put) — every
+    /// query scored a near-uniform 1.0 against every memory. Encode by the same
+    /// deterministic majority vote as `encode_tokens`: for each dim set +1 iff
+    /// more than half the *recognised* token HVs vote +1. Unknown tokens are
+    /// ignored (the store has no vector for them).
     pub fn encode_query(&self, query: &str) -> Hypervector {
         let tokens = scan_tokens(query);
+        let hvs: Vec<&Hypervector> = tokens.iter()
+            .filter_map(|t| self.token_hvs.get(t))
+            .collect();
         let mut hv = Hypervector::new(self.dims);
-        for t in tokens {
-            if let Some(thv) = self.token_hvs.get(&t) {
-                hv.bundle_into(thv);
-            }
+        let k = hvs.len();
+        if k == 0 { return hv; }
+        for i in 0..self.dims {
+            let ones = hvs.iter().filter(|h| h.get(i) == 1).count();
+            if ones * 2 > k { hv.set(i, 1); } else { hv.set(i, -1); }
         }
         hv
     }
@@ -476,5 +488,23 @@ mod tests {
     fn test_empty_store() {
         let store = MemoryStore::new(100);
         assert!(store.recall("anything", 5).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod v80_recall_tests {
+    use super::*;
+    #[test]
+    fn recall_discriminates_between_queries() {
+        let mut store = MemoryStore::new(2048);
+        store.retain("Alice works at Google", "user", false);
+        store.retain("Bob writes Rust compilers", "user", false);
+        store.retain("weather is sunny today", "user", false);
+        let alice = store.recall("Alice works at Google", 3);
+        let zzz = store.recall("zzzz qqqq unrelated", 3);
+        // The top result for the exact query must outscore an unrelated query's
+        // top result; both must NOT be a uniform 1.0.
+        assert!(alice[0].score > zzz[0].score, "scores collapse: exact={} unrelated={}", alice[0].score, zzz[0].score);
+        assert!(alice[0].score > 0.2, "exact-query score too low: {}", alice[0].score);
     }
 }

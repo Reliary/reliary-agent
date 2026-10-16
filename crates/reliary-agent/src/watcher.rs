@@ -61,12 +61,17 @@ fn is_supported(path: &Path) -> bool {
 fn detect_project_root(start: &Path) -> Option<PathBuf> {
     let mut cur = start.to_path_buf();
     loop {
-        // Prefer .git/ as the project marker (works even before auto-trust)
-        if cur.join(".git").exists() {
+        // V79: prefer an existing trusted index. This matches the tool
+        // resolver and auto-trust (`resolve_index_root` / `auto_trust_if_needed`)
+        // — a package nested inside a larger git repo is watched at the package
+        // root, not the repo root. Preferring `.git` fired the watcher at the
+        // repo root, whose reindex targeted `<gitroot>/.reliary` (which may not
+        // exist), so edits in the package were silently never reindexed.
+        if cur.join(".reliary").join("index.sqlite").exists() {
             return Some(cur);
         }
-        // Fall back to existing .reliary/ (for non-git repos already trusted)
-        if cur.join(".reliary").join("index.sqlite").exists() {
+        // Fall back to .git/ (works before the project is trusted).
+        if cur.join(".git").exists() {
             return Some(cur);
         }
         if !cur.pop() {

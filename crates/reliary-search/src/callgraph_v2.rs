@@ -57,7 +57,7 @@ const STOPWORDS: &[&str] = &[
     "derive", "repr", "track_caller", "cold", "inline", "noinline",
 ];
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct Callee {
     pub name: String,
     pub def_file: Option<String>,
@@ -66,7 +66,7 @@ pub struct Callee {
     pub source: String,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct Caller {
     pub name: String,
     pub file: String,
@@ -295,7 +295,15 @@ fn find_definition(db: &Connection, name: &str) -> Option<(String, i32)> {
                         Ok(v) => v,
                         Err(e) => { eprintln!("[callgraph_v2] find_definition row get: {}", e); continue; }
                     };
-                    if find_function_body(&fp, ln + 1).is_some() {
+                    let tag: i64 = r.get(2).unwrap_or(0);
+                    // V78: a type definition (tag 2) is a valid anchor even when
+                    // it has no brace body on its own line or at all — `public
+                    // interface IFoo`, `class Bar : Base`, Python `Protocol`.
+                    // Requiring a function body silently rejected every body-less
+                    // declaration, so `find_definition`/`impact` returned "no
+                    // definition found" for real, indexed types. Function-like
+                    // defs still require a body to avoid anchoring on a stale row.
+                    if tag == 2 || find_function_body(&fp, ln + 1).is_some() {
                         return Some((fp, ln + 1));
                     }
                 }
@@ -826,11 +834,14 @@ fn build_callers(
         // paths like "bench/reliary_bench.py" have no leading separator).
         // V74: impact/test-plan pass include_tests=true to keep them.
         let fp = &h.file_path;
+        // V79: use the shared test-path classifier so C#/Java/Kotlin
+        // `FooTests.cs` / `FooTest.java` conventions are excluded too (the old
+        // inline check only knew Rust `_test.rs`/`/tests/`).
         if !include_tests
-            && (fp.contains("/tests/") || fp.contains("/test/") || fp.contains("/examples/")
-                || fp.contains("/benches/") || fp.contains("/bench/") || fp.starts_with("bench/")
-                || fp.starts_with("/bench/") || fp.ends_with("_test.rs")
-                || fp.ends_with("_tests.rs"))
+            && (crate::impact::is_test_path(fp)
+                || fp.contains("/examples/") || fp.contains("/benches/")
+                || fp.contains("/bench/") || fp.starts_with("bench/")
+                || fp.starts_with("/bench/"))
         {
             continue;
         }
@@ -926,7 +937,7 @@ fn build_callers(
 
 // ── Phase C: methods_on type ──
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct MethodOn {
     pub name: String,
     pub file: String,
@@ -1005,7 +1016,9 @@ pub fn find_trait_impls_scoped(
     let mut stmt = match db.prepare_cached(
         // V59: no LIMIT — 707 files scanned in ~50ms via cached file_meta;
         // a 400-file alphabetical cut silently excluded valid impl sites.
-        "SELECT file_path FROM file_map WHERE file_path LIKE '%.rs' ORDER BY file_path",
+        // V79: no `.rs` filter — C#/Java implement interfaces via `: IFoo` /
+        // `implements IFoo`, handled below.
+        "SELECT file_path FROM file_map WHERE is_source = 1 ORDER BY file_path",
     ) {
         Ok(s) => s,
         Err(_) => return out,
@@ -1090,6 +1103,35 @@ pub fn find_trait_impls_scoped(
                     }
                 }
             }
+            // Pattern 3: C#/Java/Kotlin interface implementation —
+            //   `class Foo : IBar`      (C#/Kotlin base/interface list)
+            //   `class Foo implements IBar, IBaz`  (Java)
+            // The trait name appears in a comma-separated list after the
+            // `:`/`implements`; the implemented TYPE is the identifier before
+            // it. Grammar-free: locate the separator, split the tail on
+            // commas, compare each entry's leading identifier to the trait.
+            if let Some((sep_at, sep_len)) = impl_separator(t, trait_name) {
+                let head = t[..sep_at].trim_end();
+                if let Some(ty) = last_ident(head) {
+                    let tail = &t[sep_at + sep_len..];
+                    let has_trait = tail.split(',').any(|e| {
+                        let e = e.trim();
+                        let id: String = e
+                            .chars()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
+                            .collect();
+                        let id = id.rsplit('.').next().unwrap_or(&id);
+                        id == trait_name
+                    });
+                    if has_trait && !ty.is_empty() {
+                        out.push(TraitImpl {
+                            type_name: ty.to_string(),
+                            file: fp.clone(),
+                            line: i as i32 + 1,
+                        });
+                    }
+                }
+            }
             i += 1;
         }
         if out.len() >= 20 {
@@ -1097,6 +1139,227 @@ pub fn find_trait_impls_scoped(
         }
     }
     out
+}
+
+/// V79: if `line` declares a type that implements `trait_name` via a
+/// `:`/`implements` list, return the byte offset and length of the separator.
+/// Grammar-free: the separator is `implements` (Java) or a `:` that is NOT a
+/// field annotation/ternary — we require the line to also contain `class`,
+/// `struct`, `record`, or `enum` so a C# property initialiser cannot match.
+fn impl_separator(line: &str, trait_name: &str) -> Option<(usize, usize)> {
+    if !line.contains(trait_name) { return None; }
+    let has_type_kw = line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|w| matches!(w, "class" | "struct" | "record" | "enum" | "interface"));
+    if !has_type_kw { return None; }
+    if let Some(pos) = find_word(line, "implements") {
+        return Some((pos, "implements".len()));
+    }
+    // C#/Kotlin `:` — take the FIRST colon that is followed later by the trait
+    // name on the same line (so `class Foo : ControllerBase, IBar` works).
+    if let Some(colon) = line.find(':') {
+        if line[colon..].contains(trait_name) {
+            return Some((colon, 1));
+        }
+    }
+    None
+}
+
+/// Find a whole-word occurrence of `needle` (ASCII word boundaries).
+fn find_word(haystack: &str, needle: &str) -> Option<usize> {
+    let b = haystack.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = haystack[from..].find(needle) {
+        let pos = from + rel;
+        let before_ok = pos == 0
+            || !(b[pos - 1].is_ascii_alphanumeric() || b[pos - 1] == b'_');
+        let after = pos + needle.len();
+        let after_ok = after >= b.len()
+            || !(b[after].is_ascii_alphanumeric() || b[after] == b'_');
+        if before_ok && after_ok {
+            return Some(pos);
+        }
+        from = pos + needle.len();
+    }
+    None
+}
+
+/// Last identifier in a string (letters/digits/underscore, starting with a
+/// letter or underscore). Grammar-free token scan.
+fn last_ident(s: &str) -> Option<&str> {
+    let b = s.as_bytes();
+    let end = b.iter().rposition(|&c| c.is_ascii_alphanumeric() || c == b'_')? + 1;
+    let mut start = end;
+    while start > 0 && (b[start - 1].is_ascii_alphanumeric() || b[start - 1] == b'_') {
+        start -= 1;
+    }
+    let first = b[start];
+    if !(first.is_ascii_alphabetic() || first == b'_') { return None; }
+    Some(&s[start..end])
+}
+
+/// V79: does the declaration carry a C#/Java/TS visibility qualifier?
+/// Grammar-free: leading/member word scan.
+fn is_public_decl(text: &str) -> bool {
+    const MODS: &[&str] = &["public", "protected", "internal", "open"];
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|w| MODS.contains(&w))
+}
+
+/// V79: strip leading field/declaration modifiers (`pub`, `pub(crate)`,
+/// `private`, `readonly`, `static`, `const`, `final`, `public`, …) from a
+/// declaration head. Grammar-free: word scan against a modifier set.
+fn strip_leading_modifiers(s: &str) -> &str {
+    const MODS: &[&str] = &[
+        "pub", "private", "protected", "public", "internal", "readonly",
+        "static", "const", "final", "volatile", "transient", "open", "export",
+        "unsafe", "late", "mut", "sealed",
+    ];
+    let mut cur = s;
+    loop {
+        let t = cur.trim_start();
+        // Handle `pub(...)` qualifier form.
+        if let Some(rest) = t.strip_prefix("pub") {
+            if let Some(inner) = rest.strip_prefix('(') {
+                if let Some(close) = inner.find(')') {
+                    cur = &inner[close + 1..];
+                    continue;
+                }
+            }
+        }
+        let word: &str = t
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or("");
+        if !word.is_empty() && t.len() > word.len() && MODS.contains(&word) {
+            cur = &t[word.len()..];
+            continue;
+        }
+        return t;
+    }
+}
+
+/// V79: Extract a member field from a line inside a type body.
+///   Rust/Go: `[pub] name: Type`
+///   C#/Java/Kotlin/Swift: `[mods] Type name;` / `= init;` / `{ get; set; }`
+/// Returns (name, type/rhs text). Grammar-free: token shapes only.
+fn field_from_line(t: &str) -> Option<(String, String)> {
+    if t.contains('(') || t.contains(')') { return None; }
+    // Rust/Go `[pub] name: Type`.
+    if let Some(colon) = t.find(':') {
+        let head = strip_leading_modifiers(t[..colon].trim());
+        if head.is_empty() { return None; }
+        // A field has exactly the identifier before the colon (`name: Type`).
+        let name = last_ident(head)?;
+        if name.len() != head.len() { return None; }
+        let ftype = t[colon + 1..].trim().trim_end_matches(',').trim().to_string();
+        if ftype.is_empty() { return None; }
+        return Some((name.to_string(), ftype));
+    }
+    // C#/Java: head before the first `;`, `=`, or body `{`.
+    let head_end = t.char_indices()
+        .find(|(_, c)| *c == ';' || *c == '=' || *c == '{')
+        .map(|(i, _)| i)?;
+    let head = strip_leading_modifiers(t[..head_end].trim());
+    if head.is_empty() { return None; }
+    let name = last_ident(head)?;
+    let idx = head.len() - name.len();
+    let ftype = head[..idx].trim().to_string();
+    if ftype.is_empty() { return None; }
+    Some((name.to_string(), ftype))
+}
+
+/// V79: scan a type's own brace-delimited body for member methods and fields.
+/// Used when no `impl` block exists (every non-Rust language). Grammar-free:
+/// brace matching for extent, the shared classifier for member lines.
+fn scan_type_body_for_members(file_path: &str, type_name: &str, out: &mut Vec<MethodOn>) {
+    let content = match std::fs::read_to_string(file_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    // Locate the type declaration line.
+    let mut decl: Option<usize> = None;
+    for (li, raw) in lines.iter().enumerate() {
+        let r = crate::structural::classify_structural(raw, 0, raw.trim_end().ends_with('{'), false);
+        if r.is_def && r.tag == 2 && r.defined_name == Some(type_name) {
+            decl = Some(li);
+            break;
+        }
+    }
+    let Some(decl) = decl else { return; };
+    // Body extent: brace matching from the declaration line (handles the
+    // Allman style where `{` is on the following line).
+    let mut depth: i32 = 0;
+    let mut started = false;
+    let mut end = lines.len();
+    for (li, line) in lines.iter().enumerate().skip(decl) {
+        let code = crate::structural::strip_line_comment(line);
+        let o = code.matches('{').count() as i32;
+        let c = code.matches('}').count() as i32;
+        depth += o - c;
+        if o > 0 { started = true; }
+        if started && depth <= 0 { end = li; break; }
+    }
+    // Walk direct members. `inner` is the brace depth *inside* the body, so
+    // direct members sit at inner == 0 (a member's own `{ … }` body, e.g. a
+    // accessor, is entered and left within the same line or a nested line).
+    let mut inner: i32 = 0;
+    let mut opened = false;
+    for (li, line) in lines.iter().enumerate().take(end).skip(decl) {
+        let raw = line;
+        let code = crate::structural::strip_line_comment(raw);
+        let o = code.matches('{').count() as i32;
+        let c = code.matches('}').count() as i32;
+        if !opened {
+            // Skip the declaration and its opening brace.
+            inner += o - c;
+            if o > 0 { opened = true; }
+            continue;
+        }
+        let t = code.trim();
+        // Direct members sit just inside the body brace (inner == 1). Exclude
+        // lone braces and blank/comment lines: a member carries an identifier.
+        let is_member = inner == 1
+            && t.chars().any(|c| c.is_ascii_alphanumeric())
+            && !t.starts_with('{')
+            && !t.starts_with('}');
+        inner += o - c;
+        if inner < 0 { inner = 0; }
+        if !is_member { continue; }
+        let trimmed = raw.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+            continue;
+        }
+        let vis = is_pub_decl(trimmed) || is_public_decl(trimmed);
+        if trimmed.contains('(') {
+            // A member method/constructor: a real function definition.
+            let r = crate::structural::classify_structural(raw, 1, false, false);
+            if r.is_def && r.tag == 1 {
+                if let Some(name) = r.defined_name {
+                    out.push(MethodOn {
+                        name: name.to_string(),
+                        file: file_path.to_string(),
+                        line: (li + 1) as i32,
+                        source: trimmed.to_string(),
+                        is_pub: vis,
+                        is_field: false,
+                    });
+                }
+            }
+            continue;
+        }
+        // A property/field line.
+        if let Some((name, ftype)) = field_from_line(t) {
+            out.push(MethodOn {
+                name,
+                file: file_path.to_string(),
+                line: (li + 1) as i32,
+                source: ftype,
+                is_pub: vis,
+                is_field: true,
+            });
+        }
+    }
 }
 
 /// Grammar-free: extract the identifier following `struct`/`enum`/`union`
@@ -1134,10 +1397,11 @@ pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<Met
         if let Err(e) = ensure_occurrence_for_phrase(db, pid) {
             eprintln!("[callgraph_v2] ensure_occurrence_for_phrase failed for pid={}: {}", pid, e);
         }
+        // V79: no `.rs` filter — the type lives in any source language.
         let mut stmt = db.prepare_cached(
             "SELECT DISTINCT f.file_path FROM occurrence o
              JOIN file_map f ON f.id = o.file_id
-             WHERE o.phrase_id = ?1 AND f.file_path LIKE '%.rs'
+             WHERE o.phrase_id = ?1 AND f.is_source = 1
              ORDER BY f.file_path",
         )?;
         let mut rows = stmt.query(rusqlite::params![pid])?;
@@ -1151,7 +1415,7 @@ pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<Met
     // definition line (grammar-free, no index dependence).
     if files.is_empty() && !type_name.is_empty() {
                 if let Ok(mut stmt) = db.prepare_cached(
-            "SELECT file_path FROM file_map WHERE file_path LIKE '%.rs' ORDER BY file_path LIMIT 400"
+            "SELECT file_path FROM file_map WHERE is_source = 1 ORDER BY file_path LIMIT 400"
         ) {
             let mut rows = stmt.query(rusqlite::params![])?;
             let mut candidates: Vec<String> = Vec::new();
@@ -1190,87 +1454,28 @@ pub fn find_methods_on(db: &Connection, type_name: &str) -> rusqlite::Result<Met
     methods.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
     methods.dedup_by(|a, b| a.file == b.file && a.line == b.line);
 
-    // V57: fallback — if a type has no impl methods, list its struct FIELDS
-    // (grammar-free: lines of `name: Type` inside the type's definition block).
+    // V79: language-general fallback — scan the type's OWN declaration block
+    // for members. Rust keeps methods in `impl` blocks (handled above), but
+    // C#/Java/Kotlin/Swift/TS/Python/Go declare methods and fields directly
+    // inside `class Foo { … }`, so the impl-block scan above finds nothing and
+    // `list_methods` returned empty for every non-Rust type. This walks the
+    // type's brace-delimited body and classifies each member line with the
+    // same grammar-free classifier used everywhere else.
     if methods.is_empty() {
-        let mut fields: Vec<(String, String, String, i64, bool)> = Vec::new();
+        let mut entries: Vec<MethodOn> = Vec::new();
         for fp in &files {
-            // Direct line scan — no brace-graph dependency (the graph can be
-            // stale/empty from the file_meta cache for freshly-added files).
-            let content = std::fs::read_to_string(fp).unwrap_or_default();
-            let lines: Vec<&str> = content.lines().collect();
-            let mut in_struct = false;
-            let mut struct_depth = 0usize;
-            for (li, line) in lines.iter().enumerate() {
-                let t = line.trim_start();
-                if !in_struct {
-                    let is_struct_line = t.starts_with("struct ") || t.starts_with("class ")
-                        || t.starts_with("pub struct ") || t.starts_with("pub(crate) struct ");
-                    if is_struct_line && t.contains(type_name) {
-                        in_struct = true;
-                        // V60: start at 0 — the struct line's own `{` (if any)
-                        // counts below. A struct without a brace on the decl
-                        // line (multi-line `struct Foo\n{`) still enters via
-                        // the next line's `{`.
-                        struct_depth = 0;
-                        continue;
-                    }
-                    continue;
-                }
-                // Inside the struct block: track brace depth to find the end.
-                let opens = t.matches('{').count();
-                let closes = t.matches('}').count();
-                if opens > 0 { struct_depth += opens; }
-                if closes > 0 {
-                    struct_depth = struct_depth.saturating_sub(closes);
-                    // V60: exit the struct block entirely when it closes so
-                    // later lines (tests, other code) aren't scanned as fields.
-                    // The `if !in_struct` branch re-enters for the 2nd+ structs.
-                    if struct_depth == 0 {
-                        in_struct = false;
-                        continue;
-                    }
-                }
-                if opens > 0 { continue; }
-                // Field line: `name: Type` (not a method/comment).
-                if t.contains(':') && !t.starts_with("//") && !t.starts_with("///")
-                    && !t.starts_with('#') && !t.contains("fn ") && !t.contains("impl ")
-                {
-                    if let Some(colon) = t.find(':') {
-                        let before = t[..colon].trim();
-                        // Strip visibility prefix: `pub name: T`, `pub(crate) name: T`.
-                        let mut toks = before.split_whitespace();
-                        let first = toks.next().unwrap_or("");
-                        let vis = first == "pub"
-                            || first == "pub(crate)"
-                            || first == "pub(super)"
-                            || first.starts_with("pub(");
-                        let name = if vis {
-                            toks.next().unwrap_or("")
-                        } else {
-                            first
-                        };
-                        if !name.is_empty()
-                            && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
-                        {
-                            // V59g: capture the field TYPE for evidence output.
-                            let ftype = t[colon + 1..].trim().trim_end_matches(',').to_string();
-                            fields.push((name.to_string(), ftype, fp.clone(), (li + 1) as i64, vis));
-                        }
-                    }
-                }
-            }
+            scan_type_body_for_members(fp, type_name, &mut entries);
         }
-        // Dedupe by (name, file): a struct scan can see the same block twice
-        // (multiple type-name matches), but two DISTINCT fields that happen to
-        // share a type (`x: i32` and `y: i32`) must both survive. The old key
-        // was (type, file), which silently dropped every same-typed field after
-        // the first.
-        fields.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
-        fields.dedup_by(|a, b| a.0 == b.0 && a.2 == b.2);
-        for (fname, ftype, ffile, fline, fpub) in fields {
-            methods.push(MethodOn { name: fname, file: ffile, line: fline as i32, source: ftype, is_pub: fpub, is_field: true });
-        }
+        // Methods first (they answer the headline question), fields after.
+        entries.sort_by(|a, b| {
+            a.is_field.cmp(&b.is_field)
+                .then_with(|| a.line.cmp(&b.line))
+                .then_with(|| a.name.cmp(&b.name))
+                .then_with(|| a.file.cmp(&b.file))
+        });
+        // Dedupe by (name, file, line) — the same member must not appear twice.
+        entries.dedup_by(|a, b| a.name == b.name && a.file == b.file && a.line == b.line);
+        methods = entries;
     }
 
     related_types.sort();
@@ -1629,6 +1834,48 @@ mod v75_tests {
         assert_eq!(y.line, 3, "field y is on line 3, got {}", y.line);
         assert!(!y.is_pub, "y is private");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn impl_separator_detects_csharp_java_interfaces() {
+        // C# base/interface list.
+        let (pos, len) = impl_separator("public class RoleService : IRoleService", "IRoleService")
+            .expect("C# `:` separator");
+        assert_eq!(&"public class RoleService : IRoleService"[pos..pos + len], ":");
+        // Java implements, multiple interfaces.
+        let (pos, len) = impl_separator("class UserService implements Serializable, Cloneable", "Cloneable")
+            .expect("Java implements");
+        assert_eq!(&"class UserService implements Serializable, Cloneable"[pos..pos + len], "implements");
+        // Negative controls: a C# property is not a class decl; a ternary is not.
+        assert!(impl_separator("public int X { get; set; } :", "X").is_none());
+        assert!(impl_separator("int x = c ? a : b", "b").is_none());
+        // A field of the trait's type is not an implementation.
+        assert!(impl_separator("private IRoleService _svc;", "IRoleService").is_none());
+    }
+
+    #[test]
+    fn scan_type_body_finds_csharp_members() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("reliary_v79_{}", nanos));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("Svc.cs");
+        // Brace on the next line (Allman), a field, and a method.
+        std::fs::write(&f, "public sealed class Svc : ControllerBase\n{\n    private readonly IRepo _repo;\n\n    public async Task<IActionResult> GetAsync(Guid id)\n    {\n        return Ok();\n    }\n}\n").unwrap();
+        let mut out = Vec::new();
+        scan_type_body_for_members(f.to_str().unwrap(), "Svc", &mut out);
+
+        let m = out.iter().find(|x| x.name == "GetAsync").expect("method GetAsync found");
+        assert!(!m.is_field, "GetAsync is a method");
+        assert!(m.is_pub, "public GetAsync");
+        let fld = out.iter().find(|x| x.name == "_repo").expect("field _repo found");
+        assert!(fld.is_field, "_repo is a field");
+        assert_eq!(fld.source, "IRepo", "field type captured");
+        // A non-type must yield nothing.
+        let mut none = Vec::new();
+        scan_type_body_for_members(f.to_str().unwrap(), "NotAType", &mut none);
+        assert!(none.is_empty(), "unknown type must produce no members");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

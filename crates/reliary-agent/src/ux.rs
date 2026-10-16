@@ -11,10 +11,17 @@ pub fn with_spinner<F, T>(msg: &str, f: F) -> T
 where
     F: FnOnce() -> T,
 {
-    eprint!("{} ... ", msg);
-    let _ = std::io::stderr().flush();
+    // P1/P2: no fake animation, no ANSI when piped, suppressed under -q/json
+    // by callers routing through here only on TTY. Plain stderr line otherwise.
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    if tty {
+        eprint!("{} ... ", msg);
+        let _ = std::io::stderr().flush();
+    }
     let result = f();
-    eprint!("\r\x1b[K");
+    if tty && colors_on() {
+        eprint!("\r\x1b[K");
+    }
     result
 }
 
@@ -22,12 +29,25 @@ fn home_dir() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
-fn color() -> &'static str { "\x1b[1m\x1b[32m" }
-fn reset() -> &'static str { "\x1b[0m" }
-fn dim() -> &'static str { "\x1b[2m" }
-fn blue() -> &'static str { "\x1b[34m" }
-fn red() -> &'static str { "\x1b[31m" }
-fn yellow() -> &'static str { "\x1b[33m" }
+fn colors_on() -> bool {
+    if std::env::var("NO_COLOR").is_ok() { return false; }
+    if std::env::var("TERM").map(|t| t == "dumb").unwrap_or(false) { return false; }
+    if std::env::var("CLICOLOR").map(|v| v == "0").unwrap_or(false) { return false; }
+    // Piped output is never colored unless explicitly forced.
+    if std::env::var("CLICOLOR_FORCE").map(|v| v != "0").unwrap_or(false) { return true; }
+    std::io::IsTerminal::is_terminal(&std::io::stderr())
+}
+
+fn color() -> &'static str { if colors_on() { "\x1b[1m\x1b[32m" } else { "" } }
+fn reset() -> &'static str { if colors_on() { "\x1b[0m" } else { "" } }
+fn dim() -> &'static str { if colors_on() { "\x1b[2m" } else { "" } }
+fn blue() -> &'static str { if colors_on() { "\x1b[34m" } else { "" } }
+fn red() -> &'static str { if colors_on() { "\x1b[31m" } else { "" } }
+fn yellow() -> &'static str { if colors_on() { "\x1b[33m" } else { "" } }
+
+/// Shared color gate used by `main.rs` and `init.rs` so every command honors
+/// `NO_COLOR`/`CLICOLOR`+TTY identically (P1.1: two color systems, one gate).
+pub fn colors_enabled() -> bool { colors_on() }
 
 /// Names the binary can be installed under: the shipped name (`reliary`) and
 /// the legacy crate/bin name (`reliary-agent`) that older releases used.
@@ -197,16 +217,23 @@ fn dangling_reliary_hooks(home: &std::path::Path) -> Vec<String> {
 fn doctor_checks(installs: &[InstallInfo]) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
     // --- Binary reachability (critical: MCP server needs this) ---
+    // P4: `current_exe().is_some()` was tautological (always true when it
+    // returns). Resolve via PATH instead so a stale/broken install fails.
     let exe = std::env::current_exe().ok(); // GUARDED: intentional — None falls back to "reliary"
     let exe_name = exe.as_ref()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .unwrap_or("reliary");
+    let exe_on_path = std::env::var("PATH").map(|p| {
+        std::env::split_paths(&p).any(|d| d.join(exe_name).exists() || d.join("reliary").exists())
+    }).unwrap_or(false);
+    let binary_ok = exe.is_some() && exe_on_path;
     checks.push(DoctorCheck {
         name: "binary",
-        ok: exe.is_some(),
+        ok: binary_ok,
         detail: match &exe {
-            Some(p) => format!("{} at {}", exe_name, p.display()),
+            Some(p) if exe_on_path => format!("{} at {}", exe_name, p.display()),
+            Some(p) => format!("{} at {} (not on PATH — MCP clients may not find it)", exe_name, p.display()),
             None => "could not resolve current exe".into(),
         },
         fixable: false,
@@ -224,18 +251,31 @@ fn doctor_checks(installs: &[InstallInfo]) -> Vec<DoctorCheck> {
                 .inspect_err(|e| eprintln!("[doctor] file count query failed: {}", e)).ok()?;
             let phrase_count: i64 = db.query_row("SELECT COUNT(*) FROM phrases", [], |r| r.get(0))
                 .inspect_err(|e| eprintln!("[doctor] phrase count query failed: {}", e)).ok()?;
-            let age_days: f64 = db.query_row(
-                "SELECT (julianday('now') - julianday(MAX(mtime), 'unixepoch')) FROM file_map",
-                [], |r| r.get(0)
-            ).unwrap_or(0.0);
+            // V80: `file_map` has no `mtime` column, so the old query always
+            // errored and `unwrap_or(0.0)` reported "0d old" forever — the
+            // stale-index branch was dead. Use the index file's own mtime.
+            let age_days: f64 = std::fs::metadata(&index_path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_secs_f64() / 86_400.0)
+                .unwrap_or(0.0);
             Some((file_count, phrase_count, age_days))
         })();
+        // A leftover `.bak` is an interrupted-rebuild artifact; it doubles disk
+        // usage and is never used again. `run_index` removes it on the next
+        // rebuild, but a project that is never re-trusted keeps it forever.
+        let bak_note = if index_path.with_extension("sqlite.bak").exists() {
+            " (+ stale index.sqlite.bak — rebuild with `reliary trust .` to reclaim)"
+        } else {
+            ""
+        };
         match probe {
             Some((files, phrases, age)) => {
                 if age > 7.0 {
-                    (format!("{} files, {} phrases, {:.0}d old (stale — run `reliary trust .`)", files, phrases, age), true)
+                    (format!("{} files, {} phrases, {:.0}d old (stale — run `reliary trust .`){}", files, phrases, age, bak_note), true)
                 } else {
-                    (format!("{} files, {} phrases, {:.0}d old", files, phrases, age), true)
+                    (format!("{} files, {} phrases, {:.0}d old{}", files, phrases, age, bak_note), true)
                 }
             }
             // The file exists but cannot be read as an index. Reporting this
@@ -257,17 +297,63 @@ fn doctor_checks(installs: &[InstallInfo]) -> Vec<DoctorCheck> {
         optional: false,
     });
 
+    // --- Ignore safety (index/cache must not be committable) ---
+    // `.reliary/` holds source-derived data and cache.sqlite (original command
+    // output, often secrets). If the project is a git worktree and the
+    // self-ignore file is missing, `git add .` stages multi-MB leaks. Detected
+    // without shelling to git: presence of `.git` in the walk-up plus a missing
+    // `.reliary/.gitignore`. P4: walks up to 4 levels (not just ../), checks
+    // the file has content (an empty guard ignores nothing), and is fixable
+    // via `doctor --fix` (writes the guard through the shared helper).
+    if index_exists {
+        let mut in_git = std::path::Path::new(".git").exists();
+        let mut up = std::path::PathBuf::from("..");
+        for _ in 0..3 {
+            if up.join(".git").exists() { in_git = true; break; }
+            up.push("..");
+        }
+        let ignore_file = PathBuf::from(".reliary/.gitignore");
+        let guard_ok = std::fs::read_to_string(&ignore_file)
+            .map(|c| c.lines().any(|l| { let t = l.trim(); !t.is_empty() && !t.starts_with('#') }))
+            .unwrap_or(false);
+        let (ignore_ok, ignore_detail) = if !in_git {
+            (true, "not a git worktree (n/a)".to_string())
+        } else if guard_ok {
+            (true, ".reliary/ is git-ignored".to_string())
+        } else {
+            (false, ".reliary/ is NOT ignored — run `reliary doctor --fix` or `reliary trust .`".to_string())
+        };
+        checks.push(DoctorCheck {
+            name: "ignore",
+            ok: ignore_ok,
+            detail: ignore_detail,
+            fixable: true,
+            optional: false,
+        });
+    }
+
     // --- Mode (configuration check) ---
+    // P4: a typo'd RELIARY_MODE previously fell back to `reactive` and still
+    // reported green. Surface the raw value when it is not a known mode.
     let mode = crate::config::resolve_mode(Some("."));
+    let raw_mode = std::env::var("RELIARY_MODE").unwrap_or_default();
+    let known = ["fast", "reactive", "strict"];
+    let (mode_ok, mode_detail) = if !raw_mode.is_empty() && !known.contains(&raw_mode.as_str()) {
+        (false, format!("unknown RELIARY_MODE={:?} — falling back to {} (expected fast|reactive|strict)", raw_mode, mode.as_str()))
+    } else {
+        (true, mode.as_str().into())
+    };
     checks.push(DoctorCheck {
         name: "mode",
-        ok: true,
-        detail: mode.as_str().into(),
+        ok: mode_ok,
+        detail: mode_detail,
         fixable: false,
         optional: false,
     });
 
     // --- Claude Code integration (optional) ---
+    // P4: hooks are optional — a user who skipped them is not broken.
+    // Require 2/2 only when a registration exists; otherwise report wiring.
     let claude_cfg = home_dir().map(|h| h.join(".claude.json")).unwrap_or_default();
     let claude_ok = has_mcp_server(&claude_cfg, "reliary");
     let claude_hooks_dir = home_dir().map(|h| h.join(".claude/hooks")).unwrap_or_default();
@@ -291,12 +377,18 @@ fn doctor_checks(installs: &[InstallInfo]) -> Vec<DoctorCheck> {
             "MCP wired, but registered hook(s) missing on disk: {} — run `reliary init`",
             dangling.join(", ")
         )
+    } else if hooks_count == 2 {
+        "MCP wired, 2/2 hooks installed".into()
+    } else if hooks_count == 0 {
+        "MCP wired (hooks skipped — optional)".into()
     } else {
-        format!("MCP wired, {}/2 hooks installed", hooks_count)
+        format!("MCP wired, {}/2 hooks installed (hooks optional)", hooks_count)
     };
+    // P4: hooks skipped is not a failure — only dangling registrations fail.
+    let claude_ok_final = claude_ok && dangling.is_empty();
     checks.push(DoctorCheck {
         name: "claude",
-        ok: claude_ok && hooks_count == 2 && dangling.is_empty(),
+        ok: claude_ok_final,
         detail: claude_detail,
         fixable: false,
         optional: true,
@@ -410,6 +502,7 @@ pub fn doctor(fix: bool, format: &str) {
     println!("\n{}| Reliary Doctor |{}\n", color(), reset());
 
     let mut needs_index = false;
+    let mut needs_ignore = false;
 
     for c in &checks {
         let icon = if c.ok {
@@ -420,16 +513,25 @@ pub fn doctor(fix: bool, format: &str) {
             format!("{}✗{}", red(), reset())
         };
         println!("  {} {} {}{}", icon, c.name, dim(), c.detail);
-        if !c.ok && c.fixable
-            && c.name == "index" { needs_index = true }
+        if !c.ok && c.fixable {
+            if c.name == "index" { needs_index = true; }
+            // P4: `doctor --fix` writes the missing self-ignore guard through
+            // the shared helper (was documented fixable but never fixed).
+            if c.name == "ignore" { needs_ignore = true; }
+        }
     }
 
-    if fix && needs_index {
+    if fix && (needs_index || needs_ignore) {
         println!();
+        if needs_ignore {
+            print!("  {} Writing .reliary/.gitignore... ", dim());
+            crate::paths::ensure_reliary_ignored(std::path::Path::new(".reliary"));
+            if PathBuf::from(".reliary/.gitignore").exists() { println!("{}done", color()); } else { println!("{}failed", red()); }
+        }
         if needs_index {
             print!("  {} Building index... ", dim());
-            let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("reliary-agent"));
-            let status = Command::new(exe).arg("index").arg(".").stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit()).status();
+            let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("reliary"));
+            let status = Command::new(exe).arg("trust").arg(".").stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit()).status();
             if status.is_ok_and(|s| s.success()) { println!("{}done", color()); } else { println!("{}failed", red()); }
         }
         // Re-evaluate after fixes
@@ -453,7 +555,7 @@ pub fn doctor(fix: bool, format: &str) {
         for c in &checks {
             if !c.ok && !c.optional {
                 let hint = match c.name {
-                    "index" => "Run 'reliary index .' to view errors",
+                    "index" => "Run 'reliary trust .' to build it",
                     "installs" => "Remove stale binary paths manually",
                     _ => "Check the detail above",
                 };
@@ -474,15 +576,21 @@ struct StatusData {
     watcher_enabled: bool,
 }
 
-fn status_data() -> StatusData {
-    let index_path = PathBuf::from(".reliary/index.sqlite");
+fn status_data_at(root: &str) -> StatusData {
+    let index_path = std::path::Path::new(root).join(".reliary/index.sqlite");
     let mut index_files = 0i64;
     let mut chronicle_events = 0i64;
     let index_exists = index_path.exists();
 
     if index_exists {
-        if let Ok(db) = rusqlite::Connection::open(&index_path) {
-            let _ = db.execute_batch("PRAGMA synchronous=NORMAL;");
+        // F8 hardening: read-only open — status must never create, lock, or
+        // journal a project DB (the old read-write open could create a 0-table
+        // stub via `Connection::open` semantics on some paths).
+        let db = rusqlite::Connection::open_with_flags(
+            &index_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        );
+        if let Ok(db) = db {
             if let Ok(mut stmt) = db.prepare("SELECT COUNT(*) FROM file_map") {
                 if let Ok(mut rows) = stmt.query([]) {
                     if let Ok(Some(row)) = rows.next() { index_files = row.get(0).unwrap_or(0); }
@@ -526,8 +634,8 @@ fn status_json(d: &StatusData) -> Value {
     })
 }
 
-pub fn status(format: &str) {
-    let d = status_data();
+pub fn status_at(root: &str, format: &str) {
+    let d = status_data_at(root);
 
     if format == "json" {
         println!("{}", serde_json::to_string_pretty(&status_json(&d)).unwrap_or_else(|_| "{}".to_string()));
@@ -551,7 +659,7 @@ pub fn status(format: &str) {
         println!("  {}•{} Memory: {} chronicle events", blue(), reset(), d.chronicle_events);
     } else {
         println!("  {}•{} Index: {}-{} No index found", blue(), reset(), yellow(), reset());
-        println!("    {}→ Run 'reliary index .' to build it{}", dim(), reset());
+        println!("    {}→ Run 'reliary trust .' to build it{}", dim(), reset());
     }
 }
 
@@ -602,13 +710,26 @@ pub fn logs(tail: bool, level: Option<String>) {
     if let Ok(log_path_str) = std::env::var("RELIARY_LOG_FILE") {
         let log_path = std::path::Path::new(&log_path_str);
         if log_path.exists() {
+            // F8 hardening: 10MB cap — an operator-pointed log file must not
+            // OOM the reader. `tail -f` streams (no cap needed); the read
+            // paths refuse oversize files with remediation.
+            const LOG_CAP: u64 = 10 * 1024 * 1024;
+            let too_big = std::fs::metadata(log_path).map(|m| m.len() > LOG_CAP).unwrap_or(false);
             if tail {
                 println!("{} Tailing {}...{}", blue(), log_path_str, reset());
                 let status = Command::new("tail").arg("-f").arg(&log_path_str).status();
                 if status.is_err() {
+                    if too_big {
+                        eprintln!("{} Log file exceeds 10MB; refusing to dump. Use `tail` directly.{}{}", yellow(), log_path_str, reset());
+                        std::process::exit(1);
+                    }
                     if let Ok(content) = std::fs::read_to_string(log_path) { println!("{}", content); }
                 }
             } else if let Some(lvl) = level {
+                if too_big {
+                    eprintln!("{} Log file exceeds 10MB; refusing to dump. Use `tail` directly.{}{}", yellow(), log_path_str, reset());
+                    std::process::exit(1);
+                }
                 let lower_lvl = lvl.to_lowercase();
                 let upper = format!(" [{}] ", lvl.to_uppercase());
                 let lower = format!("[{}]", lower_lvl);
@@ -618,15 +739,20 @@ pub fn logs(tail: bool, level: Option<String>) {
                     }
                 }
             } else {
+                if too_big {
+                    eprintln!("{} Log file exceeds 10MB; refusing to dump. Use `tail` directly.{}{}", yellow(), log_path_str, reset());
+                    std::process::exit(1);
+                }
                 if let Ok(content) = std::fs::read_to_string(log_path) { println!("{}", content); }
             }
             return;
         } else {
             eprintln!("{} Log file not found: {}{}", yellow(), log_path_str, reset());
-            return;
+            std::process::exit(1);
         }
     }
     eprintln!("{} No RELIARY_LOG_FILE env var set.{}", yellow(), reset());
+    std::process::exit(1);
 }
 
 pub fn format_risk(path: &str, risk: &str, format: &str) {
@@ -723,13 +849,18 @@ fn opencode_mcp_well_formed(cfg_path: &std::path::Path) -> bool {
 /// Locate any OpenCode global config, preferring the files OpenCode itself
 /// checks (`opencode.jsonc`, then `opencode.json`, then `config.json`).
 fn find_opencode_config() -> Option<PathBuf> {
-    let dir = if cfg!(target_os = "windows") {
-        dirs::config_dir().map(|d| d.join("opencode"))
-    } else if cfg!(target_os = "macos") {
-        home_dir().map(|h| h.join("Library/Application Support/opencode"))
+    // V80: same resolution as `init::opencode_config_dir` —
+    // `XDG_CONFIG_HOME || ~/.config/opencode` on every platform.
+    let dir = if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        let p = PathBuf::from(xdg);
+        if !p.as_os_str().is_empty() && p.is_absolute() {
+            p.join("opencode")
+        } else {
+            home_dir()?.join(".config/opencode")
+        }
     } else {
-        home_dir().map(|h| h.join(".config/opencode"))
-    }?;
+        home_dir()?.join(".config/opencode")
+    };
     for name in ["opencode.jsonc", "opencode.json", "config.json"] {
         let p = dir.join(name);
         if p.exists() {

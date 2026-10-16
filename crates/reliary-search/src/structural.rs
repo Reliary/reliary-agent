@@ -33,6 +33,44 @@ pub struct StructuralResult<'a> {
 ///
 /// This is the same set already used by the function-signature branch; it
 /// covers every language the index handles without any per-language dispatch.
+/// Does the line contain a declaration modifier that can precede a return
+/// type (`public async Task<IActionResult> Name(...)`)? Grammar-free: a word
+/// scan for the same qualifier set used by `has_decl_keyword_before`, but
+/// anywhere in the prefix (the return type sits between modifier and name).
+fn has_any_decl_keyword(before_name: &str) -> bool {
+    const KW: &[&str] = &[
+        "pub", "fn", "def", "func", "function", "async", "unsafe", "extern",
+        "const", "static", "public", "private", "protected", "internal",
+        "export", "void", "virtual", "override", "abstract", "sealed",
+        "partial", "final", "synchronized", "native",
+    ];
+    before_name
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|w| KW.contains(&w))
+}
+
+fn has_type_keyword_before(before_name: &str) -> bool {
+    const KW: &[&str] = &[
+        "typedef", "interface", "struct", "enum", "union", "trait", "class",
+        "record", "type",
+    ];
+    for kw in KW {
+        if let Some(rest) = before_name.strip_suffix(kw) {
+            // Word boundary: the keyword must not be the tail of a larger word
+            // (`Datatype`, `subclass`, `prototype` are not declarations).
+            let boundary_ok = rest
+                .as_bytes()
+                .last()
+                .map(|&b| !b.is_ascii_alphanumeric() && b != b'_')
+                .unwrap_or(true);
+            if boundary_ok {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn has_decl_keyword_before(before_name: &str) -> bool {
     before_name.ends_with("pub")
         || before_name.ends_with("pub(crate)")
@@ -86,6 +124,12 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
         || start_keyword.starts_with("try ") || start_keyword.starts_with("catch ")
         || start_keyword.starts_with("else ")
     {
+        return StructuralResult { tag: 0, is_def: false, defined_name: None };
+    }
+    // V80: a namespace is a scope container, not a symbol. `namespace App {`
+    // (C#/C++) was tagged as a type_def named `App`, so every namespace showed
+    // up as a bogus symbol and its whole body looked like one type.
+    if start_keyword.starts_with("namespace ") {
         return StructuralResult { tag: 0, is_def: false, defined_name: None };
     }
     // A-MED-10: bare `} ` (for } else/catch without keyword) — skip as def.
@@ -171,6 +215,31 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     let is_block_start = has_open_block || ends_with_brace || ends_with_colon || is_function_signature || is_trait_method_decl;
 
     if !is_block_start {
+        // V78: type declarations whose line ends in neither `{`, `(`, nor `:`
+        // — `class Foo : Base` (C#/Java/C++), `public class Foo` with the brace
+        // on the next line, `interface IFoo`, `class Foo<T> where T : X`. These
+        // are the dominant .NET/Java style and were never tagged as definitions
+        // (every brace-language branch below requires a delimiter on the line),
+        // so `impact`/`find_definition` reported "no definition found" for
+        // perfectly-indexed types. Grammar-free: the name is a PascalCase
+        // identifier immediately preceded by a type-declaration keyword; a base
+        // list after it (`ControllerBase`) is not the name.
+        // Restricted to depth <= 2 so a `Foo x = new Foo()`-style local inside a
+        // method body (depth 3+) is never mistaken for a type declaration.
+        if block_depth <= 2 {
+            for idx in 0..delims.ident_count {
+                let s = delims.ident_starts[idx] as usize;
+                let e = delims.ident_ends[idx] as usize;
+                let prefix = trimmed[..s].trim_end();
+                if has_type_keyword_before(prefix) && is_pascal_case(&trimmed[s..e]) {
+                    return StructuralResult {
+                        tag: 2,
+                        is_def: true,
+                        defined_name: Some(&trimmed[s..e]),
+                    };
+                }
+            }
+        }
         // Not a block-start line. Could still be a local binding or param.
         // Local binding: identifier followed by `=` (no `{`/`(` needed).
         // Grammar-free: `x = ...` or `x: T = ...`.
@@ -255,7 +324,18 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
             } else {
                 let last_c = before_bytes[before_bytes.len() - 1];
                 let keyword_before = has_decl_keyword_before(before_name);
-                (last_c == b'{' || last_c == b'}') || keyword_before
+                // V79: a *type/return* qualifier (not a value operator) before
+                // the name marks a method declaration in C#/Java/TS/Go:
+                // `public async Task<IActionResult> GetAsync(Guid id)` and the
+                // camelCase `public int handleRequest(int id)`. The return type
+                // sits between the modifier and the name, so `before_name` does
+                // not *end* with the keyword — scan it for one anywhere. A call
+                // (`result = compute(x)`, `return foo(x)`, `new Foo()`) has no
+                // declaration keyword before the name, so this does not admit
+                // expressions. Case is deliberately not constrained: Java/Go/
+                // Kotlin methods are camelCase.
+                let typed_decl = has_any_decl_keyword(before_name);
+                (last_c == b'{' || last_c == b'}') || keyword_before || typed_decl
             };
             if !decl_ok {
                 return StructuralResult { tag: 0, is_def: false, defined_name: None };
@@ -1256,6 +1336,54 @@ mod tests {
         let r = classify_structural("    if poll_write() {", 3, false, false);
         // Depth > 2 → not a definition.
         assert_eq!(r.tag, 0);
+        assert!(!r.is_def);
+    }
+
+    #[test]
+    fn namespace_is_not_a_definition() {
+        // V80: `namespace App {` is a scope container, not a symbol.
+        let r = classify_structural("namespace App {", 0, true, false);
+        assert!(!r.is_def, "a namespace must not be a definition");
+        // Negative control: a class in the same position still is.
+        let c = classify_structural("class App {", 0, true, false);
+        assert!(c.is_def);
+        assert_eq!(c.defined_name, Some("App"));
+    }
+
+    #[test]
+    fn test_csharp_type_declarations() {
+        // V78: the dominant .NET/Java styles where the declaration line ends in
+        // neither `{`, `(`, nor `:`.
+        for (line, name) in [
+            ("public class V1Controller : ControllerBase", "V1Controller"),
+            ("public partial class V2Controller", "V2Controller"),
+            ("public sealed class V3Controller<T> where T : class", "V3Controller"),
+            ("public class V4Controller", "V4Controller"),
+            ("public interface IThing", "IThing"),
+            ("public enum Color", "Color"),
+            ("public struct Point", "Point"),
+            ("public record Person", "Person"),
+        ] {
+            let r = classify_structural(line, 0, false, false);
+            assert!(r.is_def, "should be a definition: {}", line);
+            assert_eq!(r.tag, 2, "should be a type_def: {}", line);
+            assert_eq!(r.defined_name, Some(name), "wrong name for: {}", line);
+        }
+    }
+
+    #[test]
+    fn test_csharp_type_declaration_negative_controls() {
+        // Guard 1: the keyword must be a whole word — `Datatype`, `prototype`,
+        // `subclass` are not declarations.
+        assert!(!classify_structural("Datatype x", 0, false, false).is_def);
+        assert!(!classify_structural("prototype y", 0, false, false).is_def);
+        // Guard 2: a *call* to a lowercase method is not a type decl.
+        assert!(!classify_structural("value = compute()", 0, false, false).is_def);
+        // Guard 3: depth >2 (inside a method body) never yields a type decl.
+        assert!(!classify_structural("Foo x = new Foo", 3, false, false).is_def);
+        // Guard 4: an assignment to a field named like a type is a binding, not
+        // a type declaration (and is_def=false regardless).
+        let r = classify_structural("Type2 z = a.Type", 0, false, false);
         assert!(!r.is_def);
     }
 

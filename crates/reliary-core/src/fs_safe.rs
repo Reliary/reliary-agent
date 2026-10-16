@@ -49,6 +49,13 @@ pub fn safe_read(path: &str) -> Result<String, String> {
     let p = Path::new(path);
     match p.metadata() {
         Ok(meta) => {
+            // V80: reject non-regular files. A FIFO/character device reports
+            // len() == 0 (so the size cap passed) and `read_to_string` then
+            // blocks forever — `reliary risk /dev/zero` or a named pipe hung
+            // the process. Only regular files are readable here.
+            if !meta.is_file() {
+                return Err(format!("safe_read: {} is not a regular file", path));
+            }
             if meta.len() > MAX_FILE_SIZE {
                 return Err(format!(
                     "safe_read: {} is {} bytes, exceeds max {} bytes",

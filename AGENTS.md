@@ -29,12 +29,12 @@ Use `search` when you do not know the exact symbol name. Use
 
 Every tool response ends with a freshness stamp `[idx:xxxxxxxx]`. The stamp
 changes only when the index is rebuilt or a file is reindexed. If you edited a
-file and the stamp did not change, the index may be stale — run `reliary trust .`
-or `reliary reindex-file <path>`.
+file and the stamp did not change, the index may be stale — run
+`reliary reindex-file <path>` (one file) or `reliary index .` (whole project).
 
 **Only call tools from the list above.** The default menu exposes these six plus
-`reliary_verify`. Other research variants exist as dispatch targets but are not
-listed; do not guess their names.
+`reliary_verify`. Two more exist as dispatch targets but are not listed
+(`reliary_goto_def`, `reliary_similar`); do not guess other names.
 
 ## Efficiency
 
@@ -68,7 +68,9 @@ the project. Resolution order:
 From there they walk up to the nearest `.reliary/` index. So a call from a
 subdirectory finds the project above it, and `path="/abs/project"` selects that
 project explicitly. If a lookup returns "no index", pass the project directory
-as `path` rather than retrying.
+as `path` rather than retrying. An empty result with a `path_filter` means
+nothing matched inside that scope — not the whole codebase. Oversize MCP input
+(over 10MB on one line) is rejected with `-32602`; split the request.
 
 ## Indexing
 
@@ -76,6 +78,13 @@ Before any query, the project must be indexed. Run `reliary trust <path>` once
 per project (from that directory, or pass the path). Indexing takes seconds for
 most repos. `reliary init` can auto-index the project the first time an MCP
 client connects to it.
+
+Scripted `init`, `clean`, and index-offer prompts fail closed: on a non-TTY
+without `--yes` (or `RELIARY_YES=1`) they exit 2 instead of guessing. A bare
+`search` with no index exits 2; an empty result with an index present exits 0.
+
+`.reliary/` is local machine state and is git-ignored automatically; do not add
+it to version control, and do not remove `.reliary/.gitignore`.
 
 ## Compressing verbose output
 
@@ -87,14 +96,16 @@ reliary wrap git diff
 reliary wrap grep "pattern" .
 ```
 
-Measured mean 31.6% byte reduction on the RTK comparison fixtures, concentrated
+Measured mean 31.6% / median 3.9% byte reduction on the RTK comparison fixtures, concentrated
 on repeated and ANSI-heavy output, with a hard no-inflation guarantee (raw bytes
 are emitted whenever compression would be longer). Content readers on source
 files (`cat`/`head`/`tail`/`less`/`bat <source.rs>`) pass through unchanged.
 
-For automatic interception, set `RELIARY_SIFT_BASH=1` and install the hook from
-`crates/reliary-agent/hooks/` for your agent (Pi: `pi/gate.js`; Claude Code:
-`hooks/claude-pretooluse.sh`; OpenCode: `hooks/opencode-reliary-sift.js`).
+For automatic interception, `reliary init` installs the hook for your agent
+(Pi: `crates/reliary-agent/pi/gate.js`; Claude Code:
+`crates/reliary-agent/hooks/claude-pretooluse.sh`). Bash compression
+is on by default; set `RELIARY_SIFT_BASH=0` to disable. For OpenCode, `init`
+installs the plugin (`~/.local/share/reliary/opencode-plugin.js`) which reindexes files after edits.
 
 ## Benchmarks
 

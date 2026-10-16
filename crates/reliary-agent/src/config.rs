@@ -78,10 +78,46 @@ pub fn project_config_path(workdir: &str) -> PathBuf {
     PathBuf::from(workdir).join(CONFIG_FILENAME)
 }
 
+/// Read a config file into a FLAT `dotted.key -> string` map.
+///
+/// The config format supports both shapes and they must agree:
+///   * nested — `{"mode":"fast","features":{"compress":false}}`
+///   * flat   — `{"mode":"fast","features.compress":"false"}`
+///
+/// `set_config` writes the flat form; a hand-written or older file may use the
+/// nested form. The old code deserialized into `HashMap<String, String>`, so a
+/// nested object made serde fail and `unwrap_or_default()` silently discarded
+/// the ENTIRE config — including `mode`. Nested objects are now flattened to
+/// dotted keys so every reader sees the same map.
 fn read_config_file(path: &PathBuf) -> HashMap<String, String> {
-    match fs::read_to_string(path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-        Err(_) => HashMap::new(),
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+    let value: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return HashMap::new(),
+    };
+    let mut out = HashMap::new();
+    flatten_into("", &value, &mut out);
+    out
+}
+
+/// Flatten a JSON object into dotted keys. Scalars become their string form
+/// (booleans/numbers included); nested objects recurse with a `prefix.`.
+fn flatten_into(prefix: &str, value: &serde_json::Value, out: &mut HashMap<String, String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                let key = if prefix.is_empty() { k.clone() } else { format!("{}.{}", prefix, k) };
+                flatten_into(&key, v, out);
+            }
+        }
+        serde_json::Value::String(s) => { out.insert(prefix.to_string(), s.clone()); }
+        serde_json::Value::Bool(b) => { out.insert(prefix.to_string(), b.to_string()); }
+        serde_json::Value::Number(n) => { out.insert(prefix.to_string(), n.to_string()); }
+        serde_json::Value::Null => { out.insert(prefix.to_string(), String::new()); }
+        serde_json::Value::Array(_) => { /* arrays are not a supported config value */ }
     }
 }
 

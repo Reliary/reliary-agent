@@ -53,11 +53,17 @@ pub fn collect_map(db: &Connection, max_files: usize, max_symbols_per_file: usiz
                    ORDER BY p.phrase, f.file_path";
         let mut stmt = match db.prepare_cached(sql) {
             Ok(s) => s,
-            Err(_) => return Vec::new(),
+            Err(e) => {
+                eprintln!("[map] hotspot query prepare failed: {}", e);
+                return Vec::new();
+            }
         };
         let mut rows = match stmt.query([]) {
             Ok(r) => r,
-            Err(_) => return Vec::new(),
+            Err(e) => {
+                eprintln!("[map] hotspot query failed: {}", e);
+                return Vec::new();
+            }
         };
         while let Ok(Some(r)) = rows.next() {
             let name: String = r.get(0).unwrap_or_default();

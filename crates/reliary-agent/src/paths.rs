@@ -45,8 +45,40 @@ pub fn relativize(root: &str, file: &str) -> String {
 pub fn open_or_create(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok(); // GUARDED: intentional — open() reports failure
+        ensure_reliary_ignored(parent);
     }
     reliary_core::open(path)
+}
+
+/// Make `.reliary/` invisible to git by writing a self-ignoring `.gitignore`
+/// (`*`) into it.
+///
+/// Why a file inside the directory rather than an entry in the project's
+/// tracked `.gitignore`:
+///   - no churn in a file the user owns (we never edit tracked files);
+///   - it works at ANY nesting depth (a nested `bench/.reliary/` is covered by
+///     its own copy without enumerating paths);
+///   - git reads a `.gitignore` even when the file itself is matched by the
+///     ignore rules, so the directory reports clean.
+///
+/// This is a safety measure, not cosmetics: `.reliary/` holds `index.sqlite`
+/// (source-derived) and `cache.sqlite`, which stores the ORIGINAL text of every
+/// command passed through `reliary wrap` — routinely API keys, env dumps and
+/// connection strings. A fresh user who runs `trust` then `git add .` would
+/// otherwise stage both.
+///
+/// Idempotent and non-destructive: existing user content (e.g. a custom
+/// `.gitignore` that negates `!config.json`) is never overwritten. Only acts
+/// when `dir` is named `.reliary`.
+pub fn ensure_reliary_ignored(dir: &Path) {
+    if dir.file_name().and_then(|n| n.to_str()) != Some(".reliary") {
+        return;
+    }
+    let gi = dir.join(".gitignore");
+    if gi.exists() {
+        return;
+    }
+    let _ = std::fs::write(&gi, "*\n"); // GUARDED: intentional — best-effort, never fatal
 }
 
 #[cfg(test)]
@@ -66,5 +98,43 @@ mod tests {
     #[test]
     fn relativize_returns_full_when_no_match() {
         assert_eq!(relativize("/home/a", "/home/b/file.rs"), "/home/b/file.rs");
+    }
+
+    #[test]
+    fn ensure_reliary_ignored_writes_star() {
+        let dir = std::env::temp_dir().join(format!("relign_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let rr = dir.join(".reliary");
+        std::fs::create_dir_all(&rr).unwrap();
+        ensure_reliary_ignored(&rr);
+        let gi = rr.join(".gitignore");
+        assert!(gi.exists(), "self-ignore must be written");
+        assert_eq!(std::fs::read_to_string(&gi).unwrap().trim(), "*");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_reliary_ignored_does_not_clobber_user_file() {
+        let dir = std::env::temp_dir().join(format!("relign2_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let rr = dir.join(".reliary");
+        std::fs::create_dir_all(&rr).unwrap();
+        // A user who chose to share config keeps their negated file.
+        std::fs::write(rr.join(".gitignore"), "*\n!config.json\n").unwrap();
+        ensure_reliary_ignored(&rr);
+        let got = std::fs::read_to_string(rr.join(".gitignore")).unwrap();
+        assert!(got.contains("!config.json"), "user .gitignore must be preserved, got: {got:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_reliary_ignored_ignores_other_dirs() {
+        // Must never litter a non-.reliary directory.
+        let dir = std::env::temp_dir().join(format!("relign3_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        ensure_reliary_ignored(&dir);
+        assert!(!dir.join(".gitignore").exists(), "must not write into a non-.reliary dir");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

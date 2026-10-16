@@ -66,7 +66,13 @@ pub fn find_similar(db: &Connection, name: &str, top_n: usize) -> Vec<SimilarFn>
         Some(m) => m,
         None => return out,
     };
+    // Clamp the anchor line to the file: a stale/large occurrence line (the
+    // file shrank since indexing) would make `start > end` and panic the
+    // long-running server. The candidate path below already clamps.
     let start = (*anchor_line).max(0) as usize;
+    if start >= meta.lines.len() {
+        return out;
+    }
     let end = (start + 60).min(meta.lines.len());
     let anchor_text: String = meta.lines[start..end].join("\n");
     let mut anchor_tokens: Vec<String> = crate::scan_identifiers(&anchor_text);
@@ -79,20 +85,23 @@ pub fn find_similar(db: &Connection, name: &str, top_n: usize) -> Vec<SimilarFn>
     let anchor_hv = encode_fn(&mut store, &anchor_tokens);
 
     let cand_rows: Vec<(String, i32)> = {
+        // Deterministic order: `reliary_similar` must return the same result
+        // for the same index (the whole tool is specified as reproducible).
+        // ORDER BY RANDOM() made the candidate pool differ every call.
         let stmt = db.prepare_cached(
             "SELECT f.file_path, o.line FROM occurrence o
              JOIN file_map f ON f.id = o.file_id
              WHERE o.is_def = 1 AND o.tag = 1
                AND f.file_path NOT LIKE '%.md'
                AND f.file_path NOT LIKE '%.txt'
-             ORDER BY RANDOM() LIMIT 400",
+             ORDER BY f.file_path ASC, o.line ASC LIMIT 400",
         );
         match stmt.and_then(|mut s| {
             s.query_map([], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, i32>(1)?))
             }).map(|rows| rows.flatten().collect::<Vec<_>>())
         }) {
-            Ok(v) => { eprintln!("[similar] pool={} anchor_file={}", v.len(), anchor_file); v }
+            Ok(v) => v,
             Err(e) => { eprintln!("[similar] pool query err: {}", e); return out; }
         }
     };

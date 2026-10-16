@@ -207,6 +207,13 @@ pub fn generate(index_path: &str, seed: u64) -> Value {
         Ok(d) => d,
         Err(e) => return json!({"error": format!("open index: {}", e)}),
     };
+    // V80: questions are drawn from the occurrence table, empty on a lazy index.
+    let has_any: i64 = db
+        .query_row("SELECT EXISTS(SELECT 1 FROM occurrence LIMIT 1)", [], |r| r.get(0))
+        .unwrap_or(1);
+    if has_any == 0 {
+        let _ = reliary_search::lazy_occurrence::build_all_occurrence(&db);
+    }
     let repo = std::path::Path::new(index_path)
         .parent()
         .and_then(|p| p.parent())
@@ -602,25 +609,29 @@ pub fn score_results(results_path: &str, gt_path: &str, tol: i32) -> Value {
 /// Open the index next to a results file: results in bench/results/ => repo
 /// root is two levels up + /.reliary. Also honours RELIARY_BENCH_INDEX.
 fn results_db_index(results_path: &str) -> Result<Connection, String> {
-    let db_path = if let Ok(p) = std::env::var("RELIARY_BENCH_INDEX") {
-        p
-    } else {
-        let p = std::path::Path::new(results_path);
-        let root = p
-            .parent()
-            .and_then(|r| r.parent())
-            .and_then(|r| r.parent())
-            .map(|r| r.to_path_buf())
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        root.join(".reliary/index.sqlite").to_string_lossy().to_string()
-    };
-    if !std::path::Path::new(&db_path).exists() {
-        return Err(format!(
-            "no index at {} — set RELIARY_BENCH_INDEX=/path/to/.reliary/index.sqlite",
-            db_path
-        ));
+    // 1. explicit override.
+    if let Ok(p) = std::env::var("RELIARY_BENCH_INDEX") {
+        if std::path::Path::new(&p).exists() {
+            return Connection::open(&p).map_err(|e| format!("open index: {}", e));
+        }
+        return Err(format!("RELIARY_BENCH_INDEX points to a missing file: {}", p));
     }
-    Connection::open(&db_path).map_err(|e| format!("open index: {}", e))
+    // 2. walk up from the results file to the nearest usable index. The old
+    // "three parents up" heuristic gave an empty root for a short relative path
+    // (bench/results/x.jsonl -> ""), producing "/.reliary/index.sqlite".
+    if let Some(root) = crate::index_root::nearest_index_root(std::path::Path::new(results_path)) {
+        let db_path = crate::index_root::db_path_for(&root);
+        return Connection::open(&db_path).map_err(|e| format!("open index: {}", e));
+    }
+    // 3. last resort: the current directory.
+    if let Some(root) = crate::index_root::nearest_index_root(std::path::Path::new(".")) {
+        let db_path = crate::index_root::db_path_for(&root);
+        return Connection::open(&db_path).map_err(|e| format!("open index: {}", e));
+    }
+    Err(format!(
+        "no index found at or above {} — run `reliary trust .` or set RELIARY_BENCH_INDEX=/path/to/.reliary/index.sqlite",
+        results_path
+    ))
 }
 
 #[cfg(test)]

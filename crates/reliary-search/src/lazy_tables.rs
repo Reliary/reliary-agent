@@ -19,6 +19,34 @@
 use rusqlite::{params, Connection};
 use std::fs;
 
+/// RAII guard: if the block-INSERT batch fails with `?` before COMMIT/RELEASE,
+/// roll the transaction back so the shared MCP connection is never left inside
+/// an open transaction (which poisons every later `BEGIN IMMEDIATE` JIT build
+/// with "cannot start a transaction within a transaction").
+struct TxRollback<'a> {
+    conn: &'a Connection,
+    /// Savepoint name when nested; `None` means an outer `BEGIN IMMEDIATE` that
+    /// must be rolled back entirely.
+    savepoint: Option<&'static str>,
+    done: std::cell::Cell<bool>,
+}
+impl Drop for TxRollback<'_> {
+    fn drop(&mut self) {
+        if self.done.get() {
+            return;
+        }
+        match self.savepoint {
+            Some(sp) => {
+                let _ = self.conn.execute_batch(&format!("ROLLBACK TO SAVEPOINT {}", sp));
+                let _ = self.conn.execute_batch(&format!("RELEASE SAVEPOINT {}", sp));
+            }
+            None => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+            }
+        }
+    }
+}
+
 /// Fast guard: do we have any rows in `block` for this file_id?
 pub fn has_blocks(db: &Connection, file_id: i64) -> rusqlite::Result<bool> {
     let exists: bool = db.query_row(
@@ -75,6 +103,7 @@ pub fn ensure_blocks_for_file(db: &Connection, file_id: i64) -> rusqlite::Result
     } else {
         db.execute_batch("BEGIN IMMEDIATE")?;
     }
+    let guard = TxRollback { conn: db, savepoint: if in_tx { Some("ensure_blocks") } else { None }, done: std::cell::Cell::new(false) };
     for chunk in out.blocks.chunks(BATCH) {
         let m = chunk.len();
         let placeholders = std::iter::repeat_n("(?,?,?,?)", m)
@@ -99,6 +128,7 @@ pub fn ensure_blocks_for_file(db: &Connection, file_id: i64) -> rusqlite::Result
     } else {
         db.execute_batch("COMMIT")?;
     }
+    guard.done.set(true);
     { crate::lazy_occurrence::bump_gen_if_inserted(total); Ok(total) }
 }
 
@@ -139,6 +169,7 @@ pub fn ensure_blocks_for_file_with_content(db: &Connection, file_id: i64, conten
     } else {
         db.execute_batch("BEGIN IMMEDIATE")?;
     }
+    let guard = TxRollback { conn: db, savepoint: if nested_in_tx { Some("ensure_blocks_v2") } else { None }, done: std::cell::Cell::new(false) };
     for chunk in out.blocks.chunks(BATCH) {
         let m = chunk.len();
         let placeholders = std::iter::repeat_n("(?,?,?,?)", m)
@@ -163,6 +194,7 @@ pub fn ensure_blocks_for_file_with_content(db: &Connection, file_id: i64, conten
     } else {
         db.execute_batch("COMMIT")?;
     }
+    guard.done.set(true);
     let _ = n;
     { crate::lazy_occurrence::bump_gen_if_inserted(total); Ok(total) }
 }
