@@ -13,6 +13,8 @@
 //!
 //! Fixture files live in tests/fixtures/oracle/ (one per shape class).
 
+mod common;
+
 use reliary_search::ingest::index_directory;
 use reliary_search::lazy_occurrence::build_all_occurrence;
 use reliary_search::schema::create_new_db;
@@ -39,94 +41,26 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
 ];
 
 fn have_ctags() -> bool {
-    std::process::Command::new("ctags")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    common::have_ctags()
 }
 
 fn ctags_defs(path: &std::path::Path) -> HashMap<String, i64> {
-    let out = std::process::Command::new("ctags")
-        // `+K` requests long kind names. Mapping kinds by their first letter
-        // (`field` -> `f`, `member` -> `m`) silently counted struct fields as
-        // functions, because `f` is also `function`'s initial.
-        .args(["-o", "-", "--excmd=number", "--fields=+nK"])
-        .arg(path)
-        .output()
-        .expect("run ctags");
-    assert!(out.status.success(), "ctags failed on {}", path.display());
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut defs = HashMap::new();
-    for line in text.lines() {
-        // name<TAB>file<TAB>line;"<TAB>kind...
-        // Only definition kinds: the oracle is a def-set comparison, and
-        // variable/constant kinds (`const x = 42`) are local bindings we
-        // deliberately do not define (V66c). Kind letters: f function,
-        // c class, s struct, m member/method, d define/macro, p prototype,
-        // t typedef, g enum, u union, n namespace.
-        let mut parts = line.split('\t');
-        let name = match parts.next() {
-            Some(n) if !n.is_empty() => n.to_string(),
-            _ => continue,
-        };
-        let _file = parts.next();
-        let addr = parts.next().unwrap_or("");
-        let kind = parts.next().unwrap_or("");
-        if !is_definition_kind(kind) {
-            continue;
-        }
-        // address looks like `42;"` — strip the `;"` trailer.
-        let num: String = addr.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if let Ok(n) = num.parse::<i64>() {
-            defs.insert(name, n);
-        }
-    }
-    defs
-}
-
-/// Which ctags kinds are definitions for this comparison.
-///
-/// Matched on the long kind word, never on its first letter. `member` is
-/// kept because ctags reports Python methods as members; `field` is dropped
-/// because a struct field is a slot, not a definition, and V86/V87 spent real
-/// effort removing exactly that false positive from the index.
-fn is_definition_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "function"
-            | "method"
-            | "member"
-            | "class"
-            | "struct"
-            | "enumerator"
-            | "enum"
-            | "union"
-            | "interface"
-            | "implementation"
-            | "namespace"
-            | "typedef"
-            | "define"
-            | "macro"
-            | "prototype"
-    )
+    common::ctags_defs(path)
 }
 
 #[test]
 fn ctags_kind_mapping_uses_the_word_not_its_first_letter() {
     // Regression: `field` collapsed to `f` and matched `function`, so every
     // struct field entered the oracle as a definition we had "missed".
-    assert!(!is_definition_kind("field"));
-    assert!(!is_definition_kind("constant"));
-    assert!(!is_definition_kind("variable"));
-    assert!(!is_definition_kind("getter"));
-    assert!(!is_definition_kind("setter"));
-    assert!(is_definition_kind("function"));
-    assert!(is_definition_kind("method"));
-    assert!(is_definition_kind("member")); // Python methods
-    assert!(is_definition_kind("struct"));
+    assert!(!common::is_definition_kind("field"));
+    assert!(!common::is_definition_kind("constant"));
+    assert!(!common::is_definition_kind("variable"));
+    assert!(!common::is_definition_kind("getter"));
+    assert!(!common::is_definition_kind("setter"));
+    assert!(common::is_definition_kind("function"));
+    assert!(common::is_definition_kind("method"));
+    assert!(common::is_definition_kind("member")); // Python methods
+    assert!(common::is_definition_kind("struct"));
 }
 
 fn our_defs(dir: &std::path::Path, file: &str) -> HashSet<(String, i64)> {

@@ -5,6 +5,13 @@ All notable changes to Reliary will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.15] - 2026-10-24
+
+The oracle test file still carried its own copy of the ctags parser, so the
+0.8.14 claim that both oracle tests share one was false, and CI failed with a
+dead-code error naming the unused helper. It now delegates to the shared
+module the same way the segmenter test does.
+
 ## [0.8.14] - 2026-10-24
 
 - Both ctags oracle tests now share one parser (`crates/reliary-search/tests/common/mod.rs`) instead
