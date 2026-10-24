@@ -5,6 +5,21 @@ All notable changes to Reliary will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.14] - 2026-10-24
+
+- Both ctags oracle tests now share one parser (`crates/reliary-search/tests/common/mod.rs`) instead
+  of duplicating it. The second copy had the same first-letter kind bug as the
+  first, so CI failed twice for one root cause.
+- The oracle forces the language by extension. Auto-detection returns nothing
+  for the C fixture in Ubuntu's universal-ctags build, so `macros.c` had been
+  contributing zero oracle lines.
+- The segmenter test's hand-adjudicated table panicked on an unknown fixture
+  rather than returning an empty vector: an empty list made every recall
+  assertion vacuous, so adding a fixture silently disabled the gate.
+- The ctags cross-check is a subset test. Adjudicated extras (body-less
+  prototypes, a function-pointer variable, an operator overload) are printed
+  rather than treated as errors; a ctags line missing from the table fails.
+
 ## [0.8.13] - 2026-10-24
 
 Fixes a defect CI caught in 0.8.12.
