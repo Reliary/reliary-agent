@@ -69,6 +69,113 @@ pub fn beta() -> i32 {
     }
 
     /// Build the index without starting an MCP server.
+    /// A project whose types implement a trait both ways: one `#[derive]` and
+    /// one manual `impl`. Used to check that a trait question answers with the
+    /// implementing types rather than with a same-named method.
+    pub fn trait_impls() -> Fixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/models.rs"),
+            r#"#[derive(Debug, Clone, Default)]
+pub struct Derived {
+    pub id: i32,
+}
+
+pub struct Manual {
+    pub id: i32,
+}
+
+impl Default for Manual {
+    fn default() -> Self {
+        Self { id: 0 }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NotDefault {
+    pub id: i32,
+}
+"#,
+        )
+        .unwrap();
+        let ok = Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            for a in [["add", "-A"].as_slice(), ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fixture"].as_slice()] {
+                let _ = Command::new("git").args(a).current_dir(root)
+                    .stdout(Stdio::null()).stderr(Stdio::null()).status();
+            }
+        }
+        Fixture { dir }
+    }
+
+    /// A project with `n` functions that nothing calls, so a dead-code query
+    /// returns a long list. Used to check that the output is capped.
+    pub fn many_dead_functions(n: usize) -> Fixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let mut body = String::from("pub fn live_entry() -> i32 {\n    1\n}\n\n");
+        for i in 0..n {
+            body.push_str(&format!("fn unused_helper_{i}() -> i32 {{\n    {i}\n}}\n\n"));
+        }
+        std::fs::write(root.join("src/lib.rs"), body).unwrap();
+        let ok = Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            for a in [["add", "-A"].as_slice(),
+                      ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fixture"].as_slice()] {
+                let _ = Command::new("git").args(a).current_dir(root)
+                    .stdout(Stdio::null()).stderr(Stdio::null()).status();
+            }
+        }
+        Fixture { dir }
+    }
+
+    /// `pub_n` exported functions and `priv_n` private ones, none called.
+    pub fn mixed_dead_functions(priv_n: usize, _unused: usize) -> Fixture {
+        Self::mixed_dead_impl(priv_n)
+    }
+
+    fn mixed_dead_impl(pub_n: usize) -> Fixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let mut body = String::from("pub fn live_entry() -> i32 {\n    1\n}\n\n");
+        for i in 0..pub_n {
+            body.push_str(&format!("pub fn pub_unused_{i}() -> i32 {{\n    {i}\n}}\n\n"));
+        }
+        for i in 0..12 {
+            body.push_str(&format!("fn priv_unused_{i}() -> i32 {{\n    {i}\n}}\n\n"));
+        }
+        std::fs::write(root.join("src/lib.rs"), body).unwrap();
+        let ok = Command::new("git").args(["init", "--quiet"]).current_dir(root)
+            .stdout(Stdio::null()).stderr(Stdio::null())
+            .status().map(|s| s.success()).unwrap_or(false);
+        if ok {
+            for a in [["add", "-A"].as_slice(),
+                      ["-c","user.email=t@t","-c","user.name=t","commit","-qm","fixture"].as_slice()] {
+                let _ = Command::new("git").args(a).current_dir(root)
+                    .stdout(Stdio::null()).stderr(Stdio::null()).status();
+            }
+        }
+        Fixture { dir }
+    }
+
     pub fn trust(&self) {
         let mut cmd = Command::new(binary_path());
         cmd.args(["trust", "."])

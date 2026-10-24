@@ -1,0 +1,13 @@
+# Blind-tree ctags oracle: ctags + release binary, nothing else.
+# Built from the workspace root: docker build -f docker/Dockerfile.ctags -t reliary-ctags .
+# Run: docker run --rm -v <corpus>:/corpus:ro -v <out>:/out reliary-ctags
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq \
+    && apt-get install -y -qq universal-ctags sqlite3 time python3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY target/release/reliary /usr/local/bin/reliary
+COPY docker/blind_oracle.sh /usr/local/bin/blind_oracle.sh
+COPY docker/oracle_report.py /usr/local/bin/oracle_report.py
+RUN chmod +x /usr/local/bin/blind_oracle.sh
+ENTRYPOINT ["blind_oracle.sh"]

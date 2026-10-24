@@ -302,13 +302,49 @@ def _normalize_tool_paths(text):
     return text
 
 
+def build_altbackend_payload(tool, args):
+    """Build a CLI payload and prove it carries every key the server requires.
+
+    This exists because a wrong parameter name is invisible from the outside:
+    the server writes its complaint to stderr, exits 0, and the wrapper's
+    `json.loads(r.stdout)` raises on the empty string. The model then receives
+    an error string and the benchmark records it as the tool's behaviour.
+
+    Raising here instead means a mismatch fails loudly at the call site rather
+    than quietly becoming a data point.
+    """
+    spec = {
+        "search_graph": lambda: {
+            "project": ALTBACKEND_PROJECT,
+            "query": args.get("query", ""),
+            "limit": args.get("limit", 20),
+        },
+        "get_code_snippet": lambda: {
+            "project": ALTBACKEND_PROJECT,
+            "qualified_name": args.get("qualified_name", ""),
+            "show_lines": args.get("show_lines", 3),
+        },
+        "trace_path": lambda: {
+            "project": ALTBACKEND_PROJECT,
+            "function_name": args.get("function_name") or args.get("name", ""),
+            "direction": args.get("direction", "both"),
+        },
+        "get_architecture": lambda: {"project": ALTBACKEND_PROJECT},
+    }[tool]()
+    missing = [k for k in ALTBACKEND_REQUIRED[tool] if not spec.get(k)]
+    if missing:
+        raise ValueError(
+            f"{tool} payload is missing required key(s) {missing}; "
+            f"the server would reject this and return an empty stdout")
+    return spec
+
+
 def tool_altbackend_search_graph(args):
     """ALTBACKEND search_graph via CLI."""
     try:
         r = subprocess.run(
             [ALTBACKEND_BIN, "cli", "search_graph",
-             json.dumps({"project": ALTBACKEND_PROJECT, "query": args.get("query", ""),
-                         "limit": args.get("limit", 20)})],
+             json.dumps(build_altbackend_payload("search_graph", args))],
             capture_output=True, text=True, timeout=30)
         data = json.loads(r.stdout)
         results = data.get("results", [])
@@ -344,9 +380,7 @@ def tool_altbackend_get_code_snippet(args):
     try:
         r = subprocess.run(
             [ALTBACKEND_BIN, "cli", "get_code_snippet",
-             json.dumps({"project": ALTBACKEND_PROJECT,
-                         "qualified_name": args.get("qualified_name", ""),
-                         "show_lines": args.get("show_lines", 3)})],
+             json.dumps(build_altbackend_payload("get_code_snippet", args))],
             capture_output=True, text=True, timeout=30)
         data = json.loads(r.stdout)
         src = data.get("source") or data.get("content") or ""
@@ -366,15 +400,41 @@ def tool_altbackend_get_code_snippet(args):
         return f"(altbackend error: {e})"
 
 
+# The arguments each altbackend tool actually requires, mirrored from the
+# server's own `tools/list`. Kept as data so the audit test can compare the
+# wrappers' payloads against it instead of trusting a comment.
+ALTBACKEND_REQUIRED = {
+    "search_graph": ["project"],
+    "get_code_snippet": ["qualified_name", "project"],
+    "trace_path": ["function_name", "project"],
+    "get_architecture": ["project"],
+}
+
+
 def tool_altbackend_trace_path(args):
-    """ALTBACKEND trace_path via CLI."""
+    """ALTBACKEND trace_path via CLI.
+
+    The server's parameter is `function_name`, not `name`. It has been `name`
+    here since 2026-06-30, so every recorded run since then sent a payload the
+    server rejected: it prints `function_name is required` to stderr and
+    nothing to stdout, `json.loads("")` raises, and the model was handed
+    `(altbackend error: Expecting value: line 1 column 1)`.
+
+    That silently disabled the caller/callee tracing that q2, q4, q5 and q10
+    depend on, while `search_graph` and `get_code_snippet` — whose argument
+    names were correct — kept working. Every B result recorded before this fix
+    is void.
+    """
     try:
         r = subprocess.run(
             [ALTBACKEND_BIN, "cli", "trace_path",
-             json.dumps({"project": ALTBACKEND_PROJECT,
-                         "name": args.get("name", ""),
-                         "direction": args.get("direction", "both")})],
+             json.dumps(build_altbackend_payload("trace_path", args))],
             capture_output=True, text=True, timeout=30)
+        if not r.stdout.strip():
+            # An empty stdout means the server rejected the call. Surfacing the
+            # stderr tail makes that visible in the transcript instead of
+            # looking like "no trace results".
+            return f"(altbackend error: {r.stderr.strip()[-200:] or 'empty response'})"
         data = json.loads(r.stdout)
         callers = data.get("callers", []) if isinstance(data, dict) else []
         callees = data.get("callees", []) if isinstance(data, dict) else []
@@ -404,7 +464,7 @@ def tool_altbackend_get_architecture(args):
     try:
         r = subprocess.run(
             [ALTBACKEND_BIN, "cli", "get_architecture",
-             json.dumps({"project": ALTBACKEND_PROJECT})],
+             json.dumps(build_altbackend_payload("get_architecture", args))],
             capture_output=True, text=True, timeout=30)
         data = json.loads(r.stdout)
         stable = {
@@ -427,13 +487,24 @@ def tool_grep(args):
         r = subprocess.run(
             ["grep", "-rEn", pattern, TOKIO_CORPUS, f"--include={include}"],
             capture_output=True, text=True, timeout=15)
-        lines = r.stdout.strip().split("\n")[:50]
+        # Normalize the path BEFORE sorting and truncating, then sort.
+        #
+        # Two separate problems, same root: the corpus absolute path leaks into
+        # the ordering. `grep -r` emits directory-traversal order, so the same
+        # corpus at a different path yields the same hits in a different order;
+        # and sorting the RAW lines sorts by absolute path, so `/home/...` and
+        # `/tmp/...` keep different 50-line windows. Only the 50 kept lines are
+        # allowed to depend on content.
+        #
+        # This is a property of the measurement tool, not of any condition: C is
+        # the only arm that greps.
         formatted = []
-        for line in lines:
+        for line in r.stdout.strip().split("\n"):
             parts = line.split(":", 2)
             if len(parts) >= 3:
                 file_path = parts[0].replace(TOKIO_CORPUS + "/", "")
                 formatted.append(f"{file_path}:{parts[1]}: {parts[2].rstrip()}")
+        formatted = sorted(formatted)[:50]
         return "\n".join(formatted) if formatted else "(no grep results)"
     except Exception as e:
         return f"(grep error: {e})"
@@ -598,7 +669,7 @@ ALTBACKEND_SYS = """You are a code intelligence agent with limited turns. You MU
 Tools:
 - search_graph(query, limit=20): Search symbols. Returns name, label, file_path, start_line.
 - get_code_snippet(qualified_name, show_lines=3): Read source code for a symbol.
-- trace_path(name, direction="both"): Show callers/callees.
+- trace_path(function_name, direction="both"): Show callers/callees.
 - get_architecture(): Codebase structure overview.
 
 To use a tool, respond with ONE LINE of JSON:

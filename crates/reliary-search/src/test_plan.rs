@@ -18,6 +18,123 @@ pub struct TestPlan {
     pub tests: Vec<(String, Vec<String>)>,
     /// Suggested commands (deduped, sorted).
     pub commands: Vec<String>,
+    /// Test functions that live inside the changed files themselves. Rust,
+    /// Python and JS put tests in the same file as the code, so a path-only
+    /// plan reports nothing for exactly the files people ask about.
+    pub inline: Vec<InlineTest>,
+    /// Set when an inline scan was requested but the file's metadata could not
+    /// be read. Empty `inline` is then "not checked", not "no tests".
+    pub inline_skipped: Vec<String>,
+}
+
+/// Test-function markers, as prefixes of a trimmed line.
+///
+/// These are *attribute* shapes, not language grammars: every entry is a
+/// bracketed or at-sign annotation whose presence on the preceding line marks
+/// the next definition as a test. That is the same class as `#[cfg(test)]` and
+/// it generalises across Rust, C#, Java, Kotlin and Scala without a parser.
+const TEST_ATTRIBUTES: &[&str] = &[
+    "#[test]", "#[tokio::test", "#[async_std::test", "#[test_case",
+    "[Fact]", "[Theory]", "[Test]", "[TestMethod]", "[TestCase",
+    "@Test", "@ParameterizedTest",
+];
+
+/// Does this trimmed line carry a test annotation?
+pub fn is_test_attribute(t: &str) -> bool {
+    TEST_ATTRIBUTES.iter().any(|a| t.starts_with(a))
+}
+
+/// Python and Ruby have no attributes: the marker is the function name itself.
+/// `def test_x(` and `def test_x:` are the convention in both, and it is a
+/// name-shape rule, not a keyword list.
+fn is_python_style_test_fn(t: &str, name: &str) -> bool {
+    let lower = t.to_ascii_lowercase();
+    if !(lower.starts_with("def ") || lower.starts_with("async def ")) {
+        return false;
+    }
+    name.starts_with("test_") || name == "test" || name.ends_with("_test")
+}
+
+/// Inline tests, by enclosing function rather than by file path.
+///
+/// Rust, Python and JS put tests *inside* the same file as the code. The old
+/// plan only looked at file paths, so a file with 83 `#[test]` functions
+/// reported "no tests found" — 494 inline tests across this repository were
+/// invisible.
+///
+/// The unit reported is the test function and its line, which is what a person
+/// actually wants to run, not the file that contains it.
+fn inline_tests(meta: &crate::file_meta::FileMeta, rel: &str) -> Vec<InlineTest> {
+    let lines = &meta.lines;
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        // A definition may share its line with a body opener and even with
+        // code: `fn test_x() {    let home = ...`. Classify the declaration
+        // slice, not the whole line, or the trailing code changes the shape
+        // and the definition is missed.
+        let decl = match t.find('{') {
+            Some(b) if t[..b].contains('(') => &t[..b],
+            _ => t,
+        };
+        let def = crate::structural::classify_structural(decl.trim_end(), 0, false, false);
+        if !def.is_def {
+            continue;
+        }
+        let Some(name) = def.defined_name else { continue };
+        // A test annotation sits on the line(s) before the definition, and
+        // definitions routinely carry MORE than one attribute:
+        //     #[test]
+        //     #[allow(unused_imports)]
+        //     fn test_atomic_write_creates_file() {
+        // So walk back over the whole contiguous attribute run rather than
+        // looking at one line. An attribute is bracket-shaped (`#[...]`) or
+        // at-sign-shaped (`@Test`); anything else ends the run.
+        let mut marked = false;
+        for line in lines[..i].iter().rev() {
+            let t2 = line.trim();
+            if t2.is_empty() {
+                continue;
+            }
+            // A doc comment is itself an attribute (`#[doc]`), and real code
+            // interleaves them:
+            //     #[test]
+            //     /// V87: skip comments.
+            //     #[test]
+            //     fn trait_impl_scan_skips_comments() {
+            // Treating `///` as an end-of-run made that test invisible.
+            // Three attribute shapes: Rust `#[...]`, C#/Java `[Fact]`/`[Test]`,
+            // and Java/Kotlin/Python `@Test`. Doc comments are attributes too.
+            let is_attr = (t2.starts_with('#') && t2.ends_with(']'))
+                || (t2.starts_with('[') && t2.ends_with(']'))
+                || t2.starts_with("///") || t2.starts_with("//!")
+                || (t2.starts_with('@') && !t2.contains(char::is_whitespace));
+            if !is_attr {
+                break;
+            }
+            if is_test_attribute(t2) {
+                marked = true;
+            }
+        }
+        let marked = marked || is_python_style_test_fn(t, name);
+        if !marked {
+            continue;
+        }
+        out.push(InlineTest {
+            file: rel.to_string(),
+            line: (i + 1) as i32,
+            name: name.to_string(),
+        });
+    }
+    out
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InlineTest {
+    pub file: String,
+    /// 1-indexed display line.
+    pub line: i32,
+    pub name: String,
 }
 
 /// Map a changed file to candidate test files using mirror-path conventions.
@@ -102,6 +219,30 @@ pub fn compute_plan(
                 test_files.push(fp);
             }
         }
+    }
+
+    // 0. Inline tests in the changed files themselves.
+    let mut inline: Vec<InlineTest> = Vec::new();
+    let mut inline_skipped: Vec<String> = Vec::new();
+    for changed in changed_files {
+        // The index stores absolute paths; the CLI may pass either.
+        let abs = if std::path::Path::new(changed).is_absolute() {
+            changed.clone()
+        } else {
+            format!("{}/{}", path.trim_end_matches('/'), changed)
+        };
+        match crate::file_meta::get(&abs) {
+            Some(meta) => inline.extend(inline_tests(&meta, changed)),
+            None => inline_skipped.push(changed.clone()),
+        }
+    }
+    inline.sort();
+    inline.dedup();
+    for t in &inline {
+        matches
+            .entry(t.file.clone())
+            .or_default()
+            .insert(format!("inline test {}", t.name));
     }
 
     // 1. Callers of changed symbols that are tests.
@@ -240,12 +381,147 @@ pub fn compute_plan(
     Ok(TestPlan {
         tests,
         commands: commands.into_iter().collect(),
+        inline,
+        inline_skipped,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `compute_from_content` caches by path, so each fixture needs its own
+    /// path or every test reads the first fixture's metadata (which is exactly
+    /// what happened: all of them returned the last test's function).
+    fn meta_of(lines: &[&str]) -> std::sync::Arc<crate::file_meta::FileMeta> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let body = lines.join("\n");
+        let path = format!("/tmp/inline_probe_{}.rs", N.fetch_add(1, Ordering::Relaxed));
+        crate::file_meta::compute_from_content(&path, &body).unwrap()
+    }
+
+    fn names(rows: Vec<InlineTest>) -> Vec<String> {
+        rows.into_iter().map(|r| r.name).collect()
+    }
+
+    #[test]
+    fn inline_rust_tests_are_found_with_their_lines() {
+        let m = meta_of(&[
+            "fn production() {}",
+            "",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    #[test]",
+            "    fn does_a_thing() {",
+            "        assert!(true);",
+            "    }",
+            "",
+            "    #[tokio::test]",
+            "    async fn does_an_async_thing() {",
+            "    }",
+            "}",
+        ]);
+        let found = inline_tests(&m, "src/lib.rs");
+        assert_eq!(names(found.clone()), vec!["does_a_thing", "does_an_async_thing"]);
+        assert_eq!(found[0].line, 6);
+        assert_eq!(found[1].line, 11);
+        assert_eq!(found[0].file, "src/lib.rs");
+    }
+
+    /// Negative control for the attribute gate: without a test attribute, a
+    /// function inside `mod tests` is NOT a test. Removing the attribute gate
+    /// makes this test fail.
+    #[test]
+    fn production_functions_are_not_inline_tests() {
+        let m = meta_of(&[
+            "#[cfg(test)]",
+            "mod tests {",
+            "    fn helper_not_a_test() {}",
+            "    #[test]",
+            "    fn real_test() {}",
+            "}",
+        ]);
+        assert_eq!(names(inline_tests(&m, "src/lib.rs")), vec!["real_test"]);
+    }
+
+    /// Stacked attributes: a test often carries `#[allow(..)]` or a doc
+    /// comment between the marker and the definition. A single-line lookback
+    /// misses these, which is how 4 tests were lost on the first attempt.
+    #[test]
+    fn stacked_attributes_do_not_hide_a_test() {
+        let m = meta_of(&[
+            "    #[test]",
+            "    #[allow(unused_imports)]",
+            "    fn with_a_trailing_attr() {}",
+            "",
+            "    #[test]",
+            "    /// a doc comment between the marker and the fn",
+            "    fn with_a_doc_comment() {}",
+        ]);
+        assert_eq!(
+            names(inline_tests(&m, "src/lib.rs")),
+            vec!["with_a_trailing_attr", "with_a_doc_comment"]
+        );
+    }
+
+    /// A definition may share its line with code. The declaration slice is
+    /// classified instead of the raw line, or the `{`-and-body changes the
+    /// shape and the test disappears.
+    #[test]
+    fn one_line_test_body_is_still_found() {
+        let m = meta_of(&[
+            "#[test]",
+            "fn terse() {    let x = 1; assert_eq!(x, 1);",
+            "}",
+        ]);
+        assert_eq!(names(inline_tests(&m, "src/lib.rs")), vec!["terse"]);
+    }
+
+    /// Python and Ruby have no attributes: the convention is the name.
+    #[test]
+    fn python_style_test_names_are_found() {
+        let m = meta_of(&[
+            "def production():",
+            "    pass",
+            "",
+            "def test_production():",
+            "    assert True",
+            "",
+            "async def test_async_production():",
+            "    pass",
+            "",
+            "class TestThing:",
+            "    def test_method(self):",
+            "        pass",
+        ]);
+        assert_eq!(
+            names(inline_tests(&m, "tests/test_x.py")),
+            vec!["test_production", "test_async_production", "test_method"]
+        );
+    }
+
+    /// Attribute-shaped markers from other ecosystems.
+    #[test]
+    fn csharp_and_java_test_attributes_are_found() {
+        let m = meta_of(&[
+            "    [Fact]",
+            "    public void AddsNumbers() {",
+            "    }",
+            "",
+            "    [Test]",
+            "    public void SubtractsNumbers() {",
+            "    }",
+            "",
+            "    @Test",
+            "    public void multipliesNumbers() {",
+            "    }",
+        ]);
+        assert_eq!(
+            names(inline_tests(&m, "src/CalcTests.cs")),
+            vec!["AddsNumbers", "SubtractsNumbers", "multipliesNumbers"]
+        );
+    }
 
     #[test]
     fn mirror_candidates_src_layout() {

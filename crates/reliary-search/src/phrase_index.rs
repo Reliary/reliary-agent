@@ -171,19 +171,36 @@ fn global_available_impl(db: &Connection, db_path: &str) -> bool {
     get_phrase_index(db, db_path).is_some()
 }
 
-static CURRENT_DB_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+// Path of the index last used through this thread.
+//
+// One MCP server can answer for several projects (`path=` selects one), so this
+// is per-thread state rather than a process-wide `OnceLock`. The old `OnceLock`
+// kept the FIRST project's path forever: a search for project B ran the
+// whole-file rerank against project A's phrase table, or against none of them.
+thread_local! {
+    static CURRENT_DB_PATH: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 pub fn current_db_path() -> Option<String> {
-    CURRENT_DB_PATH.get().cloned()
+    CURRENT_DB_PATH.with(|c| c.borrow().clone())
 }
 
 fn set_current_db_path(p: &str) {
-    let _ = CURRENT_DB_PATH.set(p.to_string());
+    CURRENT_DB_PATH.with(|c| {
+        let mut slot = c.borrow_mut();
+        match slot.as_deref() {
+            Some(existing) if existing == p => {}
+            _ => *slot = Some(p.to_string()),
+        }
+    });
 }
 
-// Thread-local in-memory phrase index for the MCP server (CWD project).
+// Thread-local in-memory phrase index for the MCP server. Keyed by DB path, so
+// switching projects reloads instead of serving another project's phrases.
 thread_local! {
-    static PHRASE_INDEX: std::cell::RefCell<Option<std::rc::Rc<PhraseIndex>>> = const { std::cell::RefCell::new(None) };
+    static PHRASE_INDEX: std::cell::RefCell<Option<(String, std::rc::Rc<PhraseIndex>)>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Get the in-memory phrase index, loading it on first use from the given
@@ -192,18 +209,21 @@ thread_local! {
 pub fn get_phrase_index(db: &Connection, db_path: &str) -> Option<std::rc::Rc<PhraseIndex>> {
     PHRASE_INDEX.with(|c| {
         let mut opt = c.borrow_mut();
-        if let Some(idx) = opt.as_ref() {
-            let fresh = std::fs::metadata(db_path).ok().and_then(|m| m.modified().ok());
-            if idx.loaded_mtime == fresh {
+        let fresh = std::fs::metadata(db_path).ok().and_then(|m| m.modified().ok());
+        if let Some((cached_path, idx)) = opt.as_ref() {
+            if cached_path == db_path && idx.loaded_mtime == fresh {
+                set_current_db_path(db_path);
                 return Some(std::rc::Rc::clone(idx));
             }
         }
         set_current_db_path(db_path);
         if let Some(idx) = PhraseIndex::load(db, db_path) {
             let rc = std::rc::Rc::new(idx);
-            *opt = Some(std::rc::Rc::clone(&rc));
+            *opt = Some((db_path.to_string(), std::rc::Rc::clone(&rc)));
             return Some(rc);
         }
+        // A failed reload must not leave another project's index in place.
+        *opt = None;
         None
     })
 }
@@ -251,5 +271,61 @@ mod tests {
         let close = idx.find_closest("spwan", 5);
         assert!(close.iter().any(|(p, _)| p == "spawn"),
             "typo 'spwan' should suggest 'spawn', got {:?}", close);
+    }
+}
+
+#[cfg(test)]
+mod v86_phrase_index_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn db_with(path: &str) -> Connection {
+        let db = Connection::open(path).unwrap();
+        crate::schema::create_new_db(&db).unwrap();
+        db
+    }
+
+    /// A second project must not be reranked with the first project's phrases.
+    /// The path used to live in a process-wide `OnceLock`, so the first project
+    /// won forever.
+    #[test]
+    fn index_is_keyed_by_db_path() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a.sqlite");
+        let b = d.path().join("b.sqlite");
+        let da = db_with(a.to_str().unwrap());
+        let db_b = db_with(b.to_str().unwrap());
+        da.execute("INSERT INTO phrases (phrase) VALUES ('alpha_only')", []).unwrap();
+        db_b.execute("INSERT INTO phrases (phrase) VALUES ('beta_only')", []).unwrap();
+        // Force identical mtimes: the staleness guard alone must not be what
+        // makes this test pass. Without equal mtimes, removing the path check
+        // still reloads and the test would be vacuous.
+        drop(da);
+        drop(db_b);
+        let stamp = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        for f in [&a, &b] {
+            std::fs::File::options().write(true).open(f).unwrap().set_modified(stamp).unwrap();
+        }
+        let da = Connection::open(&a).unwrap();
+        let db_b = Connection::open(&b).unwrap();
+
+        let ia = get_phrase_index(&da, a.to_str().unwrap()).unwrap();
+        assert!(ia.find_prefix("alpha").contains(&"alpha_only"));
+        assert_eq!(current_db_path().as_deref(), Some(a.to_str().unwrap()));
+
+        let ib = get_phrase_index(&db_b, b.to_str().unwrap()).unwrap();
+        assert!(
+            ib.find_prefix("beta").contains(&"beta_only"),
+            "second project must load its own phrases"
+        );
+        assert!(
+            ib.find_prefix("alpha").is_empty(),
+            "the first project's phrases must not leak into the second"
+        );
+        assert_eq!(current_db_path().as_deref(), Some(b.to_str().unwrap()));
+
+        // Switching back reloads the first project.
+        let ia2 = get_phrase_index(&da, a.to_str().unwrap()).unwrap();
+        assert!(ia2.find_prefix("alpha").contains(&"alpha_only"));
     }
 }

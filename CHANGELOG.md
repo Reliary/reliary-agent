@@ -5,6 +5,317 @@ All notable changes to Reliary will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.12] - 2026-10-23
+
+Everything below was unreleased since 0.8.11: the cross-line lexer, the island
+classifier, the V86/V87 definition-quality fixes, inline test detection, the
+trait-question fixes, and a retraction of every comparison against
+codebase-memory-mcp published before this release.
+
+
+
+### Tests and trait questions
+
+Three bugs that made shipped output wrong, all found by running the commands
+rather than reading them.
+
+- **`test-plan` could not see tests inside the changed file.** `reliary
+  test-plan --files crates/reliary-search/src/structural.rs` answered "no tests
+  found" for a file containing 79 `#[test]` functions; 652 inline tests across
+  the workspace were invisible. Tests are now detected by shape — an attribute
+  run (`#[test]`, `#[tokio::test]`, C#/Java `[Fact]`/`[Test]`, `@Test`), the
+  `test_` name convention where there are no attributes, and the declaration
+  slice so a one-line body still classifies — and reported per function with its
+  line, which is what you actually run.
+- **`find_references("Default", def_only)` answered with `fn default()`.** Two
+  ordering bugs: the V87 comment guard treated every `#` line as a comment,
+  which made the `#[derive(...)]` branch unreachable, and a trait name took the
+  definition path before the implementor path. `Default` now returns the five
+  structs that implement it.
+- **The same fix had to be applied twice.** The first patch reached
+  `reliary_find_references` but not `reliary_find_references_with_source`, which
+  is the handler the benchmark and harness call, so measured behaviour did not
+  change. The trait answer is now one shared function, and an end-to-end test
+  compares both handlers' answers directly — a source-grep test passed with the
+  bug reinstated, because the helper call count stayed high through the usage
+  path.
+- **A bare `find_references(Trait)` now includes implementors.** The tool
+  description promises a call without mode flags returns all relevant knowledge;
+  for a trait it did not, because `#[derive]` has no occurrence row for the
+  struct.
+
+`test-plan` also no longer reports "no tests" for a file it could not read: the
+unreadable path is named on stderr, so "not checked" cannot look like "nothing
+here".
+
+### Definition quality: prose, control flow, comments
+
+Three classes of phantom definition were still being served after the V86
+index fixes. All were found by querying the index, not by reading code.
+
+- **Documentation is no longer a definition source.** Fenced snippets and
+  prose both match the shape rules, and no content test separates a plan
+  document from source: 627 of 4,750 definition rows came from markdown, so
+  `def_only("line")` answered with a README bullet. `.md`, `.mdx`, `.rst`,
+  `.adoc` and `.txt` stay searchable but supply no definitions. An extension
+  may exclude a decision, never admit one, so this is a deny-list.
+- **`except`/`elif`/`finally` are control flow.** The Python colon classifier
+  deliberately accepted `except Exception:` as a type definition (<0.1% of
+  lines), which was fine as a fraction and bad as a symbol: `Exception` is a
+  common query and it returned 153 `except` clauses. They join the leading-word
+  guard the rest of control flow uses.
+- **A line that begins inside a multi-line string is prose.** The classifier is
+  handed raw text, so a Python docstring body was classified as code and
+  `def_only("String")` answered with a doc line. `lex::starts_in_code` asks the
+  shared lexer whether the line starts inside a literal; ingest, JIT, reindex
+  and the warrant scan all consult it.
+- **Comment lines are not declarations.** `find_trait_impls_scoped` matched a
+  doc comment (`///   `pub name: String`   (struct-field fallback)`) through its
+  C#/Kotlin `:` pattern and reported `String` as implemented by a comment.
+
+Definition rows on this repository: 4,750 → 3,668, with zero markdown rows and
+zero `except` rows. Search still finds documentation content.
+
+Every gate here is mutation-verified. The trait-scan test also had to escape a
+`tempfile::tempdir()` dot-directory (the walker skips dot paths), which had made
+it pass vacuously.
+
+
+### Correctness fixes from the project review
+
+- **MCP server could be aborted by one query.** `reliary_query_ast` sliced a
+  user pattern at byte 20 without checking a character boundary; a 3-byte
+  character there panicked, and under `panic = "abort"` that killed the whole
+  server — every tool gone for the session. The slice is now boundary-safe and
+  a test drives the parser with multibyte input.
+- **Deleted files left the index.** Nothing removed `file_map` or `file_stats`
+  rows, so a deleted file stayed a search candidate and kept resolving
+  definitions to a path that no longer existed (23,510 occurrence rows on this
+  repository pointed at files that were gone). The watcher's delete path now
+  removes every row, and `trust` prunes files that no longer exist — skipping
+  paths whose parent directory is missing, so an unmounted volume cannot wipe
+  an index.
+- **Reindex could admit prose as source.** `reindex_file` never wrote
+  `is_source`, so a file created after `trust` inherited the schema default of
+  1 and a markdown file's fenced code became findable definitions. Reindex now
+  computes the flag from content and refuses data/config formats outright.
+- **An index built by older code was served silently.** `SCHEMA_VERSION` covers
+  table shape, not contents, so an upgraded binary kept answering from the old
+  extractor (which stored type names and locals as definitions).
+  `trust` now records the indexer fingerprint in `meta`; `doctor` reports a
+  mismatch and tells the user to rebuild.
+- **The phrase index was process-global.** A single `OnceLock` held the first
+  project's index path, so a server answering for a second project reranked
+  against the first project's phrases. It is now keyed by DB path.
+- **Six classifier false positives**, all found by reading the index the tools
+  actually serve:
+  - `let ones: Vec<i32> = {` was a type definition of `i32` (the value opens a
+    brace, so the block path named the annotation).
+  - `) -> String {` defined `String` — a signature continuation named the
+    return type.
+  - `text = ... else str(resp)` defined `str` — an assignment whose value
+    contains a call.
+  - `pub symbols_added: Vec<(String, String, i32)>,` defined `Vec` — the `(`
+    inside an unclosed generic group was read as a parameter list.
+  - `pub fn segment_lines<S: AsRef<str>>(...)` defined `Vec` — `>>` closes two
+    generic groups and was treated as a shift operator, leaving the depth
+    stuck.
+  - `seen: &mut HashSet<...>| {` defined `i32` — a brace after a closure's
+    closing `|` opens a closure body, not a type.
+
+  Each produced phantom symbols that `find_references(..., def_only)` answered
+  with, and type names are the worst case: they look plausible. After the
+  fixes the index holds zero `i32`, `vec` or `segment` definitions.
+- **Warrant: binary edits were invisible.** The scan stored `size:N` for
+  binary files, so a same-size edit changed nothing and the tree digest
+  disagreed with the identity pass. The manifest now always hashes content,
+  with `scanned` carrying the separate meaning.
+- **Empty qualified names** produced answers like `" is defined at a.rs:1"`;
+  there is now a file-stem fallback.
+- **A Rust field annotation read as an interface list.** `def_only` for `i32`
+  answered "implemented by 6 types" citing `pub struct Thing { pub field: i32 }`:
+  the C#/Kotlin `:` separator and a Rust field annotation are the same
+  character. A `{` or `"` before the colon now disqualifies the line, so a
+  primitive type reports no definition instead of six structs.
+
+### Performance
+
+- `search` reads document frequency from the in-memory phrase index instead of
+  a full `phrases` scan per term, and computes the two BM25 aggregates in one
+  query rather than two.
+- Warrant only runs the brace scanner on lines whose definitions it needs.
+
+
+### Warrant performance: cached base index, parallel scan, one read per file
+
+- **Indexer fingerprint (mechanical cache safety).** A `build.rs` in
+  `reliary-search` hashes the sources that determine stored rows (classifier,
+  lexer, extractor, occurrence builder, schema, tokenizer, segment gating) and
+  bakes the digest into the binary; it is mixed into every cache key. A
+  forgotten `INDEXER_VERSION` bump can no longer serve rows produced by
+  different code. Verified by editing a source file and observing the
+  fingerprint change.
+- **Head index cache.** The head side is now content-addressed too: an
+  unchanged working tree reuses its index (1.6 s -> 0.1 ms).
+- **Warrant derives definitions from the tree scan.** It used to build a
+  SQLite index per tree and read 5,231 definition rows out of 158,326. The scan
+  already reads and classifies every byte, so definitions are now produced in
+  that pass, and no index is built unless `RELIARY_SEGMENTER=1` (whose island
+  classifier the scan does not reproduce). Cost: cold 3.0 s -> 0.23 s, first
+  run after an edit 2.9 s -> 0.11 s, cache on disk 28 MB -> 1.4 MB. Four
+  contract shapes (rename, no_new_dead, signature, files) produce
+  byte-identical certificates to the previous binary.
+  Equivalence with the index is asserted against a real index, not assumed:
+  5,272 = 5,272 on this repository and 3,675 = 3,675 on the canonical snapshot,
+  with mutation-verified controls for the deny-list and UTF-8 admission gates.
+  Cached scans without a `defs` field fail to parse and are re-scanned rather
+  than reading as "no definitions", which would make every contract look
+  closed.
+
+- **Scan cache.** Scan results are cached per `(tree identity, needle set,
+  effective excludes)`, so a repeat contract on the same tree skips the scan
+  (0.2 s -> 2 ms per side). The identity pass itself no longer runs the lexer
+  and reads files in parallel.
+- **Exclusion handling was the hidden cost.** The gitignored-file list was
+  canonicalized entry by entry — 37,000 syscalls per pass on this repository,
+  more than the scan it protected. Excludes are now matched lexically as
+  root-relative paths, and `git ls-files --directory` collapses ignored
+  directories to one entry each (37,131 entries -> 395). The identity pass went
+  from 560 ms to 34 ms. Excludes that the walker can never reach (a dot-dir,
+  a `SKIP_DIRS` name) no longer participate, because they cannot change the
+  scan and would otherwise invalidate the cache whenever an ignored build
+  artefact appeared.
+- **Base index cache.** `reliary warrant` keys a cached base index on content
+  (`sha256(manifest digest, schema version, indexer version, classifier mode)`)
+  and stores it under `.reliary/warrant/` (4 entries, 512 MB cap, LRU by
+  mtime). Cache hit takes the base side from 1.43 s to 47 ms on this
+  repository. `--no-cache` / `RELIARY_WARRANT_CACHE=0` bypass it.
+  `INDEXER_VERSION` is bumped whenever anything that shapes stored rows
+  changes, so a stale entry can never be served by newer code.
+- **Index paths are now relativized** for warrant's indexes
+  (`relativize_index`, `index_revision_relative`). Without this a cached index
+  built at one root would report every base definition as removed when reused
+  at another. Covered by a move-the-tree test with a negative control.
+- **One read per file.** The tree scan used to open every file twice (binary
+  sniff, then read); `is_likely_binary_bytes` reuses the buffer it already has.
+- **Parallel scan**, width `min(cores, 4)`, `RELIARY_WARRANT_THREADS` to
+  override. Streaming: peak memory is `workers x file size`, not repo size.
+  Serial and parallel output are proven byte-identical by test.
+- **Allocation removal** in the token scan: reused masked-line buffer,
+  per-worker stem memo, `FxHashMap` occurrence counts.
+- **Byte-identical guarantee held:** certificates compared across cache miss,
+  cache hit, and `--no-cache` are identical; `RELIARY_WARRANT_TIMING=1` reports
+  the phase split.
+- No SIMD intrinsics: all crates are `#![forbid(unsafe_code)]`. `memchr` and
+  LLVM auto-vectorization are used where the standard ecosystem provides them.
+
+### Warrant v1 — closure certificates for changes
+
+New `reliary warrant` answers the question that ends an agent session: *is
+this change finished?* Given a base revision and the working tree, plus a
+small JSON contract, it emits a canonical certificate with a three-valued
+verdict (`closed` / `open` / `indeterminate`), source-backed counterexamples
+(`symbol at file:line` plus the raw line and its hash), and an explicit
+unseen region.
+
+- **Raw-token closure, not stem closure.** A rename is closed when the old
+  token appears nowhere in head. Index phrases are porter stems, so a
+  stem-based check would report closed while `handled` remains after
+  renaming `handling` — the falsifier pins this with a verified stem-collision
+  pair.
+- **Comments and strings never count.** The shared grammar-free lexer masks
+  them before scanning, so a renamed symbol mentioned in a comment does not
+  block closure.
+- **Delta accounting is asymmetric.** Unclaimed definition removals open the
+  verdict; unclaimed additions are warnings. A trivial contract cannot hide
+  an undeclared deletion.
+- **Canonical, replayable evidence.** Relative paths, sorted arrays, no
+  timestamps; the certificate is byte-identical across runs (tested).
+- **Falsifier passes.** 51 mutations (complete/incomplete renames, 25 symbols
+  plus a stem-collision case) on a generated 3-module crate, oracle
+  `cargo check`: violation precision 1.0, silent misses 0, false positives on
+  complete renames 0. The harness itself is mutation-verified: switching the
+  implementation to stem-based closure makes it fail.
+- Exit codes: 0 closed, 1 open, 3 indeterminate, 2 usage.
+
+Contract: `{"version":1,"conditions":[{"kind":"rename","from":"a","to":"b"}]}`
+with optional `remove`, `add`, `signature`, `no_new_dead`, `files`, `scope`,
+`allow_unseen`, `strict_unseen`. Plan: `docs/plans/V85_WARRANT.md`.
+
+### Measurement: the benchmark was breaking the comparison
+
+Every published comparison against codebase-memory-mcp before 2026-10-23 is
+retracted.
+
+- **The harness called its tracer with the wrong parameter.** `trace_path`
+  requires `function_name`; we sent `name`. The CLI prints its complaint to
+  stderr, exits 0 and writes nothing to stdout, so the wrapper raised and handed
+  the model `(altbackend error: Expecting value: line 1 column 1)`. That
+  silently disabled caller/callee tracing on four of the ten questions (q10
+  4/4, q5 3/4, q2 2/4, q4 1/4) and affected every tape recorded since
+  2026-06-30 — 35%, 42% and 25% of its answers in canonical-v1, v4 and v8.
+  The published "F1 0.298" and "clearly ahead of codebase-memory-mcp" are void.
+- Every wrapper now builds its payload through a guard that raises when a
+  server-required key is missing, and a test compares our required-key map
+  against the installed server's own `tools/list`.
+- **Recall could double-count.** The caller-list exception matched on location
+  alone, so one cited line could satisfy several ground-truth facts in the same
+  file. Each claim now satisfies at most one fact, and `recall <= 1.0` is
+  asserted. Disclosure: the published F1 was not affected by this; the check
+  over all 120 recorded answers maxes at 1.0 either way.
+- **Refusals are now counted.** "I could not determine X" is a different
+  failure from "X is wrong", and a backend that declines is cheap. Reported
+  next to the score, never folded into it.
+
+Re-measured on a snapshot of this repository, 10 questions, 4 seeds,
+claim-weighted:
+
+| | F1 | billed | tool bytes | dead-ends | refusals |
+|---|---|---|---|---|---|
+| reliary | 0.937 | 20,605 | 11.7K | 0.0 | 0/40 |
+| codebase-memory-mcp | 0.495 | 21,901 | 11.1K | 2.0 | 4/40 |
+| grep | 0.596 | 35,456 | 23.7K | 0.0 | 1/40 |
+
+A foreign corpus (tokio) with questions generated from the index, and the same
+tree with every identifier and filename pseudonymised:
+
+| | tokio F1 | obfuscated F1 |
+|---|---|---|
+| reliary | 0.783 | 0.711 |
+| grep | 0.642 | 0.526 |
+
+The lead is larger when the names carry no meaning, so it is not name
+recognition. Four questions and two seeds: a direction, not an interval.
+
+### Dead code, and two output excesses
+
+- **`#[test]` functions were counted as dead.** The exclusion was documented but
+  never implemented, so a module-scoped query returned 191 items whose first 12
+  were all tests, and the real answer never reached the caller. Two shapes are
+  now excluded: a test attribute on the preceding attribute run, and the `test_`
+  naming convention.
+- **Dead results were sorted worst-first** by descending path length, so the
+  caller's limit truncated away the exported functions the question asks about.
+  Ranking is now exported-first, then shortest path, then line — every key a
+  function of content.
+- **Every exported dead item is listed** and private helpers are summarised by
+  count. A flat present-cap of 12 was tried and reverted: it pushed the exported
+  functions below the cut and recall on the dead-code question went to 0.
+- **`describe(context="callers")` re-stated the definition and the pack body.**
+  The caller already has both from the call it made first, and paid for the
+  duplicate on every later turn: 1,312 → 306 bytes.
+- **`find_dead_code` printed every item the limit allowed**, and the model
+  re-emitted all of them at four times the input weight.
+
+### Reliability
+
+- The pre-commit hook aborted with a `grep` usage dump when a file named
+  `--help` appeared in the working tree. It now passes `--`.
+- Several end-to-end assertions were vacuous: two grepped source text for a
+  constant name and passed with the fix removed, and two fixtures never
+  exercised the code path they claimed to. All four now fail when the guard is
+  removed, verified by making the edit.
+
 ## [0.8.11] - 2026-10-16
 
 ### Hardening (security review F2-F8)
@@ -208,7 +519,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Free benchmark reproduction (cassette)** — `bench/cassettes/canonical-v4/` records the canonical 3-way run (A/B/C, seeds 42/17/123/456). `bench/replay_canonical.sh` replays it against a fresh corpus checkout at commit `5c8b6244` with zero API calls, no key, $0. All three conditions verify byte-identical on a fresh corpus at a different path.
+- **Free benchmark reproduction (cassette)** — `bench/cassettes/canonical-v4/` recorded the canonical 3-way run at the time of that release (the current tape is `canonical-v8`) (A/B/C, seeds 42/17/123/456). `bench/replay_canonical.sh` replays it against a fresh corpus checkout at commit `5c8b6244` with zero API calls, no key, $0. All three conditions verify byte-identical on a fresh corpus at a different path.
 
 ### Fixed
 
@@ -231,7 +542,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Benchmarks
 
-- Deterministic claim verification, canonical tape, 4 seeds 42/17/123/456: F1=A 0.947 / B 0.461 / C 0.615; billed=A 21,459 vs B 23,064 vs C 36,967; keyword=A 27.5 / B 24.8 / C 26.5; dead-ends=A 0.0 / B 3.5 / C 0.0. Record: `bench/cassettes/canonical-v4/record.jsonl`. Two measurement corrections landed in this cycle (disclosed separately from product fixes): the claim extractor now rejects sentence-initial prose words as symbols and credits grouped caller citations (`name (987)` under a file header) — both applied symmetrically to every condition and to the ground truth. The tape was re-recorded twice as product fixes changed the index: the string-literal fix removed 41% of non-def occurrence rows, and the deep-nested-definition fix (below) restored keyword-confirmed definitions that had been dropped. **The demonstrated advantage is cost and output size at comparable accuracy; an accuracy superiority over grep is not established.**
+- Deterministic claim verification, canonical tape, 4 seeds 42/17/123/456: F1=A 0.947 / B 0.461 / C 0.615; billed=A 21,459 vs B 23,064 vs C 36,967; keyword=A 27.5 / B 24.8 / C 26.5; dead-ends=A 0.0 / B 3.5 / C 0.0. Record: `bench/cassettes/canonical-v4/record.jsonl` (superseded by `canonical-v8`; this entry is a historical release note, not current numbers). Two measurement corrections landed in this cycle (disclosed separately from product fixes): the claim extractor now rejects sentence-initial prose words as symbols and credits grouped caller citations (`name (987)` under a file header) — both applied symmetrically to every condition and to the ground truth. The tape was re-recorded twice as product fixes changed the index: the string-literal fix removed 41% of non-def occurrence rows, and the deep-nested-definition fix (below) restored keyword-confirmed definitions that had been dropped. **The demonstrated advantage is cost and output size at comparable accuracy; an accuracy superiority over grep is not established.**
 - **Familiarity experiment: no flip.** Renaming every identifier in a memorized public repo (tokio) to test whether the accuracy edge was a training-prior artifact did not flip the A-vs-C comparison (judge delta +0.25 original / +0.19 obfuscated, 1.1–1.4σ, n=32). The familiarity mechanism found no support; the cost advantage reproduced on both arms. `bench/FAMILIARITY_EXPERIMENT.md`.
 - Bash compression: 31.6% mean / 3.9% median on the 20 RTK fixtures (the earlier 46.3% figure on 6 hand-picked fixtures is retracted).
 - **Edit-outcome mutation bench: TIE twice — no demonstrated advantage, line scrapped.** Run 1 (tests visible) tied at 100% f2p because a runnable failing test is a localization oracle. Run 2 withheld the oracle (all tests stripped from the agent workspace via `#[cfg(any())]`, `tests/` deleted; bare prose symptoms; hidden tests injected at scoring on a pristine tree with the agent patch re-applied) — **still 100% f2p for all three conditions, zero wrong-file edits**, kill criterion failed again. Single-line defects in a ~500-file repo are greppable from symptom prose. Claim only the retrieval advantage. `bench/MUTATION_BENCH_V2_PREREG.md`, `bench/MUTATION_BENCH_V2_RESULTS.md`.

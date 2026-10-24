@@ -270,10 +270,29 @@ fn doctor_checks(installs: &[InstallInfo]) -> Vec<DoctorCheck> {
         } else {
             ""
         };
+        // V86: an index built by a different indexer has the same schema and
+        // different contents. Old classifiers stored type names and local
+        // variables as definitions; nothing used to report the mismatch, so an
+        // upgraded binary kept answering from the old extraction.
+        let fp_mismatch = rusqlite::Connection::open(&index_path)
+            .ok()
+            .map(|db| {
+                reliary_search::schema::indexer_fingerprint(&db)
+                    .map(|fp| fp != reliary_search::warrant::INDEXER_FINGERPRINT)
+                    .unwrap_or(true)
+            })
+            .unwrap_or(false);
         match probe {
             Some((files, phrases, age)) => {
-                if age > 7.0 {
-                    (format!("{} files, {} phrases, {:.0}d old (stale — run `reliary trust .`){}", files, phrases, age, bak_note), true)
+                let stale_note = if fp_mismatch {
+                    " (built by a different indexer — run `reliary trust .` to rebuild)"
+                } else if age > 7.0 {
+                    " (stale — run `reliary trust .`)"
+                } else {
+                    ""
+                };
+                if fp_mismatch || age > 7.0 {
+                    (format!("{} files, {} phrases, {:.0}d old{}{}", files, phrases, age, stale_note, bak_note), true)
                 } else {
                     (format!("{} files, {} phrases, {:.0}d old{}", files, phrases, age, bak_note), true)
                 }

@@ -10,9 +10,9 @@ reaches agent context.
 
 **What it is for.** Answering "where is X defined", "who calls X", "what methods
 does X have" in one small tool call instead of a grep-then-read cycle. On the
-benchmark it answers at ~42% lower billed token cost than grep with about four
-times smaller tool output, at accuracy comparable to grep and clearly ahead of
-`codebase-memory-mcp` (the other MCP index tested).
+benchmark it answers at ~42% lower billed token cost than grep with about twice
+the tool-output efficiency, and it verified more of its claims than either
+alternative on that corpus.
 
 ## Install
 
@@ -147,6 +147,8 @@ reliary risk FILE            Pre-edit risk analysis
 reliary impact SYMBOL        Blast radius: callers, test files, risk verdict
 reliary test-plan            Which tests exercise the changed files/symbols
 reliary diff REV REV         Structural diff between two revisions
+reliary warrant              Closure certificate: is a change finished? (exit 0 closed, 1 open, 3 indeterminate)
+                             Caches indexes and scans by content in .reliary/warrant/ (--no-cache to bypass)
 reliary map                  Render a self-contained SVG map of the codebase
 reliary verify TEXT          Verify a claim about the codebase
 reliary fix TASK             Deterministic bug-fix recipes, LLM fallback
@@ -188,16 +190,25 @@ a non-TTY (re-run with `--yes`). `update --check` also uses 2 for "available".
 ## Benchmarks
 
 Measured with a deterministic claim-verification harness on a 10-question
-corpus, 4 seeds, `deepseek-v4-flash`. reliary's F1 leads the alternative MCP
-backend clearly and grep narrowly; the reliary-vs-grep gap is within noise on
-this single small corpus, so accuracy is presented as comparable to grep. The
-reproducible wins are cost, output size, and zero dead-ends.
+corpus of this project's own source, 4 seeds, `deepseek-v4-flash`. reliary
+answered 95% of verifiable claims correctly and every query produced a checkable
+claim; grep and codebase-memory-mcp produced fewer verifiable claims and
+verified fewer of them.
 
-| | F1 | Billed cost | Tool bytes | Dead-ends |
-|---|---|---|---|---|
-| reliary | 0.947 | 21,459 | 8.8K | 0.0 |
-| codebase-memory-mcp | 0.461 | 23,064 | 13.8K | 3.5 |
-| grep | 0.615 | 36,967 | 33.3K | 0.0 |
+This corpus is *familiar* to the model. On a foreign repository (tokio) grep
+led, and the familiarity experiment found no measurable familiarity effect, so
+accuracy on unfamiliar code is **not established**. The corpus-independent wins
+are cost, output size, and zero dead-ends.
+
+| | F1 | Billed cost | Tool bytes | Dead-ends | Refusals |
+|---|---|---|---|---|---|
+| reliary | 0.937 | 20,605 | 11.7K | 0.0 | 0/40 |
+| codebase-memory-mcp | 0.495 | 21,901 | 11.1K | 2.0 | 4/40 |
+| grep | 0.596 | 35,456 | 23.7K | 0.0 | 1/40 |
+
+Earlier comparisons against codebase-memory-mcp are **retracted**: the harness
+called its tracer with the wrong parameter name, which silently disabled
+caller/callee lookup on four of the ten questions.
 
 Full methodology, the edit-outcome result (a tie — no demonstrated advantage),
 the familiarity experiment, and a zero-cost cassette replay are in

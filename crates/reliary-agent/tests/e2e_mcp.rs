@@ -799,3 +799,79 @@ fn e2e_mcp_second_initialize_is_safe() {
     let text = mcp.call_tool_text("reliary_find_references", json!({ "name": "beta" }));
     assert!(text.contains("beta"), "must still answer after re-initialize");
 }
+
+// ── Handler parity ────────────────────────────────────────────────────────
+
+/// Every entry point that accepts `def_only` must answer a trait question the
+/// same way. V89's first fix reached only `reliary_find_references`, while the
+/// benchmark and the harness call `reliary_find_references_with_source`, so the
+/// measured answer did not change. A real two-handler comparison is the only
+/// test that catches that; a source grep cannot.
+#[test]
+fn e2e_mcp_def_only_handlers_agree_on_trait_questions() {
+    let fx = Fixture::trait_impls();
+    fx.trust();
+    let mut mcp = Mcp::start(fx.path());
+    mcp.initialize();
+
+    let args = json!({
+        "name": "Default",
+        "def_only": true,
+        "path_filter": "src/",
+        "path": fx.path().to_string_lossy(),
+    });
+    let primary = mcp.call_tool_text("reliary_find_references", args.clone());
+    let with_source = mcp.call_tool_text("reliary_find_references_with_source", args);
+
+    let first = |s: &str| s.lines().next().unwrap_or("").trim().to_string();
+    assert!(
+        first(&primary).contains("implemented by"),
+        "the primary handler must answer with implementors: {primary}"
+    );
+    assert_eq!(
+        first(&primary), first(&with_source),
+        "both def_only handlers must answer identically\n  primary: {primary}\n  with_source: {with_source}"
+    );
+}
+
+// ── Output size (V90) ──────────────────────────────────────────────────────
+
+/// A long dead list must list every exported item and summarise the private
+/// remainder. Capping the whole list was tried and reverted: with 46 dead items
+/// of which 31 are exported, a flat cap of 12 pushed the exported functions the
+/// question asks about below the cut, and recall on the dead-code question went
+/// to 0. A private helper nobody calls is usually deliberate; an exported one
+/// usually is not.
+#[test]
+fn e2e_mcp_dead_code_lists_exported_and_summarises_private() {
+    let fx = Fixture::mixed_dead_functions(6, 18);
+    fx.trust();
+    let mut mcp = Mcp::start(fx.path());
+    mcp.initialize();
+
+    let text = mcp.call_tool_text("reliary_find_dead_code", json!({
+        "path": "src/",
+        "limit": 40,
+        "path_hint": fx.path().to_string_lossy(),
+    }));
+
+    let listed: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains(" at ") && l.contains(".rs:"))
+        .collect();
+    // Every exported dead function must appear by name.
+    for i in 0..6 {
+        let name = format!("pub_unused_{i}");
+        assert!(
+            listed.iter().any(|l| l.starts_with(&name)),
+            "exported `{name}` must be listed:\n{text}"
+        );
+    }
+    // Private helpers are counted, not enumerated one per line.
+    assert!(
+        text.contains("private helper(s) with no callers"),
+        "the private remainder must be summarised:\n{text}"
+    );
+    // Nothing is hidden: the header states the true total.
+    assert!(text.contains("19 dead items"), "the true total must be stated:\n{text}");
+}

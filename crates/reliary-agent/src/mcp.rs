@@ -372,6 +372,64 @@ fn relpath_with(file_path: &str, workdir: &str) -> String {
         .unwrap_or_else(|| file_path.to_string())
 }
 
+/// Qualified name for a hit, with a non-empty fallback.
+///
+/// `derive_qualified_name` returns "" when it can resolve neither an enclosing
+/// type nor a function name — for instance when `file_meta` could not read the
+/// file. That produced answers of the form `" is defined at a.rs:1"`, which
+/// reads as a malformed tool response.
+/// Answer "which types implement Trait T?" from the trait-impl scan.
+///
+/// Shared by every handler that accepts `def_only`, so the answer does not
+/// depend on which entry point the caller used. The benchmark routes through
+/// `find_references_with_source` while the tool menu advertises
+/// `find_references`; V89's first fix only reached one of them, and the
+/// question still answered with `fn default()`.
+///
+/// Returns `None` when the name has no implementors — the caller then falls
+/// back to the ordinary definition path.
+fn trait_impls_answer(
+    db: &rusqlite::Connection,
+    sym: &str,
+    path_filter: &str,
+) -> Option<String> {
+    // A trait name is PascalCase. A lowercase name is a method and must not
+    // get an implementor list (`consume` -> "implemented by ..." would be
+    // nonsense).
+    let looks_type = sym.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false);
+    if !looks_type {
+        return None;
+    }
+    let pf: Option<&str> = if path_filter.is_empty() { None } else { Some(path_filter) };
+    let impls = reliary_search::callgraph_v2::find_trait_impls_scoped(db, sym, pf);
+    if impls.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = impls.iter().map(|i| i.type_name.as_str()).collect();
+    let items: Vec<String> = impls.iter().take(12)
+        .map(|i| format!("{} ({}:{})", i.type_name,
+            std::path::Path::new(&i.file).file_name()
+                .map(|x| x.to_string_lossy().to_string())
+                .unwrap_or_else(|| i.file.clone()),
+            i.line))
+        .collect();
+    Some(format!(
+        "{} is implemented by {} type(s): {}.\n  {}\n",
+        sym, impls.len(), names.join(", "), items.join(", ")))
+}
+
+fn fallback_label(file_path: &str, symbol: &str) -> String {
+    let stem = std::path::Path::new(file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if stem.is_empty() {
+        symbol.to_string()
+    } else {
+        format!("{stem}::{symbol}")
+    }
+}
+
 #[allow(dead_code)]
 fn relpath(file_path: &str) -> String {
     let workdir = active_root().to_string_lossy().to_string();
@@ -1447,7 +1505,12 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             if let Some(t) = entries.get(target_name).or_else(|| entries.get(&target_lower)) {
                 entry_lines.extend(t.iter().cloned());
             }
-            for caller in &callers_to_include {
+            // Same reason as the header: iterate in sorted order so the
+            // assembled entry (and every consumer that diffs it) is identical
+            // across processes.
+            let mut callers_ordered: Vec<&String> = callers_to_include.iter().collect();
+            callers_ordered.sort();
+            for caller in callers_ordered {
                 if caller != target_name && caller != &target_lower {
                     if let Some(c) = entries.get(caller).or_else(|| entries.get(&caller.to_lowercase())) {
                         entry_lines.extend(c.iter().cloned());
@@ -1479,9 +1542,17 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 rendered = if l2.is_empty() { "No signature info available.".to_string() } else { l2.join("\n") };
             }
 
-            let header_note = if !callers_to_include.is_empty() {
+            // Sorted, not insertion order. `callers_to_include` is a hash set,
+            // so its iteration order is stable only within one process: the
+            // same index produced two different tool outputs across runs and
+            // the canonical tape could not replay. Determinism here is a
+            // product property (the agent caches and diffs tool output), not
+            // just a benchmark convenience.
+            let mut callers_sorted: Vec<&String> = callers_to_include.iter().collect();
+            callers_sorted.sort();
+            let header_note = if !callers_sorted.is_empty() {
                 format!(" (callers included: {})",
-                    callers_to_include.iter().take(5).cloned().collect::<Vec<_>>().join(", "))
+                    callers_sorted.iter().take(5).map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
             } else { String::new() };
 
             // P2: append a one-line blast-radius summary when the symbol
@@ -1497,7 +1568,18 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                             .file_name()
                             .map(|x| x.to_string_lossy().to_string())
                             .unwrap_or_else(|| imp.def_file.clone());
-                        let mut g = format!("\n\nat a glance:\n- defined: {}:{}", def_short, imp.def_line);
+                        // `context=callers` asks for the callers. Emitting the
+                        // definition line as well duplicates what
+                        // `find_references(def_only)`/`call_graph` just returned
+                        // in the same session, and the model pays for it on
+                        // every subsequent turn. Keep the definition line only
+                        // when the caller did not scope the request.
+                        let ask_callers = context_lower.contains("caller");
+                        let mut g = if ask_callers {
+                            String::from("\n\nat a glance:")
+                        } else {
+                            format!("\n\nat a glance:\n- defined: {}:{}", def_short, imp.def_line)
+                        };
                         if !imp.callers.is_empty() {
                             let cs: Vec<String> = imp.callers.iter().take(5).map(|(f, l)| {
                                 let b = std::path::Path::new(f).file_name()
@@ -1525,10 +1607,17 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 Err(_) => (String::new(), String::new()),
             };
 
+            // A `context=callers` request already renders the caller lines; the
+            // fenced pack block repeats them verbatim. Omit the duplicate.
+            let body = if context_lower.contains("caller") {
+                String::new()
+            } else {
+                format!("\n\n```markdown\n{}\n```", rendered)
+            };
             DispatchResult::Success(serde_json::json!({
                 "content": [{ "type": "text", "text":
-                    format!("# Pack Entry: {}{}{}{}\n\n```markdown\n{}\n```",
-                        target_name, header_note, impact_line, glance_block, rendered)
+                    format!("# Pack Entry: {}{}{}{}{}",
+                        target_name, header_note, impact_line, glance_block, body)
                 }]
             }))
         }
@@ -1879,6 +1968,39 @@ let phrase_id = reliary_search::symbol::phrase_id_for(db, &sym_stemmed).ok().fla
 // Prevents dead-end retry loops by treating "no results" as a final answer
 // with helpful suggestions instead of an error.
 if def_only {
+    // A *trait* name is a poor definition target: `Default` has a `fn default`
+    // in some impl, which wins the is_def search and hides the answer the
+    // question actually asks for (which types implement it). Try the trait
+    // route first when the name is PascalCase and has implementors.
+    //
+    // This ordering is the whole fix: `Default` used to answer
+    // "OpTable::default is defined at op_table.rs:28" for
+    // "which structs derive or implement Default?".
+    // Same PascalCase rule the usage path uses: a lowercase name is a method,
+    // not a trait.
+    let looks_type_t = sym.chars().next()
+        .map(|c| c.is_ascii_uppercase()).unwrap_or(false);
+    if looks_type_t {
+        let pf_opt_t: Option<&str> =
+            if path_filter.is_empty() { None } else { Some(path_filter.as_str()) };
+        let trait_impls = reliary_search::callgraph_v2::find_trait_impls_scoped(db, sym, pf_opt_t);
+        if !trait_impls.is_empty() {
+            let items: Vec<String> = trait_impls.iter().take(12)
+                .map(|i| format!("{} ({}:{})", i.type_name,
+                    std::path::Path::new(&i.file).file_name()
+                        .map(|x| x.to_string_lossy().to_string())
+                        .unwrap_or_else(|| i.file.clone()),
+                    i.line))
+                .collect();
+            let names: Vec<&str> = trait_impls.iter().map(|i| i.type_name.as_str()).collect();
+            let text = format!(
+                "{} is implemented by {} type(s): {}.\n  {}\n",
+                sym, trait_impls.len(), names.join(", "), items.join(", "));
+            return DispatchResult::Success(serde_json::json!({
+                "content": [{ "type": "text", "text": text }]
+            }));
+        }
+    }
     if let Some(h) = hits.iter().find(|h| h.is_def) {
         let obj = hit_with_qualified_name(&h.file_path, h.line, h.col, &wd);
         let qn = obj["qualified_name"].as_str().unwrap_or(sym);
@@ -1889,7 +2011,10 @@ if def_only {
             .and_then(|meta| meta.lines.get(h.line as usize).cloned())
             .map(|s| format!("\n{}:{}    {}", f_short, ln, s.trim()))
             .unwrap_or_default();
-        let text = format!("{} is defined at {}:{}{}\n", qn, f_short, ln, code_evidence);
+        // V86: an empty qualified name produced " is defined at a.rs:1" — a
+        // malformed answer. Fall back to the stem's file type, then the symbol.
+        let label = if qn.is_empty() { fallback_label(&h.file_path, sym) } else { qn.to_string() };
+        let text = format!("{} is defined at {}:{}{}\n", label, f_short, ln, code_evidence);
         return DispatchResult::Success(serde_json::json!({
             "content": [{ "type": "text", "text": text }]
         }));
@@ -2155,7 +2280,8 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         .map(|x| x.to_string_lossy().to_string())
                         .unwrap_or_else(|| f.to_string());
                     // V40: One-line answer format.
-                    let text = format!("{} is defined at {}:{}\n", qn, f_short, ln);
+                    let label = if qn.is_empty() { fallback_label(&hit.file_path, sym) } else { qn.to_string() };
+                    let text = format!("{} is defined at {}:{}\n", label, f_short, ln);
                     DispatchResult::Success(serde_json::json!({
                         "content": [{ "type": "text", "text": text }]
                     }))
@@ -2408,11 +2534,41 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                         format!("{} dead items in {}: {}\n", dead.len(), scope, names.join(", "))
                     } else {
                         // V35: Flat text output — same fix as find_references V25.
+                        //
+                        // V90: partition by exported-ness instead of truncating
+                        // the whole list.
+                        //
+                        // A flat cap lost the answer: with 46 dead items of which
+                        // 31 are exported, capping at 12 pushed the exported
+                        // functions the question asks about below the cut, and
+                        // recall went to 0. A private helper nobody calls is
+                        // usually deliberate; an exported one usually is not.
+                        //
+                        // So: every exported item is listed (they are the answer),
+                        // and private helpers are summarised by count. Nothing is
+                        // hidden — the total and the private remainder are stated.
+                        let exported: Vec<&(String, String, i32, i32)> = dead.iter()
+                            .filter(|(_, f, l, _)| reliary_search::symbol::is_exported_definition(f, *l))
+                            .collect();
+                        let private = dead.len() - exported.len();
                         let mut out = String::with_capacity(1024);
-                        out.push_str(&format!("The answer is: {} dead items in {}:\n", dead.len(), scope));
-                        for (stem, file, line, _col) in &dead {
-                            let f_short = file.rsplit('/').next().unwrap_or(file);
-                            out.push_str(&format!("{} at {}:{}\n", stem, f_short, line + 1));
+                        out.push_str(&format!("The answer is: {} dead items in {} ({} exported):\n",
+                            dead.len(), scope, exported.len()));
+                        if exported.is_empty() {
+                            for (stem, file, line, _col) in dead.iter().take(12) {
+                                let f_short = file.rsplit('/').next().unwrap_or(file);
+                                out.push_str(&format!("{} at {}:{}\n", stem, f_short, line + 1));
+                            }
+                        } else {
+                            for (stem, file, line, _col) in &exported {
+                                let f_short = file.rsplit('/').next().unwrap_or(file);
+                                out.push_str(&format!("{} at {}:{}\n", stem, f_short, line + 1));
+                            }
+                        }
+                        if private > 0 {
+                            out.push_str(&format!(
+                                "(+{} private helper(s) with no callers; raise limit to include them)\n",
+                                private));
                         }
                         out
                     };
@@ -2523,6 +2679,16 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 };
             }
             if args.get("def_only").and_then(|v| v.as_bool()).unwrap_or(false) {
+                // A trait name answers with its implementors, exactly as the
+                // primary handler does. The benchmark routes through this
+                // handler, so a fix in only one of them changes nothing that
+                // is measured.
+                let pf_raw = args.get("path_filter").and_then(|v| v.as_str()).unwrap_or("");
+                if let Some(text) = trait_impls_answer(db, sym, pf_raw) {
+                    return DispatchResult::Success(serde_json::json!({
+                        "content": [{ "type": "text", "text": text }]
+                    }));
+                }
                 return match reliary_search::type_flow::top_candidate_definitions(db, sym).into_iter().next() {
                     Some((fp, line, _)) => {
                         let f_short = std::path::Path::new(&fp).file_name()
@@ -2551,26 +2717,11 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             // which returns raw JSON with zero hits for keywords like
             // "Default" that have no occurrence rows.
             if args.get("usage_only").and_then(|v| v.as_bool()).unwrap_or(false) {
-                // V59e guard: only fire for TYPE names (PascalCase).
-                // A lowercase method name like 'consume' would otherwise get
-                // an unrelated trait-impls answer.
-                let looks_type = sym.chars().next()
-                    .map(|c| c.is_ascii_uppercase()).unwrap_or(false);
-                if looks_type {
-                    let pf_raw = args.get("path_filter").and_then(|v| v.as_str()).unwrap_or("");
-                    let pf_opt: Option<&str> = if pf_raw.is_empty() { None } else { Some(pf_raw) };
-                    let impls = reliary_search::callgraph_v2::find_trait_impls_scoped(db, sym, pf_opt);
-                    if !impls.is_empty() {
-                        let items: Vec<String> = impls.iter().take(8)
-                            .map(|i| format!("{} ({}:{})", i.type_name,
-                                std::path::Path::new(&i.file).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| i.file.clone()),
-                                i.line))
-                            .collect();
-                        let text = format!("{} is implemented by {} types: {}.\n", sym, impls.len(), items.join(", "));
-                        return DispatchResult::Success(serde_json::json!({
-                            "content": [{ "type": "text", "text": text }]
-                        }));
-                    }
+                let pf_raw = args.get("path_filter").and_then(|v| v.as_str()).unwrap_or("");
+                if let Some(text) = trait_impls_answer(db, sym, pf_raw) {
+                    return DispatchResult::Success(serde_json::json!({
+                        "content": [{ "type": "text", "text": text }]
+                    }));
                 }
                 // Fall through to generic usage handling below via shared handler.
                 return handle_symbol_tool_with_db("reliary_find_references", args, db, dir);
@@ -2798,10 +2949,20 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 let n_defs = hits.iter().filter(|h| h.is_def).count();
                 let n_calls = hits.len() - n_defs;
                 // Phase 4: merged summary — single line with compact counts.
-                let summary = format!(
+                // The tool description promises that a call WITHOUT mode flags
+                // "returns all relevant knowledge". For a trait that includes
+                // the types implementing it, which the occurrence table cannot
+                // represent: `#[derive(Default)]` has no occurrence row for the
+                // struct. Appending it here makes the promise true and costs
+                // one line.
+                let mut summary = format!(
                     "{}: {}D {}C {}f",
                     sym, n_defs, n_calls, n_files
                 );
+                if let Some(impls) = trait_impls_answer(db, sym, &path_filter) {
+                    let one_line = impls.lines().next().unwrap_or("").trim();
+                    summary.push_str(&format!("\n{}", one_line));
+                }
                 let final_text = format!("{}\n\n{}", summary, raw_text);
                 DispatchResult::Success(serde_json::json!({
                     "content": [{ "type": "text", "text": final_text }]
@@ -3423,6 +3584,16 @@ pub fn serve_stdio() {
 mod tests {
     use super::*;
 
+    /// Every `def_only` handler must consult the trait-impl helper *before* it
+    /// falls back to a plain definition. The V89 bug survived one round of
+    /// fixing because the primary handler was patched and
+    /// `find_references_with_source` — the one the benchmark actually calls —
+    /// was not.
+    ///
+    /// Counting helper calls is not enough (they are shared with the usage
+    /// path, so the count stays high after a route is removed). This asserts
+    /// positional precedence: every `top_candidate_definitions` call must be
+    /// preceded, in the same function body, by a `trait_impls_answer` call.
     #[test]
     fn test_tool_definitions_have_required_fields() {
         let tools = tool_definitions();

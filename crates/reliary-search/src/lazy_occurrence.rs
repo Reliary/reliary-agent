@@ -17,6 +17,120 @@ use rusqlite::{params, Connection};
 use rustc_hash::FxHashMap;
 use std::fs;
 
+/// Step 4b: per-file island context for the flag-gated JIT path.
+/// Loads persisted islands + source file count when the flag is on
+/// AND the index holds a set; disabled otherwise (legacy byte-identical).
+/// Owns the island vec (lifetimes: callers hold the struct, borrow its
+/// fields — no self-reference).
+pub struct FileIslandCtx {
+    pub enabled: bool,
+    pub islands: Vec<crate::islands::Island>,
+    pub total_files: usize,
+}
+
+pub fn load_island_ctx(db: &Connection) -> FileIslandCtx {
+    if !crate::segment::segment_enabled() {
+        return FileIslandCtx { enabled: false, islands: Vec::new(), total_files: 0 };
+    }
+    let islands = crate::ingest::load_islands(db);
+    if islands.is_empty() {
+        return FileIslandCtx { enabled: false, islands: Vec::new(), total_files: 0 };
+    }
+    let total_files: usize = db
+        .query_row("SELECT COUNT(*) FROM file_map WHERE is_source = 1", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .map(|n| n.max(0) as usize)
+        .unwrap_or(0);
+    FileIslandCtx { enabled: true, islands, total_files }
+}
+
+/// Step 4b: doc frequency of one stem = phrase_occ blob entry count
+/// (one indexed PK lookup + varint decode). No schema change, no scan.
+/// Result cached per file by the caller via `cache`.
+pub fn df_for_stem(
+    db: &Connection,
+    stem: &str,
+    cache: &mut FxHashMap<String, usize>,
+) -> usize {
+    if let Some(&d) = cache.get(stem) {
+        return d;
+    }
+    let d: usize = db
+        .query_row("SELECT id FROM phrases WHERE phrase = ?1", [stem], |r| {
+            r.get::<_, i64>(0)
+        })
+        .ok()
+        .and_then(|pid| {
+            db.query_row(
+                "SELECT file_blob FROM phrase_occ WHERE phrase_id = ?1",
+                [pid],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .ok()
+        })
+        .map(|blob| crate::schema::unpack_file_blob(&blob).count())
+        .unwrap_or(0);
+    cache.insert(stem.to_string(), d);
+    d
+}
+
+/// Deferred IDF guard (A2b): resolves `df_for_stem` only when the
+/// classifier asks about an anchorless candidate name — never a
+/// per-token prebuild of the whole line's vocabulary. `allows` matches
+/// `DfGuard::allows` exactly (majority rule), so results are identical.
+struct LazyDfGuard<'a> {
+    db: &'a Connection,
+    cache: &'a std::cell::RefCell<FxHashMap<String, usize>>,
+    total_files: usize,
+}
+
+impl crate::islands::DfLookup for LazyDfGuard<'_> {
+    fn allows(&self, stem: &str) -> bool {
+        if self.total_files == 0 {
+            return true;
+        }
+        let cached = self.cache.borrow().get(stem).copied();
+        let d = match cached {
+            Some(d) => d,
+            None => {
+                let d = df_for_stem_plain(self.db, stem, &mut self.cache.borrow_mut());
+                d
+            }
+        };
+        d * 2 <= self.total_files
+    }
+}
+
+/// Same body as `df_for_stem` but taking a plain `&mut` cache (the
+/// `RefCell`-wrapped caller passes the borrow). Kept separate so the
+/// public `df_for_stem` signature (used by tests/tools) is unchanged.
+fn df_for_stem_plain(
+    db: &Connection,
+    stem: &str,
+    cache: &mut FxHashMap<String, usize>,
+) -> usize {
+    if let Some(&d) = cache.get(stem) {
+        return d;
+    }
+    let pid: Option<i64> = db
+        .query_row("SELECT id FROM phrases WHERE phrase = ?1", [stem], |r| r.get(0))
+        .ok(); // GUARDED: intentional — absent stem: "nothing to fix", treat as df 0
+    let d = pid
+        .and_then(|pid| {
+            db.query_row(
+                "SELECT file_blob FROM phrase_occ WHERE phrase_id = ?1",
+                [pid],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .ok()
+        })
+        .map(|blob| crate::schema::unpack_file_blob(&blob).count())
+        .unwrap_or(0);
+    cache.insert(stem.to_string(), d);
+    d
+}
+
 /// V58b: PER-PHRASE generation counters. The global counter (V58) was too
 /// coarse — any JIT build anywhere invalidated every cached result, so
 /// cross-query repeats never hit. A repeat is now served from cache iff THAT
@@ -88,44 +202,58 @@ pub fn is_source_like(content: &str) -> bool {
         (0..sample_count).map(|i| all_lines[i * n / sample_count]).collect()
     };
 
+    // V84: literate Haskell detection. A `.lhs` file prefixes every code
+    // line with `> `; a Markdown blockquote uses the same prefix for prose.
+    // The file-level majority decides: if most non-blank lines carry the
+    // prefix, it is literate code and the prefix is stripped before
+    // classification. A doc with a quote-heavy section never reaches
+    // majority without bullet/link markers elsewhere.
+    let quote_count = sample
+        .iter()
+        .filter(|l| l.trim_start().starts_with("> "))
+        .count();
+    let sample_nonblank = sample.iter().filter(|l| !l.trim().is_empty()).count();
+    let literate = quote_count > 0 && quote_count * 2 > sample_nonblank;
+
     let mut code_lines = 0usize;
+    let mut strong_lines = 0usize;
     let mut non_blank = 0usize;
     let mut markdown_lines = 0usize;
+    let mut comment_lines = 0usize;
+    let mut data_lines = 0usize;
 
     for line in &sample {
-        let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        let raw = line.trim();
+        if raw.is_empty() { continue; }
+        let trimmed = if literate {
+            raw.strip_prefix("> ").unwrap_or(raw)
+        } else {
+            raw
+        };
         non_blank += 1;
 
-        // V63f: markdown-marker lines (`#`, `- `, `* `, `> `, `` ` ``, `|`)
-        // — prose docs with embedded code fences still pass the code-ratio
-        // check because the fenced lines count as code. Marker dominance
-        // (>50%) is the grammar-free signal that this is a doc, not source.
-        // `#` is NOT a marker when it's a C preprocessor directive.
-        let is_marker = (trimmed.starts_with('#')
-            && !trimmed.starts_with("#include")
-            && !trimmed.starts_with("#define")
-            && !trimmed.starts_with("#pragma")
-            && !trimmed.starts_with("#if")
-            && !trimmed.starts_with("#elif")
-            && !trimmed.starts_with("#else")
-            && !trimmed.starts_with("#endif")
-            && !trimmed.starts_with("#undef"))
-            || trimmed.starts_with("- ")
-            || trimmed.starts_with("* ")
-            || trimmed.starts_with("> ")
-            || trimmed.starts_with('`')
-            || trimmed.starts_with('|');
-        if is_marker {
-            markdown_lines += 1;
+        // V84: language attributes are CODE evidence, not comments. Rust
+        // `#[derive(...)]` / `#![allow(...)]` open with `#` like a markdown
+        // heading, but they are declaration syntax.
+        if trimmed.starts_with("#[") || trimmed.starts_with("#![") {
+            code_lines += 1;
+            strong_lines += 1;
+            continue;
         }
 
-        // Comment-like: starts with //, #, *, -, >, <!--
-        // V61: `#` is NOT a comment when it's a C preprocessor directive
-        // (#include/#define/#if/#pragma) — header-heavy C files were being
-        // rejected as "not source" (ratio <= 0.10).
-        if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("<!--")
-            || (trimmed.starts_with("- ") && !trimmed.starts_with("-- "))
+        // V84: unambiguously code-comment shapes. These are NEUTRAL — they
+        // neither count as code nor as prose in the density denominator.
+        // Comment-heavy source (Haskell/OCaml headers, 80% `--` files) was
+        // being rejected because comments diluted the code ratio; that is a
+        // denominator bug, not a signal about the file's role.
+        let is_comment = trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with("*/")
+            || trimmed.starts_with("* ")
+            || (trimmed.starts_with("--") && !trimmed.starts_with("-->"))
+            || trimmed.starts_with("{-")
+            || trimmed.starts_with("(*")
+            || trimmed.starts_with("<!--")
             || (trimmed.starts_with('#')
                 && !trimmed.starts_with("#include")
                 && !trimmed.starts_with("#define")
@@ -134,19 +262,118 @@ pub fn is_source_like(content: &str) -> bool {
                 && !trimmed.starts_with("#elif")
                 && !trimmed.starts_with("#else")
                 && !trimmed.starts_with("#endif")
-                && !trimmed.starts_with("#undef"))
-        {
-            continue; // comment, not code
+                && !trimmed.starts_with("#undef"));
+        if is_comment {
+            comment_lines += 1;
+            // V84: `#`-led lines are comments in Python/Ruby/Shell and
+            // headings in Markdown; `* `-led lines are block-comment
+            // continuations in C-family code and bullets in Markdown. They
+            // are NEUTRAL for the code ratio (a comment-heavy source file
+            // must not fail on density), but they still count toward the
+            // doc-marker tally below. The doc test requires marker dominance
+            // AND weak code evidence, which separates a 70%-`#` Ruby file
+            // from a 70%-bullet README.
+            if trimmed.starts_with('#') || trimmed.starts_with("* ") {
+                markdown_lines += 1;
+            }
+            continue;
+        }
+
+        // V63f: markdown-marker lines (`- `, `> `, `` ` ``, table rows,
+        // and markdown links `[text](url)`).
+        // `#` headings are handled above as neutral comments.
+        // V84: `> ` is ALSO the literate-Haskell code prefix — in a literate
+        // file every code line starts with it, so a blanket marker rule
+        // rejects real programs (`Setup.lhs`). Distinguish by context below:
+        // a file where `> ` lines are the majority of *content* is literate
+        // code, not a blockquote-heavy doc; blockquotes in docs never reach
+        // majority without markers elsewhere.
+        let is_marker = (trimmed.starts_with("- ") && !trimmed.starts_with("-- "))
+            || trimmed.starts_with('`')
+            || (trimmed.starts_with('|') && trimmed.ends_with('|'))
+            || trimmed.contains("](");
+        if is_marker {
+            // V84: prose-marker lines are NEUTRAL — a bullet or a markdown
+            // link is not code evidence, and counting it toward `code` (via
+            // the `(` in `[text](url)`) was how README pages slipped past
+            // the density test. They still count toward the doc-marker tally.
+            markdown_lines += 1;
+            continue;
         }
 
         // Data-like: looks like JSON key-value ("key": value) or bare string
         // JSON objects/arrays start with { or [
+        // V84: also the JSON punctuation shapes — a line that is only a
+        // structural bracket (`[`, `{`, `}`, `},`, `],`) or a bare quoted
+        // string is data, not code. Without this, a JSON array of objects
+        // leaves the bracket/string lines in the denominator and the code
+        // ratio of a pure-data file creeps over the floor.
+        let stripped_brackets = trimmed.trim_end_matches(',');
+        let bracket_only = stripped_brackets
+            .bytes()
+            .all(|b| matches!(b, b'[' | b']' | b'{' | b'}' | b' '));
+        let quote_cleaned = trimmed.trim_end_matches(',').trim_end_matches('\'');
+        let bare_string = trimmed.starts_with('"')
+            && quote_cleaned.ends_with('"')
+            && quote_cleaned.len() > 1
+            && !quote_cleaned[1..quote_cleaned.len() - 1].contains('"');
         if (trimmed.starts_with('"') && trimmed.contains("\":"))
             || trimmed.starts_with("{\"") || trimmed.starts_with("[{")
             || trimmed.starts_with('[') && trimmed.ends_with(']')
             || trimmed.starts_with('{') && trimmed.ends_with('}')
+            || bracket_only
+            || bare_string
         {
-            continue; // data, not code
+            data_lines += 1;
+            continue; // data payload, not code
+        }
+
+        // V84: TOML/INI section headers (`[build]`, `[[redirects]]`) are data
+        // structure, not declarations. Without this, `[[redirects]]` slips
+        // past the JSON-array check and a config file can reach the ratio
+        // test with a config section as its only "code".
+        let bare = trimmed.trim_start_matches('[').trim_end_matches(']');
+        if trimmed.starts_with('[') && trimmed.ends_with(']')
+            && !bare.contains('[') && !bare.contains('\'') && !bare.contains('"')
+        {
+            data_lines += 1;
+            continue;
+        }
+
+        // V84: `key = value` where the key is a bare identifier and the value
+        // is a quoted string or bare scalar — TOML/INI/env shape. It is NOT a
+        // declaration even when the key happens to be a decl-ish word
+        // (`from = "/"`, `type = "lib"`). The has_decl_shape test below would
+        // otherwise count it because `from` is an OCaml opener.
+        let toml_binding = {
+            let mut ok = false;
+            if let Some(eq) = trimmed.find('=') {
+                let prev = trimmed.as_bytes().get(eq.wrapping_sub(1)).copied();
+                let next = trimmed.as_bytes().get(eq + 1).copied();
+                let bare_op = !matches!(prev, Some(b'=') | Some(b'!') | Some(b'<') | Some(b'>'))
+                    && !matches!(next, Some(b'=') | Some(b'>'));
+                if bare_op {
+                    let key = trimmed[..eq].trim();
+                    let val = trimmed[eq + 1..].trim();
+                    // V84: `key = "literal"` / `key = 'literal'` / `key =
+                    // [array]` / `key = """` — config-value shapes. A bare
+                    // identifier key with a quoted, bracketed, or triple-quoted
+                    // value is data in every config language, and the key is
+                    // never a symbol definition. This is what keeps the
+                    // remaining Cargo.toml files out even though `name`,
+                    // `version`, `default`, and `time` are all "identifiers".
+                    ok = !key.is_empty()
+                        && !key.contains(' ')
+                        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
+                        && (val.starts_with('"') || val.starts_with('\'')
+                            || val.starts_with('[') || val.starts_with('{'));
+                }
+            }
+            ok
+        };
+        if toml_binding {
+            data_lines += 1;
+            continue;
         }
 
         // Code-bearing signals:
@@ -187,12 +414,114 @@ pub fn is_source_like(content: &str) -> bool {
         };
         let has_assignment = trimmed.contains('=') && trimmed.ends_with(';')
             && !trimmed.starts_with('=');
+        // V83 B11: declaration/equation bindings are code too, even when
+        // they carry no `(`, `{`, `;` or arrow — `module Fiber_io = Fiber_io`,
+        // `let level = ref 0`, `type t = int`. A whole-file class of
+        // OCaml module-alias files (9 .ml + 53 .mli on the ocaml-lsp corpus,
+        // 62 files: every symbol silently unsearchable) has NOTHING else on
+        // its first lines. Positional signal: a top-level `=` that is not an
+        // operator adjacency (==, !=, <=, >=, =>) and has an identifier
+        // before it — a binding shape, not prose. Prose lines (`a = b`
+        // inside docs) are excluded by the file-level ratio as before:
+        // this only ADDS a code line signal.
+        // V83 B11b: signature/declaration shapes are code too:
+        // `val print_ml : unit -> unit`, `type t`, `include module type of
+        // Rpc.Client`. A line whose first token is a declaration-ish word
+        // (shared predicate) with more tokens after it is source, not prose.
+        // V84: strip a leading `pub(...)` qualifier group before the test so
+        // `pub(crate) mod collect;` and `pub(super) use foo::Bar;` count —
+        // a whole class of module/use-header files (16 tokio .rs files, 165
+        // ctags sites) was rejected with code=9/98 and every symbol in them
+        // was silently unsearchable.
+        let has_decl_shape = {
+            let mut head = trimmed;
+            if head.starts_with("pub(") {
+                // Skip `pub(...)` including the closing paren, then spaces.
+                if let Some(close) = head.find(')') {
+                    head = head[close + 1..].trim_start();
+                }
+            }
+            let mut it = head.split_whitespace();
+            if let Some(first) = it.next() {
+                let more = it.next().is_some();
+                let decl = crate::structural::is_declarator_word_pub(first)
+                    || first == "include"
+                    || first == "val"
+                    || first == "type"
+                    || first == "module"
+                    || first == "open"
+                    || first == "sig"
+                    || first == "struct"
+                    // V84: module/dependency loaders are declarations of a
+                    // file's structure. `require_relative 'rack/version'`,
+                    // `autoload :BodyProxy, "rack/body_proxy"`, `use foo::Bar;`
+                    // appear in header-only files with no braces or parens.
+                    || first == "require"
+                    || first == "require_relative"
+                    || first == "autoload"
+                    || first == "load"
+                    || first == "use"
+                    || first == "import"
+                    || first == "from"
+                    // V84: macro definitions (`macro_rules!`, `macro`) are
+                    // declarations; the `!` suffix marks the definition form.
+                    || first.ends_with('!')
+                    // V84: C preprocessor declarations in header-only files.
+                    || first.starts_with('#');
+                more && decl
+            } else {
+                false
+            }
+        };
+        let has_binding_eq = {
+            let b = trimmed.as_bytes();
+            let mut found = false;
+            for i in 0..b.len() {
+                if b[i] == b'=' {
+                    let prev = if i > 0 { b[i - 1] } else { b' ' };
+                    let next = if i + 1 < b.len() { b[i + 1] } else { b' ' };
+                    let op = matches!(prev, b'=' | b'!' | b'<' | b'>')
+                        || matches!(next, b'=' | b'>');
+                    if !op {
+                        // identifier immediately before (skip spaces)
+                        let mut j = i;
+                        while j > 0 && (b[j - 1] == b' ' || b[j - 1] == b'\t') { j -= 1; }
+                        if j > 0 && (b[j - 1].is_ascii_alphanumeric() || b[j - 1] == b'_') {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            found && !trimmed.starts_with('=') && !trimmed.ends_with('.')
+        };
 
         if ends_with_brace || has_arrow || has_keyword
             || (has_call_pattern && !trimmed.ends_with(','))
             || has_assignment
+            || has_binding_eq
+            || has_decl_shape
         {
             code_lines += 1;
+            // V84 (P-A'): split strong from weak evidence. A data/config file
+            // can fake a binding (`name = "tokio"`, `version = "1.0"`) but
+            // cannot fake `()`, `{`-at-end, `->`/`=>`, a declaration keyword,
+            // `;`-terminated assignment, or a module/dependency header. A file
+            // whose only code-shaped lines are bindings is DATA, no matter
+            // how many of them there are — this is what re-rejects the 17
+            // Cargo.toml files that B11's binding_eq signal admitted, while
+            // keeping OCaml module aliases (`module Fiber_io = Fiber_io`,
+            // which has_decl_shape also matches) and Python modules (which
+            // always contain imports/defs/calls somewhere).
+            let strong = ends_with_brace
+                || has_arrow
+                || has_keyword
+                || (has_call_pattern && !trimmed.ends_with(','))
+                || has_assignment
+                || has_decl_shape;
+            if strong {
+                strong_lines += 1;
+            }
         }
     }
 
@@ -200,18 +529,52 @@ pub fn is_source_like(content: &str) -> bool {
         eprintln!("[guard:is_source_like] skipped (empty content)");
         return false;
     }
-    let ratio = code_lines as f64 / non_blank as f64;
-    // V63f: markdown-marker dominance — >50% of non-blank lines starting
-    // with #/- /* >/`/| means this is a prose doc (even with embedded code
-    // fences), not source. Grammar-free: character-class counting.
-    if non_blank >= 10 && markdown_lines as f64 / non_blank as f64 > 0.5 {
-        eprintln!("[guard:is_source_like] skipped (markdown-dominant: {}/{} marker lines)", markdown_lines, non_blank);
+    // V84: the population is CONTENT lines — comments and data payloads are
+    // neutral, neither code nor prose. Comment-heavy source (an 80% `--`
+    // Haskell header, an 85% doc-comment Rust module) is still source, and
+    // counting comments in the denominator was what rejected it.
+    let content = non_blank.saturating_sub(comment_lines + data_lines);
+    if content == 0 {
+        eprintln!(
+            "[guard:is_source_like] skipped (no content lines: comments={}, data={}, non_blank={})",
+            comment_lines, data_lines, non_blank
+        );
+        return false;
+    }
+    let ratio = code_lines as f64 / content as f64;
+    // V63f/V84: markdown-marker dominance identifies a prose document, but
+    // ONLY when the file also lacks strong code evidence. A Ruby file that is
+    // 70% `#` comments still has `def`/`end`/method-call lines; a README that
+    // is 70% headings and bullets has none of those beyond embedded fences.
+    // Requiring both keeps comment-heavy source while rejecting docs.
+    let marker_dominant = non_blank >= 10
+        && markdown_lines as f64 / non_blank as f64 > 0.5
+        && (strong_lines as f64 / content as f64) < 0.20;
+    if marker_dominant {
+        eprintln!("[guard:is_source_like] skipped (markdown-dominant: {}/{} marker lines, strong={}/{})", markdown_lines, non_blank, strong_lines, content);
         return false;
     }
     // V61: small comment-heavy files (e.g. 11 doc lines + 1 fn) were rejected
     // at ratio <= 0.10 — accept any file with >= 1 code line when tiny.
-    if ratio <= 0.10 && !(non_blank < 20 && code_lines >= 1) {
-        eprintln!("[guard:is_source_like] skipped (ratio={:.3} <= 0.10, code={}, non_blank={})", ratio, code_lines, non_blank);
+    if ratio <= 0.10 && !(content < 20 && code_lines >= 1) {
+        eprintln!(
+            "[guard:is_source_like] skipped (ratio={:.3} <= 0.10, code={}, content={}, non_blank={})",
+            ratio, code_lines, content, non_blank
+        );
+        return false;
+    }
+    // V84 (P-A'): binding-only files are data. `name = "tokio"`, `edition =
+    // "2021"` are the shape of every TOML/INI/conf file, and B11's binding
+    // signal admitted 17 Cargo.toml files that way. Require at least one
+    // STRONG code signal (call/brace/arrow/keyword/declaration) for admission.
+    // OCaml module aliases keep their decl shape; Python modules keep their
+    // imports and defs; a hypothetical file of nothing but `k = v` bindings
+    // is indistinguishable from config and is treated as such.
+    if strong_lines == 0 {
+        eprintln!(
+            "[guard:is_source_like] skipped (binding-only: strong=0, content={}, non_blank={})",
+            content, non_blank
+        );
         return false;
     }
     true
@@ -420,13 +783,19 @@ pub fn ensure_occurrence_for_phrase(
             // `StructuralResult` in a fn's return type inherited the fn's def
             // flag, and def-lookup returned the fn line for struct queries.
             let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
+            let defs_allowed = !crate::ingest::is_prose_path(file_path);
+            let mut lex_state = crate::lex::LexState::new();
             crate::ingest::reset_comment_state();
             for line in &lines {
                 let (open_count, close_count) = crate::ingest::count_braces(line);
                 let prev_depth = brace_depth;
                 brace_depth += open_count as i32 - close_count as i32;
                 if brace_depth < 0 { brace_depth = 0; }
-                let result = crate::structural::classify_structural(line, prev_depth, open_count > 0, false);
+                let result = if !defs_allowed || !crate::lex::starts_in_code(line, &mut lex_state, false) {
+                    crate::structural::StructuralResult::water()
+                } else {
+                    crate::structural::classify_structural(line, prev_depth, open_count > 0, false)
+                };
                 line_tags.push(result.tag);
                 line_is_def.push(result.is_def);
                 line_def_names.push(result.defined_name.map(|s| s.to_string()));
@@ -441,13 +810,26 @@ pub fn ensure_occurrence_for_phrase(
                 // a name inside a string/comment (`panic!("write_vocab")`) a
                 // phantom occurrence, and diverged the `col` ordinal from the
                 // file-path build.
-                let code_line = crate::structural::strip_strings_and_comments(line);
+                let code_line = crate::structural::tokenizable_code(line);
                 for (col, token) in crate::scan_identifiers(&code_line).into_iter().enumerate() {
                     let stemmed = crate::stem_identifier(&token);
                     if stemmed != phrase_text {
                         continue;
                     }
-                    if crate::keywords::is_noise_token(&token, &stemmed) {
+                    // V84: keyword-shaped DEFINED NAMES are real symbols
+                    // (`fn new`, `fn default`, `From::from`). Only uses are
+                    // noise. This path is per-phrase, so almost every token is
+                    // a use — the exemption applies only when the classifier
+                    // bound this token as the line's definition.
+                    let token_is_def_name = line_def
+                        && line_def_name.as_deref().map(|d| {
+                            d.eq_ignore_ascii_case(&token)
+                                || crate::islands::def_name_matches_token(
+                                    &d.to_ascii_lowercase(),
+                                    &token,
+                                )
+                        }).unwrap_or(false);
+                    if !token_is_def_name && crate::keywords::is_noise_token(&token, &stemmed) {
                         continue;
                     }
                     let col_idx = col as i32;
@@ -455,9 +837,16 @@ pub fn ensure_occurrence_for_phrase(
                     // V59/V75: is_def iff the classifier said so AND this token
                     // IS the line's defined name. Case-insensitive:
                     // scan_identifiers lowercases, the classifier returns
-                    // source-case names.
+                    // source-case names. Operator names (`operator==`)
+                    // claim their identifier token via the shared link.
                     let is_def_int = if line_def
-                        && line_def_name.as_deref().map(|d| d.eq_ignore_ascii_case(&token)).unwrap_or(false)
+                        && line_def_name.as_deref().map(|d| {
+                            d.eq_ignore_ascii_case(&token)
+                                || crate::islands::def_name_matches_token(
+                                    &d.to_ascii_lowercase(),
+                                    &token,
+                                )
+                        }).unwrap_or(false)
                     { 1 } else { 0 };
                     let tag = if is_def_int == 1 { line_tag } else { 0 };
                     let block_id = block_id_for_line(line_no);
@@ -614,12 +1003,146 @@ fn ensure_occurrence_for_file_impl(
     let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
     let mut brace_depth: i32 = 0;
     crate::ingest::reset_comment_state();
-    for line in &lines {
+    // Step 4b wiring: flag path classifies with islands (loaded from the
+    // index) + block-scoped backward sets + per-stem df guard via
+    // phrase_occ blobs. Legacy path stays byte-identical when off.
+    let island_ctx = load_island_ctx(db);
+    // Per-file df cache: stem -> df (one PK blob decode per stem). Resolved
+    // lazily (deferred) below — only for anchorless candidate names.
+    let df_cache: std::cell::RefCell<FxHashMap<String, usize>> =
+        std::cell::RefCell::new(FxHashMap::default());
+    let mut backward_stack: Vec<std::collections::HashSet<String>> =
+        vec![std::collections::HashSet::new()];
+    let mut stack_depth: i32 = 0;
+    // Import-group depth (see ingest: `::{` lists re-exports).
+    let mut import_group_depth: Option<i32> = None;
+    // Prose gate: documentation files and lines that begin inside a multi-line
+    // literal never supply definitions (see ingest::extract_file_phrases_for_path).
+    let defs_allowed = !crate::ingest::is_prose_path(&path);
+    let mut lex_state = crate::lex::LexState::new();
+    // DP segment starts for the flag path (depth-open events as proxy).
+    // A2a: segment borrows the resident `&str`s — no owned clone.
+    let seg_starts: std::collections::HashSet<usize> =
+        if island_ctx.enabled && std::env::var("RELIARY_NO_SEG").is_err() {
+        // C: cheap positional proxy (see ingest::cheap_seg_starts). The DP
+        // segmenter was measured pure waste (rule2 38/84490, no recall).
+        crate::ingest::cheap_seg_starts(&lines)
+    } else {
+        std::collections::HashSet::new()
+    };
+    crate::ingest::reset_comment_state();
+    for (li, line) in lines.iter().enumerate() {
         let (open_count, close_count) = crate::ingest::count_braces(line);
         let prev_depth = brace_depth;
         brace_depth += open_count as i32 - close_count as i32;
         if brace_depth < 0 { brace_depth = 0; }
-        let result = crate::structural::classify_structural(line, prev_depth, open_count > 0, false);
+        if island_ctx.enabled {
+            while stack_depth < brace_depth {
+                backward_stack.push(std::collections::HashSet::new());
+                stack_depth += 1;
+            }
+            while stack_depth > brace_depth {
+                backward_stack.pop();
+                stack_depth -= 1;
+                if backward_stack.is_empty() {
+                    backward_stack.push(std::collections::HashSet::new());
+                    break;
+                }
+            }
+            let masked = crate::structural::tokenizable_code(line);
+            if open_count > 0
+                && brace_depth > prev_depth
+                && crate::islands::opens_import_group(&masked)
+            {
+                import_group_depth = Some(brace_depth);
+            }
+            if let Some(gd) = import_group_depth {
+                if brace_depth < gd {
+                    import_group_depth = None;
+                }
+            }
+            let in_import_group =
+                import_group_depth.map(|gd| brace_depth >= gd).unwrap_or(false);
+            // V83 B4: imports must not vaccinate the backward vocabulary
+            // (see ingest.rs). Multi-line groups activate import_group_depth;
+            // single-line `use ...;` braces open+close on one line.
+            let import_line = in_import_group || crate::islands::opens_import_group(&masked);
+            // A2b/A3: analyze the header once; borrow the backward stack
+            // directly (the old per-line union clone was O(L*V) copies).
+            // DfGuard is DEFERRED — it resolves df only for the (rare)
+            // anchorless candidate name, not every token of every line.
+            let view = crate::islands::analyze_header(&masked);
+            let lazy_guard = LazyDfGuard {
+                db,
+                cache: &df_cache,
+                total_files: island_ctx.total_files,
+            };
+            // Import-group members never introduce (re-export list). A line
+            // that begins inside a literal is prose; so is a documentation file.
+            let in_literal = !crate::lex::starts_in_code(line, &mut lex_state, false);
+            let island_hit = if in_import_group || !defs_allowed || in_literal {
+                None
+            } else {
+                crate::islands::classify_island_line_raw_view(
+                    line,
+                    &masked,
+                    &view,
+                    seg_starts.contains(&(li + 1)),
+                    prev_depth,
+                    &backward_stack,
+                    &island_ctx.islands,
+                    Some(&lazy_guard as &dyn crate::islands::DfLookup),
+                )
+            };
+            match island_hit {
+                Some((name, tag)) => {
+                    line_tags.push(tag);
+                    line_is_def.push(true);
+                    line_def_names.push(Some(name.clone()));
+                    // B4: receiver-reached words never introduce (see ingest).
+                    if let Some(top) = backward_stack.last_mut() {
+                        for (s, w) in crate::scan_identifiers_with_offsets(&masked) {
+                            if w.bytes().next().unwrap().is_ascii_digit() {
+                                continue;
+                            }
+                            if crate::islands::is_receiver(&masked, s) {
+                                continue;
+                            }
+                            top.insert(w);
+                        }
+                    }
+                    // V83 B5: def name -> ENCLOSING frame (see ingest.rs).
+                    let frame = (prev_depth.max(0) as usize).min(backward_stack.len() - 1);
+                    backward_stack[frame].insert(name);
+                }
+                None => {
+                    line_tags.push(0);
+                    line_is_def.push(false);
+                    line_def_names.push(None);
+                    // V83 B4: an import line does not introduce names into
+                    // the file's vocabulary (see import_line above).
+                    if !import_line {
+                        if let Some(top) = backward_stack.last_mut() {
+                            for (s, w) in crate::scan_identifiers_with_offsets(&masked) {
+                                if w.bytes().next().unwrap().is_ascii_digit() {
+                                    continue;
+                                }
+                                if crate::islands::is_receiver(&masked, s) {
+                                    continue;
+                                }
+                                top.insert(w);
+                            }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        let result = if !defs_allowed || !crate::lex::starts_in_code(line, &mut lex_state, false) {
+            crate::structural::StructuralResult::water()
+        } else {
+            crate::structural::classify_structural(line, prev_depth, open_count > 0, false)
+        };
         line_tags.push(result.tag);
         line_is_def.push(result.is_def);
         line_def_names.push(result.defined_name.map(|s| s.to_string()));
@@ -688,14 +1211,20 @@ fn ensure_occurrence_for_file_impl(
 
             // Path B: strip trailing // comments and string-literal contents
             // before scanning identifiers (a name in a string is not a call site).
-            let code = crate::structural::strip_strings_and_comments(line);
+            let code = crate::structural::tokenizable_code(line);
 
             for (col, token) in crate::scan_identifiers(&code).into_iter().enumerate() {
                 // V39: use stem_identifier to preserve snake_case identifiers.
                 // porter_stem strips the `al` suffix from `structural` → `structur`,
                 // destroying compound names like `classify_structural`.
                 let stemmed = crate::stem_identifier(&token);
-                if crate::keywords::is_noise_token(&token, &stemmed) {
+                // V83 B3: a keyword-shaped DEFINED NAME (`fn new`,
+                // `fn default`) is a real symbol; only its uses are noise.
+                let is_def_name = line_def_name
+                    .as_deref()
+                    .map(|d| crate::islands::def_name_matches_token(d, token.as_str()))
+                    .unwrap_or(false);
+                if !is_def_name && crate::keywords::is_noise_token(&token, &stemmed) {
                     continue;
                 }
                 // Lookup or insert phrase_id.
@@ -723,9 +1252,18 @@ fn ensure_occurrence_for_file_impl(
                 // marked the LINE as a definition, and only the token that IS
                 // the defined name gets is_def/tag. Other identifiers on the
                 // same line stay usages. (`col == 0 && line_tag >= 5` was a
-                // tag-derived rule that disagreed with ingest; it is gone.)
+                // tag-derived rule that disagreed with ingest — removed.)
+                // Operator names (`operator==`) claim their identifier
+                // token via the shared link (exact match would never fire:
+                // punctuation never survives tokenization).
                 let is_def_int = if line_def
-                    && line_def_name.as_deref() == Some(token.as_str())
+                    && line_def_name.as_deref().map(|d| {
+                        d == token.as_str()
+                            || crate::islands::def_name_matches_token(
+                                &d.to_ascii_lowercase(),
+                                &token,
+                            )
+                    }).unwrap_or(false)
                 {
                     1
                 } else {
@@ -855,13 +1393,18 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
     let mut line_is_def: Vec<bool> = Vec::with_capacity(lines.len());
     let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
     let mut brace_depth: i32 = 0;
+    let mut lex_state = crate::lex::LexState::new();
     crate::ingest::reset_comment_state();
     for line in &lines {
         let (open_count, close_count) = crate::ingest::count_braces(line);
         let prev_depth = brace_depth;
         brace_depth += open_count as i32 - close_count as i32;
         if brace_depth < 0 { brace_depth = 0; }
-        let result = crate::structural::classify_structural(line, prev_depth, open_count > 0, false);
+        let result = if !crate::lex::starts_in_code(line, &mut lex_state, false) {
+            crate::structural::StructuralResult::water()
+        } else {
+            crate::structural::classify_structural(line, prev_depth, open_count > 0, false)
+        };
         line_tags.push(result.tag);
         line_is_def.push(result.is_def);
         line_def_names.push(result.defined_name.map(|s| s.to_string()));
@@ -921,7 +1464,7 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
             let block_id = block_ids.get(li).copied().unwrap_or(0);
 
             // V79: strip comments/strings before tokenizing (see the other path).
-            let code_line = crate::structural::strip_strings_and_comments(line);
+            let code_line = crate::structural::tokenizable_code(line);
             for (col, token) in crate::scan_identifiers(&code_line).into_iter().enumerate() {
                 // V41: use stem_identifier to preserve snake_case identifiers.
                 // porter_stem strips the `al` suffix from `structural` → `structur`,
@@ -956,9 +1499,16 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
                 // V73/V75: only the token that IS the defined name gets
                 // is_def/tag, and only when the classifier called the line a
                 // definition. (`col == 0 && line_tag >= 5` was tag-derived and
-                // disagreed with ingest — removed.)
+                // disagreed with ingest — removed.) Operator names claim
+                // their identifier token via the shared link.
                 let is_def_int = if line_def
-                    && line_def_name.as_deref() == Some(token.as_str())
+                    && line_def_name.as_deref().map(|d| {
+                        d == token.as_str()
+                            || crate::islands::def_name_matches_token(
+                                &d.to_ascii_lowercase(),
+                                &token,
+                            )
+                    }).unwrap_or(false)
                 {
                     1
                 } else {
@@ -1008,5 +1558,163 @@ mod tests {
         let db = Connection::open_in_memory().unwrap();
         crate::schema::create_new_db(&db).unwrap();
         assert_eq!(count_unresolved_phrases(&db).unwrap(), 0);
+    }
+
+    // ── V84 admission model ────────────────────────────────────────────────
+    // Each test is a negative control: it fails when the named rule is
+    // removed, verified by mutation (see the V84 commit message).
+
+    #[test]
+    fn v84_type_name_before_extends_clause() {
+        use crate::structural::classify_structural;
+        // The declared name is BEFORE the clause, at any generic depth.
+        let r = classify_structural("export interface $ZSFAny extends $ZSF {", 0, false, false);
+        assert_eq!(r.defined_name, Some("ZSFAny"));
+        let r = classify_structural(
+            "export interface ZSFArray<PrefixItems extends ZSF[] = ZSF[]> extends ZSF {",
+            0, false, false);
+        assert_eq!(r.defined_name, Some("ZSFArray"), "generic-embedded extends must not cut");
+        let r = classify_structural("class Foo extends Bar implements Baz {", 0, false, false);
+        assert_eq!(r.defined_name, Some("Foo"), "first depth-0 clause cuts");
+        let r = classify_structural("class Foo implements Baz {", 0, false, false);
+        assert_eq!(r.defined_name, Some("Foo"));
+        // `where` clauses still resolve the type name.
+        let r = classify_structural("struct Foo<T> where T: Clone {", 0, false, false);
+        assert_eq!(r.defined_name, Some("Foo"));
+    }
+
+    #[test]
+    fn v84_pointfree_definitions() {
+        use crate::structural::pointfree_name;
+        // Haskell/OCaml point-free and module constants are definitions.
+        assert_eq!(pointfree_name("arrayValues = List.map f xs", 0), Some("arrayValues"));
+        assert_eq!(pointfree_name("MAX_RETRIES = 5", 0), Some("MAX_RETRIES"));
+        assert_eq!(pointfree_name("externalNames = Set.fromList names", 0), Some("externalNames"));
+        // Indented statements are local bindings. The prefix is a single
+        // valid identifier, so only the indent gate can reject it.
+        assert_eq!(pointfree_name("    value = 5", 0), None);
+        assert_eq!(pointfree_name("\tvalue = 5", 0), None);
+        // Binder-led value bindings are not definitions. `let`/`const` are
+        // single words, so only the binder gate can reject them.
+        assert_eq!(pointfree_name("let = 5", 0), None);
+        assert_eq!(pointfree_name("const = 5", 0), None);
+        assert_eq!(pointfree_name("pub = 5", 0), None);
+        // Multi-word binder-led forms stay rejected by the purity rule.
+        assert_eq!(pointfree_name("let bg = callee()", 0), None);
+        assert_eq!(pointfree_name("pub const FOO = 1;", 0), None);
+        // Member/index/annotation assignment is not a definition.
+        assert_eq!(pointfree_name("a.b = 1", 0), None);
+        assert_eq!(pointfree_name("x[0] = 1", 0), None);
+        assert_eq!(pointfree_name("x: i32 = 5", 0), None);
+        // PascalCase heads are types/constructors, handled elsewhere.
+        assert_eq!(pointfree_name("Foo = bar", 0), None);
+        // Nested scopes are never module-level definitions.
+        assert_eq!(pointfree_name("value = 42", 1), None);
+        // Control-flow and empty RHS.
+        assert_eq!(pointfree_name("if x = y", 0), None);
+        assert_eq!(pointfree_name("x =", 0), None);
+    }
+
+    #[test]
+    fn v84_long_identifiers_are_indexed() {
+        // The scanner cap was 40 bytes; real test names and generated
+        // symbols exceed it. 80-byte identifiers must round-trip.
+        let long = "a".repeat(80);
+        let line = format!("fn {long}() {{ }}");
+        let toks = crate::scan_identifiers(&line);
+        assert!(toks.iter().any(|t| t == &long), "80-char identifier must be scanned");
+        assert!(crate::scan_identifiers_with_offsets(&line).iter().any(|(_, t)| t == &long));
+        // The cap still bounds pathological input.
+        let huge = "b".repeat(140);
+        assert!(!crate::scan_identifiers(&huge).iter().any(|t| t.len() > 100));
+    }
+
+    #[test]
+    fn v84_comment_heavy_source_is_admitted() {
+        // 60 comment lines + 4 real declarations. Comments must be NEUTRAL:
+        // if they re-enter the denominator, density falls to 4/64 and the
+        // file is rejected even though it is source.
+        let mut src = String::new();
+        for _ in 0..60 { src.push_str("-- | module documentation line\n"); }
+        src.push_str("module Data.Thing (thing) where\n");
+        src.push_str("thing :: Int -> Int\nthing x = x + 1\n");
+        assert!(is_source_like(&src), "comment-heavy source must be admitted");
+    }
+
+    #[test]
+    fn v84_binding_only_config_is_rejected() {
+        // Every line is `key = value` — no call, brace, arrow, or keyword.
+        let cfg = "[package]\nname = \"tokio\"\nversion = \"1.0\"\n"
+            .to_string()
+            + "edition = \"2021\"\nlicense = \"MIT\"\n";
+        assert!(!is_source_like(&cfg), "binding-only config must be rejected");
+        // TOML key that is also an OCaml opener (`from`) and a quoted value.
+        let redirect = "from = \"/\"\nto = \"/tokio\"\npublish = \"target/doc\"\n"
+            .to_string()
+            + "[build]\ncommand = \"cargo doc\"\n";
+        assert!(!is_source_like(&redirect), "quoted `key = value` is data");
+    }
+
+    #[test]
+    fn v84_markdown_links_are_not_code() {
+        // 40 markdown link lines. The `(url)` parens must not count as code;
+        // if the link-marker rule is removed, density clears the floor.
+        let mut doc = String::new();
+        for i in 0..40 {
+            doc.push_str(&format!("See [page {i}](https://example.com/{i}) for details.\n"));
+        }
+        assert!(!is_source_like(&doc), "markdown link lines must not be code");
+    }
+
+    #[test]
+    fn v84_declaration_only_header_files_are_admitted() {
+        // Module/use header files with no definitions of their own — the
+        // class that was silently unsearchable (16 tokio .rs files).
+        let rs = "pub(crate) mod collect;\nmod fuse;\nmod next;\n"
+            .to_string()
+            + "pub use take_while::TakeWhile;\nuse core::future::Future;\n"
+            + "pub(crate) mod timeout;\n";
+        assert!(is_source_like(&rs), "declaration-only Rust module file must be admitted");
+        let mli = "val print_ml : unit -> unit\nval parse : string -> ast\n"
+            .to_string()
+            + "type t\ninclude module type of Rpc.Client\n";
+        assert!(is_source_like(&mli), "OCaml .mli declaration file must be admitted");
+    }
+
+    #[test]
+    fn v84_doc_with_code_fences_is_rejected() {
+        // Docs pages that embed example code: headings dominate, the fenced
+        // examples are binding-shaped, and there are just enough strong lines
+        // to clear the ratio test. Marker dominance (weak strong-share) is
+        // the only rule that separates this from a source file.
+        let mut doc = String::new();
+        for i in 0..20 { doc.push_str(&format!("# Section {i}\n")); }
+        for i in 0..15 { doc.push_str(&format!("setting{i} = {i}\n")); }
+        doc.push_str("fn example() {\n}\n");
+        doc.push_str("fn other() {\n}\n");
+        assert!(!is_source_like(&doc), "fence-heavy doc must be rejected");
+    }
+
+    #[test]
+    fn v84_unquoted_binding_file_is_rejected() {
+        // `.ini`/`.env` shape with bare values: every line parses as a weak
+        // binding, so the density test passes. The strong-signal gate is the
+        // only thing that rejects it.
+        let mut cfg = String::new();
+        for i in 0..30 { cfg.push_str(&format!("setting_{i} = {i}\n")); }
+        assert!(!is_source_like(&cfg), "binding-only (unquoted) config must be rejected");
+    }
+
+    #[test]
+    fn v84_json_payload_is_rejected() {
+        // Structural brackets and bare strings are data; only the quoted
+        // key-value lines were previously recognised, so the file cleared
+        // the density floor on its brackets.
+        let mut json = String::from("[\n");
+        for i in 0..30 {
+            json.push_str(&format!("  {{\n    \"id\": {i},\n    \"name\": \"user\"\n  }},\n"));
+        }
+        json.push_str("]\n");
+        assert!(!is_source_like(&json), "JSON payload must be rejected");
     }
 }

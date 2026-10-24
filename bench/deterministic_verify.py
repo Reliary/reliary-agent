@@ -554,6 +554,23 @@ def _source_has_symbol(corpus, base, line, sym, cache, tol=1):
 
 # --- Scoring ---------------------------------------------------------------
 
+# Phrases that mean "I decline to answer", as opposed to "I answered wrongly".
+# Deliberately narrow: only an explicit statement of inability counts. A wrong
+# answer is a different failure and must not be reclassified as a refusal.
+_REFUSAL_MARKERS = (
+    "unable to determine", "cannot reliably", "cannot determine",
+    "could not determine", "could not be retrieved", "cannot be answered",
+    "cannot reliably answer", "i cannot", "i could not", "unable to answer",
+    "tool failed", "backend error", "not available with the available tools",
+)
+
+
+def is_refusal(answer):
+    """True when the answer says it could not answer."""
+    low = (answer or "").lower()
+    return any(m in low for m in _REFUSAL_MARKERS)
+
+
 def score_query(answer, gt_text, occ, tol=1, defs=None, dead=None, query_id="",
                 corpus=None):
     ans_facts = extract_facts(answer)
@@ -604,21 +621,36 @@ def score_query(answer, gt_text, occ, tol=1, defs=None, dead=None, query_id="",
     if not gt_verifiable:
         recall = 0.0
     else:
+        # Each answer claim may satisfy AT MOST ONE ground-truth fact. Without
+        # this, the location-only path below let a single cited line satisfy
+        # several GT facts that share a file and are within `tol` of each other,
+        # and recall exceeded 1.0 (observed: 2.098). Recall above 1.0 is not a
+        # strong result, it is a broken denominator, and the F1 built on it was
+        # meaningless.
+        used: set = set()
         found = 0
         for sym, base, line in gt_verifiable:
             if sym and sym.lower() != subj:
-                present = any(
-                    (s.lower() == sym.lower() and b == base and abs(l - line) <= tol)
-                    for (s, b, l) in ans_facts
+                match = next(
+                    ((i, s, b, l) for i, (s, b, l) in enumerate(ans_facts)
+                     if i not in used
+                     and s.lower() == sym.lower() and b == base
+                     and abs(l - line) <= tol),
+                    None,
                 )
             else:
-                present = any(
-                    (b == base and abs(l - line) <= tol)
-                    for (s, b, l) in ans_facts
+                match = next(
+                    ((i, s, b, l) for i, (s, b, l) in enumerate(ans_facts)
+                     if i not in used and b == base and abs(l - line) <= tol),
+                    None,
                 )
-            if present:
+            if match is not None:
+                used.add(match[0])
                 found += 1
-        recall = found / len(gt_verifiable)
+        # Clamp as a last line of defence: a recall above 1.0 means the
+        # numerator and denominator disagree about what a fact is.
+        recall = min(1.0, found / len(gt_verifiable))
+        assert recall <= 1.0, f"recall {recall} > 1.0 — the scorer is double-counting"
 
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
     return precision, recall, f1, len(ans_facts), verified, len(gt_verifiable)
@@ -685,7 +717,8 @@ def main():
                 answer, gt, occ, args.tol, defs=defs, dead=dead, query_id=qid,
                 corpus=args.corpus,
             )
-            q_scores.append((qid, p, r, f1, n_claims, n_verified, n_gt))
+            q_scores.append((qid, p, r, f1, n_claims, n_verified, n_gt,
+                             is_refusal(answer)))
         per_cond.setdefault(cond, []).append((seed, q_scores))
 
     # V64b: claim-weighted aggregation (primary) — total verified / total claimed.
@@ -722,7 +755,23 @@ def main():
             f1w = 2 * pw * rw / (pw + rw) if (pw + rw) else 0.0
             cov = sum(1 for s in q_scores if s[4] > 0) / len(q_scores) if q_scores else 0.0
             pws.append(pw); rws.append(rw); f1ws.append(f1w); covs.append(cov)
-        print(f"  {cond:<6} P={st.mean(pws):.3f} R={st.mean(rws):.3f} F1={st.mean(f1ws):.3f} coverage={st.mean(covs):.2f}")
+        # Refusals and memory answers are reported next to the score, because a
+        # backend that declines to answer is cheap and can look efficient.
+        # "We could not determine X" and "X is defined at ..." are not the same
+        # kind of failure.
+        refusals = [s for s in q_scores if s[7]] if len(q_scores) and len(q_scores[0]) > 7 else []
+        print(f"  {cond:<6} P={st.mean(pws):.3f} R={st.mean(rws):.3f} F1={st.mean(f1ws):.3f} "
+              f"coverage={st.mean(covs):.2f}")
+    print()
+    print("Condition honesty metrics:")
+    for cond in sorted(per_cond):
+        tot = ref = zero = 0
+        for seed, q_scores in per_cond[cond]:
+            for s in q_scores:
+                tot += 1
+                if len(s) > 7 and s[7]:
+                    ref += 1
+        print(f"  {cond:<6} refusals={ref}/{tot} ({100*ref/tot if tot else 0:.0f}%)")
 
     # Per-query detail for condition A
     print("\nPer-query (condition A, all seeds):")
@@ -731,7 +780,7 @@ def main():
             continue
         by_qid = {}
         for seed, q_scores in per_cond[cond]:
-            for qid, p, r, f1, nc, nv, ng in q_scores:
+            for qid, p, r, f1, nc, nv, ng, _ref in q_scores:
                 by_qid.setdefault(qid, []).append((p, r, f1, nc, nv, ng))
         for qid in sorted(by_qid):
             rows = by_qid[qid]

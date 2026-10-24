@@ -51,16 +51,30 @@ pub fn search_fts5(db: &Connection, query: &str, top_n: usize) -> Vec<SearchResu
 enum JoinMode { And, Or }
 
 fn rarest_term(db: &Connection, terms: &[String]) -> Option<String> {
-    let mut best: Option<(i64, String)> = None;
+    // Document frequency per term. `%term%` cannot use an index, so the SQL
+    // form is a full `phrases` scan per term on every search that falls
+    // through to this fallback. The in-memory phrase index answers the same
+    // question from a sorted table without touching SQLite; fall back to SQL
+    // only when it is unavailable.
+    let phrases = crate::phrase_index::current_db_path()
+        .and_then(|p| crate::phrase_index::get_phrase_index(db, &p));
+    let mut best: Option<(usize, String)> = None;
     for t in terms {
-        let like = format!("%{}%", t.replace('_', "\\_"));
-        let df: i64 = db
-            .query_row("SELECT COUNT(*) FROM phrases WHERE phrase LIKE ?1 ESCAPE '\\'", params![&like], |r| r.get(0))
-            .unwrap_or(0);
-        if df > 0
-            && best.as_ref().map(|(b, _)| df < *b).unwrap_or(true) {
-                best = Some((df, t.clone()));
+        let df = match phrases.as_ref() {
+            Some(idx) => idx.find_substring(t).len(),
+            None => {
+                let like = format!("%{}%", t.replace('_', "\\_"));
+                db.query_row(
+                    "SELECT COUNT(*) FROM phrases WHERE phrase LIKE ?1 ESCAPE '\\'",
+                    params![&like],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0) as usize
             }
+        };
+        if df > 0 && best.as_ref().map(|(b, _)| df < *b).unwrap_or(true) {
+            best = Some((df, t.clone()));
+        }
     }
     best.map(|(_, t)| t)
 }
@@ -111,8 +125,15 @@ fn run_terms_query(db: &Connection, terms: &[String], mode: JoinMode, top_n: usi
     let conditions: String = like_terms.iter()
         .map(|_| "p.phrase LIKE ? ESCAPE '\\'")
         .collect::<Vec<_>>().join(sep);
-    let total_files: f64 = db.query_row("SELECT COUNT(*) FROM file_map", [], |r| r.get(0)).unwrap_or(1.0);
-    let avg_tokens_raw: f64 = db.query_row("SELECT AVG(token_len) FROM file_stats", [], |r| r.get(0)).unwrap_or(1.0);
+    // One scan instead of two full aggregates per query.
+    let (total_files, avg_tokens_raw): (f64, f64) = db
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM file_map),
+                    (SELECT AVG(token_len) FROM file_stats)",
+            [],
+            |r| Ok((r.get::<_, f64>(0)?, r.get::<_, Option<f64>>(1)?.unwrap_or(0.0))),
+        )
+        .unwrap_or((1.0, 1.0));
     let avg_tokens: f64 = if avg_tokens_raw == 0.0 { 1.0 } else { avg_tokens_raw };
 
     let sql = format!(

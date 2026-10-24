@@ -110,109 +110,29 @@ pub fn build_brace_graph(file_lines: &[String]) -> BraceNode {
     let mut stack: Vec<usize> = vec![0]; // indices into all_nodes
     let mut depth: i32 = 0;
 
-    // V59 CRITICAL: ignore braces inside comments and string literals.
-    // A backtick/quote-wrapped `{` in a doc comment (e.g. "line ends with `{`")
-    // used to open a phantom block that never closed — the root swallowed the
-    // whole file, children=0, fn_names empty, and every downstream consumer
-    // (callgraph, find_definition, methods_on) silently degraded to empty.
-    let mut in_block_comment = false;
+    // V59/V81 CRITICAL: ignore braces inside comments and string literals.
+    // A brace wrapped in a doc comment (`"line ends with \`{\`"`) used to
+    // open a phantom block that never closed, swallowing the file. V81
+    // routes this through the shared grammar-free lexer (crate::lex),
+    // which additionally tracks multi-line literals — Python `"""`,
+    // `` ` `` (Go/JS), C# `@"`, Rust `r#"` — so a brace inside a
+    // multi-line string can no longer corrupt the graph.
+    let mut st = crate::lex::LexState::new();
     for (line_idx, line) in file_lines.iter().enumerate() {
         let line_no = (line_idx + 1) as i32;
-        // Strip line comments (// and # outside strings) first.
-        let code = crate::structural::strip_line_comment(line);
-        let bytes = code.as_bytes();
-        let mut in_string = false;
-        let mut quote = b'"';
+        let code = crate::lex::masked_bytes(line, &mut st, true);
+        let bytes = &code;
         let mut trimmed_seen = false;
         let mut trimmed = line.trim_start();
 
-        // Walk the CODE portion only; skip string-literal contents and
-        // /* */ block-comment regions.
+        // Walk the CODE portion only; string interiors and comments are
+        // already blanked to spaces (delimiters preserved for shape).
         let mut i = 0usize;
         while i < bytes.len() {
             let b = bytes[i];
-            if in_block_comment {
-                if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                    in_block_comment = false;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-                continue;
-            }
-            if !in_string && !trimmed_seen && !b.is_ascii_whitespace() {
-                trimmed = code[i..].trim_start();
+            if !trimmed_seen && !b.is_ascii_whitespace() {
+                trimmed = line[i..].trim_start();
                 trimmed_seen = true;
-            }
-            if !in_string && b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-                in_block_comment = true;
-                i += 2;
-                continue;
-            }
-            // V59: lifetime disambiguation — `'a` in `&'a str` is NOT a
-            // char literal. A `'` opens a char literal only when it closes
-            // within 3 bytes (`'x'`, `'\\''`). Otherwise skip one byte.
-            if !in_string && b == b'\'' {
-                if i + 2 < bytes.len() && bytes[i + 2] == b'\''
-                    && (bytes[i + 1] != b'\\' || i + 3 < bytes.len()) {
-                    // char literal — but only skip when the middle is not
-                    // itself a quote char; keep simple: treat as literal.
-                    in_string = true;
-                    quote = b;
-                    i += 1;
-                    continue;
-                }
-                i += 1;
-                continue;
-            }
-            if !in_string && b == b'"' {
-                // V61: raw string prefix `r#"..."#` / `r##"..."##` — the inner
-                // `"` must NOT close the string early (embedded quotes would
-                // corrupt the brace count). Count the hashes, skip to the
-                // matching `"#` terminator.
-                if i >= 1 && bytes[i - 1] == b'r' {
-                    let mut hashes = 0usize;
-                    let mut j = i + 1;
-                    while j < bytes.len() && bytes[j] == b'#' {
-                        hashes += 1;
-                        j += 1;
-                    }
-                    // Find `"` + hashes×`#` terminator.
-                    let mut k = j;
-                    while k < bytes.len() {
-                        if bytes[k] == b'"' {
-                            let mut m = k + 1;
-                            let mut matched = 0usize;
-                            while m < bytes.len() && bytes[m] == b'#' && matched < hashes {
-                                matched += 1;
-                                m += 1;
-                            }
-                            if matched == hashes {
-                                i = m;
-                                break;
-                            }
-                        }
-                        k += 1;
-                    }
-                    if k >= bytes.len() {
-                        // Unterminated raw string — treat rest as string.
-                        i = bytes.len();
-                    }
-                    continue;
-                }
-                in_string = true;
-                quote = b;
-                i += 1;
-                continue;
-            }
-            if in_string {
-                if b == b'\\' {
-                    i += 2;
-                    continue;
-                }
-                if b == quote { in_string = false; }
-                i += 1;
-                continue;
             }
             if b == b'{' {
                 depth += 1;
@@ -236,8 +156,7 @@ pub fn build_brace_graph(file_lines: &[String]) -> BraceNode {
                         all_nodes[parent_idx].children.push(node);
                     }
                 }
-                // V65: never let depth go negative — an unmatched `}` (e.g. a
-                // brace inside a string that the state machine missed) would
+                // V65: never let depth go negative — an unmatched `}` would
                 // desync every subsequent `{`/`}` and silently truncate the
                 // graph (nodes created but never attached to the root).
                 if depth > 0 { depth -= 1; }
@@ -355,4 +274,67 @@ pub fn shared_enclosing(root: &BraceNode, line_a: i32, line_b: i32) -> Option<&B
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn template_literal_brace_does_not_desync() {
+        // V81 negative control: an UNMATCHED `{` inside a JS template
+        // literal used to be counted as a real block open that never
+        // closed, so the following function's `}` closed the phantom and
+        // the function vanished from the root's children. The shared
+        // lexer ignores the literal's brace, so the function survives.
+        let f = lines(&[
+            "const t = `a { b`;",
+            "function h() {",
+            "  return 1;",
+            "}",
+        ]);
+        let root = build_brace_graph(&f);
+        assert_eq!(
+            root.children.len(),
+            1,
+            "the function must survive an unmatched brace inside a template literal"
+        );
+    }
+
+    #[test]
+    fn python_triple_quote_brace_does_not_desync() {
+        // Python is colon-structured (no braces), so the graph is normally
+        // root-only. Negative control: an UNMATCHED `{` inside a `"""`
+        // docstring used to create a phantom brace node.
+        let f = lines(&[
+            "def f():",
+            "    s = \"\"\"a { b",
+            "    c d\"\"\"",
+            "    return s",
+        ]);
+        let root = build_brace_graph(&f);
+        assert_eq!(
+            root.children.len(),
+            0,
+            "no phantom brace node from a docstring brace"
+        );
+    }
+
+    #[test]
+    fn normal_rust_file_still_graphs_fully() {
+        let f = lines(&[
+            "pub fn a() {",
+            "    let s = \"{ literal }\";",
+            "}",
+            "pub fn b() {",
+            "    let c = '{';",
+            "}",
+        ]);
+        let root = build_brace_graph(&f);
+        assert_eq!(root.children.len(), 2);
+    }
 }

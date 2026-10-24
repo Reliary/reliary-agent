@@ -19,7 +19,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CORPUS_COMMIT="5c8b6244"          # public commit this tape was recorded against
-TAPE="$ROOT/bench/cassettes/canonical-v4"
+TAPE="$ROOT/bench/cassettes/canonical-v10"
 BIN="$ROOT/target/release/reliary"
 CORPUS_DIR="${HOME}/src/v75-canon-replay"
 
@@ -44,6 +44,11 @@ fi
 echo "indexing corpus..." >&2
 rm -rf "$CORPUS_DIR/.reliary"
 (cd "$CORPUS_DIR" && "$BIN" trust . >/dev/null)
+# The tape was recorded against a fully-built occurrence table. `trust` only
+# populates phrases, so without this the first `describe`/`search` result
+# differs and every A/C run is a strict replay miss. This is a reproducibility
+# step, not an optimisation.
+(cd "$CORPUS_DIR" && "$BIN" build-all . >/dev/null 2>&1)
 
 ALTBACKEND=""
 PROJECT="$CORPUS_DIR"
@@ -68,6 +73,15 @@ if [ -n "$CBM" ]; then
   esac
 else
   echo "note: codebase-memory-mcp not found — condition B will be skipped" >&2
+fi
+
+# Condition C runs arbitrary shell commands through `bash -c`, so its output
+# embeds absolute paths and depends on the checkout location. A and B replay
+# byte-identically anywhere; C only at the recorded path. This is a limit of
+# the grep condition itself, not of reliary.
+if [ "$CORPUS_DIR" != "${HOME}/src/v75-canon-replay" ]; then
+  echo "note: C is not replayable at a different corpus path (its shell output embeds it);" >&2
+  echo "      use REPLAY_CONDS=A,B for a byte-identical check here." >&2
 fi
 
 echo "replaying tape (zero API calls)..." >&2
@@ -95,4 +109,4 @@ python3 "$ROOT/bench/run_snapshot_bench.py" \
 echo >&2
 echo "results: $OUT" >&2
 echo "compare against the recorded run:" >&2
-echo "  python3 bench/compare_replay.py bench/cassettes/canonical-v4/record.jsonl $OUT" >&2
+echo "  python3 bench/compare_replay.py bench/cassettes/canonical-v10/record.jsonl $OUT" >&2

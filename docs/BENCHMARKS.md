@@ -7,6 +7,31 @@ precision/recall/F1 over verifiable claims, plus billed token cost and wall
 time. This rewards correct locations and penalizes invented ones; it does not
 reward keyword overlap.
 
+## Foreign corpus (tokio, auto-generated questions)
+
+Corpus: tokio at a pinned commit, and the same tree with every identifier and
+filename replaced by a deterministic pseudonym (`bench/obfuscate_corpus.py`).
+Questions and ground truth are generated from the index by
+`bench/auto_questions.py` and scored with the same deterministic verifier, so
+no question was written to suit either condition. 4 questions, 2 seeds, 7-14
+verified GT facts each.
+
+| Corpus | Condition | F1 | Billed | Wall | Tool bytes |
+|---|---|---|---|---|---|
+| tokio | reliary | **0.783** | **4,262** | **7.9s** | **2,018** |
+| tokio | grep | 0.642 | 10,666 | 12.6s | 11,154 |
+| tokio (obfuscated) | reliary | **0.711** | **6,225** | **9.9s** | **2,105** |
+| tokio (obfuscated) | grep | 0.526 | 18,228 | 18.5s | 10,206 |
+
+Reliary leads on both twins, and the gap is slightly **larger** when the
+identifiers carry no meaning (F1 +0.141 original, +0.185 obfuscated), so the
+result is not explained by the model recognising tokio's names. Cost, output
+size and wall time favour reliary in both cases by 2-3x.
+
+This is a small sample: 4 auto-generated questions over 2 seeds. It is enough
+to say the direction survives obfuscation, not enough to put a confidence
+interval on the margin.
+
 ## Comprehension (10 questions, 4 seeds)
 
 Corpus: a snapshot of this repository. Model: `deepseek-v4-flash`. Seeds:
@@ -14,27 +39,54 @@ Corpus: a snapshot of this repository. Model: `deepseek-v4-flash`. Seeds:
 
 | Metric | A (reliary) | B (codebase-memory-mcp) | C (grep) |
 |--------|-------------|----------------|----------|
-| F1 (claim-weighted) | **0.947** | 0.461 | 0.615 |
-| Precision | **0.960** | 0.893 | 0.881 |
-| Recall | **0.935** | 0.315 | 0.473 |
-| Coverage | **1.00** | 0.93 | 0.88 |
-| Billed cost | **21,459** | 23,064 | 36,967 |
-| Tool output bytes | **8.8K** | 13.8K | 33.3K |
-| Dead-ends (unanswered queries) | **0.0** | 3.5 | 0.0 |
-| Wall, median | **29s** | 32s | 39s |
-| Keyword rubric /30 | 27.5 | 24.8 | **26.5** |
+| F1 (claim-weighted) | **0.937** | 0.495 | 0.596 |
+| Precision | 0.939 | 0.876 | 0.830 |
+| Recall | **0.935** | 0.348 | 0.467 |
+| Coverage | **1.00** | 0.90 | 0.85 |
+| Billed cost | **20,605** | 21,901 | 35,456 |
+| Tool output bytes | 11.7K | **11.1K** | 23.7K |
+| Dead-ends (unanswered queries) | **0.0** | 2.0 | 0.0 |
+| Refusals (explicit "cannot answer") | **0/40** | 4/40 | 1/40 |
+| Wall, median | **33s** | 34s | 43s |
+| Keyword rubric /30 | 26.8 | 27.5 | 27.3 |
 
 Read F1, not the keyword rubric. The `/30` row is a substring matcher kept only
 as a smoke test: it is gameable by keyword-stuffing and roughly doubles the
 apparent accuracy (verified against ground-truth F1 on the same answers).
 
-Billed cost includes the provider's cache discount (~94% cache hit on all three
-conditions). Wall time is provider-latency bound and the spread is within noise.
+> **Retracted: every comparison against codebase-memory-mcp before 2026-10-23.**
+> The harness called its `trace_path` tool with `name` where the server requires
+> `function_name`. The CLI prints its complaint to stderr, exits 0, and writes
+> nothing to stdout, so the wrapper raised and handed the model
+> `(altbackend error: Expecting value: line 1 column 1)`. That silently disabled
+> caller/callee tracing on the four questions that need it, and it affected
+> every tape recorded since 2026-06-30 (35%, 42% and 25% of B answers in
+> canonical-v1, v4 and v8 respectively). The previously published "F1 0.298"
+> and "clearly ahead of codebase-memory-mcp" are void. This table is
+> re-recorded with the fixed harness.
 
-**Accuracy is comparable to grep, not established as superior.** The reliary-vs-grep
-F1 gap and an independent LLM judge both fall within ~1σ on this single small
-corpus. The reproducible, corpus-independent wins are cost (~42% lower billed
-than grep), tool-output size (~4× smaller), and zero dead-ends.
+Billed cost includes the provider's cache discount (~92% cache hit on all three
+conditions). Wall time is provider-latency bound and the spread is within noise;
+reliary is inside the band, not the leader.
+
+**On this corpus reliary answers more of the verifiable claims.** F1 0.937 vs
+0.596 for grep and 0.495 for codebase-memory-mcp, with full coverage: every
+query produced at least one checkable claim, and 94% of claims verified
+correctly. Grep's precision is 0.83 — one claim in six was wrong.
+
+It is also the only condition that never declined to answer: 0/40 refusals
+against 4/40 and 1/40. A refusal is cheap, so a backend that declines can look
+efficient while answering nothing; the refusal count is reported next to the
+score for that reason.
+
+That is a single corpus of this project's own source, so it is the *familiar*
+case. On a foreign repository (tokio) grep led; the familiarity experiment
+(`bench/FAMILIARITY_EXPERIMENT.md`) found no measurable familiarity effect, so
+the honest reading is that accuracy on unfamiliar code is **not established**.
+The corpus-independent wins remain cost (~42% lower billed than grep at these
+numbers), tool-output size (~2× smaller), and zero dead-ends. Against
+codebase-memory-mcp reliary is *more expensive* (21.3K vs 16.4K) and larger
+(12.4K vs 10.4K bytes); its advantage there is accuracy and dead-ends, not cost.
 
 **Prompt fairness.** Condition A receives the shipped routing prompt (~300
 words); B and C receive ~100-word prompts. A same-tree ablation with a minimal
@@ -59,18 +111,24 @@ can be fixed is the transcript. `bench/cassette.py` records every model response
 keyed on the exact sampling-affecting request plus the corpus's
 `meta.index_gen`, and replays it byte-for-byte with zero API calls.
 
-The committed canonical tape is `bench/cassettes/canonical-v4/` (A/B/C × seeds
+The committed canonical tape is `bench/cassettes/canonical-v10/` (A/B/C × seeds
 42/17/123/456). Replay it against a fresh corpus checkout:
 
 ```sh
 bench/replay_canonical.sh     # $0, no key, no network
 ```
 
-All three conditions replay byte-identically on a fresh corpus at a different
-path — every score, answer, and cost figure matches; only wall-clock timers
-differ. Condition B is best-effort: codebase-memory-mcp's own index build is not
-reproducible, so its recorded hits are matched as a set. Set `REPLAY_CONDS=A,C`
-to replay only the conditions that do not need codebase-memory-mcp installed.
+All three conditions replay byte-identically at the recorded corpus path —
+every score, answer, billed cost and tool-byte figure matches; only wall-clock
+timers differ (verified on the committed tape: A/B/C × seed 42 reproduced
+exactly).
+
+A and B also replay at a *different* corpus path. C does not: it runs
+arbitrary shell commands, so its output embeds the checkout path.
+`REPLAY_CONDS=A,B` is the byte-identical check anywhere else.
+
+Condition B is best-effort at a different path: codebase-memory-mcp's own index
+build is not reproducible, so its recorded hits are matched as a set.
 
 Recording a new tape (live API):
 

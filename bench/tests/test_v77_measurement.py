@@ -91,3 +91,38 @@ def test_q9_gt_symbols_match_audit_set():
     syms = extract_bare_symbols(GROUND_TRUTH["q9_consume_method_impls"])
     expected = {"opentry", "optable", "fileinfo", "scopetypemap", "linedelimiters"}
     assert syms == expected, f"GT must extract exactly the audit set, got {syms}"
+
+
+def test_recall_never_exceeds_one():
+    """Recall above 1.0 means the scorer is double-counting.
+
+    Observed before the fix: A scored R=2.098 because the caller-list exception
+    matched on location alone, so one cited line satisfied several GT facts in
+    the same file within the line tolerance. The F1 built on that was
+    meaningless — and the official scorer printed it without complaint.
+    """
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("dv_recall", root / "bench" / "deterministic_verify.py")
+    dv = importlib.util.module_from_spec(spec)
+    sys.modules["dv_recall"] = dv
+    spec.loader.exec_module(dv)
+
+    # Three GT facts in one file, all within the line tolerance of each other,
+    # and an answer that cites that file at one line. The question's backticked
+    # subject must equal the GT symbol, or the scorer takes the symbol-matching
+    # path and the location-only path is never exercised (the first version of
+    # this fixture had `Ground` as the symbol and passed with the bug present).
+    # No "Ground truth:" prefix: with it, the extractor reads the word "Ground"
+    # as the symbol and the location-only path is never reached.
+    gt = ("Who calls `target`?\ntarget at a.rs:10, "
+          "target at a.rs:11, target at a.rs:12")
+    answer = "- target at a.rs:10"
+    p, r, f1, n_claims, n_verified, n_gt = dv.score_query(
+        answer, gt, occ={}, tol=1, defs=set(), dead=[], query_id="q", corpus=".")
+    assert r <= 1.0, f"recall {r} exceeds 1.0 — double counting"
+    assert r <= 1.0 / 3 + 1e-9, (
+        f"one claim must satisfy at most one GT fact, got recall {r}")

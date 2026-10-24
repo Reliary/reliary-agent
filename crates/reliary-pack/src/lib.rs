@@ -411,12 +411,16 @@ fn build_cross_refs_for_subset(
     // find other defined symbols in those files.
     for sym in selected {
         // Find files where this symbol is used (non-def)
-        let usage_files: Vec<i64> = file_to_phrases
+        // HashMap iteration order is not stable across processes, and this
+        // list is truncated to 50: without sorting, which 50 files were used
+        // depended on the hash seed.
+        let mut usage_files: Vec<i64> = file_to_phrases
             .iter()
             .filter(|(_, pairs)| pairs.iter().any(|(p, is_def)| *p == sym.name && !*is_def))
             .map(|(fid, _)| *fid)
-            .take(50)
             .collect();
+        usage_files.sort();
+        usage_files.truncate(50);
 
         let mut refs: HashSet<String> = HashSet::new();
         for file_id in usage_files {
@@ -439,7 +443,14 @@ fn build_cross_refs_for_subset(
             }
         }
 
-        cross_refs.insert(sym.name.clone(), refs.into_iter().take(6).collect());
+        // Sorted before truncation. `refs` is a HashSet, so `take(6)` kept a
+        // different six on each process: two identical checkouts produced
+        // different pack files, which made `describe` non-deterministic and
+        // broke byte-identical replay.
+        let mut ordered: Vec<String> = refs.into_iter().collect();
+        ordered.sort();
+        ordered.truncate(6);
+        cross_refs.insert(sym.name.clone(), ordered);
     }
 
     cross_refs
@@ -2117,6 +2128,22 @@ fn build_cross_refs_inner(
             .push((phrase, is_def));
     }
 
+    // `file_id` is an autoincrement, so two indexes of identical content assign
+    // different ids. Any truncation or early exit ordered by id therefore
+    // depends on insertion order, not content: two identical checkouts produced
+    // different packs. Order by PATH instead.
+    let mut id_to_path: FxHashMap<i64, String> = FxHashMap::default();
+    {
+        let mut stmt = db.prepare("SELECT id, file_path FROM file_map ORDER BY file_path")?;
+        let mut rows = stmt.query([])?;
+        while let Some(r) = rows.next()? {
+            id_to_path.insert(r.get(0)?, r.get(1)?);
+        }
+    }
+    let path_of = |id: i64| -> String {
+        id_to_path.get(&id).cloned().unwrap_or_default()
+    };
+
     // === Phase 2: For each symbol, find files where it's used (non-def) ===
     let mut phrase_to_non_def_files: FxHashMap<String, Vec<i64>> = FxHashMap::default();
     for (file_id, pairs) in &file_to_phrases {
@@ -2134,12 +2161,18 @@ fn build_cross_refs_inner(
     for sym in symbols {
         let mut refs: HashSet<String> = HashSet::new();
 
-        let files_using_sym = match phrase_to_non_def_files.get(&sym.name) {
-            Some(f) => f,
+        let mut files_using_sym = match phrase_to_non_def_files.get(&sym.name) {
+            Some(f) => f.clone(),
             None => continue,
         };
+        // Sorted by PATH because the loop below stops as soon as it has 5
+        // refs: which refs it collects depends on the order it visits files.
+        // `phrase_to_non_def_files` was built by iterating a HashMap, and
+        // `file_id` is an autoincrement that differs between two indexes of
+        // identical content.
+        files_using_sym.sort_by_key(|id| path_of(*id));
 
-        for &file_id in files_using_sym {
+        for &file_id in &files_using_sym {
             if let Some(pairs) = file_to_phrases.get(&file_id) {
                 for (phrase, is_def) in pairs {
                     if *is_def

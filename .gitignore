@@ -45,4 +45,10 @@ bench/results/*.jsonl
 bench/cassettes/*
 # ...except the canonical public-corpus tape, which is committed so anyone can
 # reproduce the headline benchmark with zero API calls (bench/replay_canonical.sh).
-!bench/cassettes/canonical-v4/
+!bench/cassettes/canonical-v10/
+# Both files are committed: `record.jsonl` is the human-readable summary and
+# `cassette.jsonl.gz` is what `bench/replay_canonical.sh` needs to replay with
+# zero API calls. Excluding the cassette would make the documented
+# reproduction command fail on a fresh clone.
+!bench/cassettes/canonical-v10/record.jsonl
+!bench/cassettes/canonical-v10/cassette.jsonl.gz

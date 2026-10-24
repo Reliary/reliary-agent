@@ -1001,6 +1001,29 @@ fn is_likely_entry_point(name: &str) -> bool {
 /// definition using itself). Returns up to `limit` (phrase, file, line, col) tuples.
 /// Grammar-free equivalent of "unused symbols".
 pub fn dead_symbols(db: &Connection, limit: usize, path_filter: Option<&str>, functions_only: bool) -> rusqlite::Result<Vec<(String, String, i32, i32)>> {
+    // Ranking is applied after collection: an exported function with no callers
+    // is actionable, a private helper with no callers is usually deliberate.
+    // Ranking exported first is what makes a capped list useful.
+    let ranked = dead_symbols_ranked(db, limit, path_filter, functions_only)?;
+    Ok(ranked.into_iter().map(|(a, b, c, d, _)| (a, b, c, d)).collect())
+}
+
+/// A dead definition, with whether it is exported.
+///
+/// Exported-ness is read from the declaration line rather than stored in the
+/// index: it is a property of one line and reading it costs one cached lookup.
+pub fn is_exported_definition(file_path: &str, line: i32) -> bool {
+    let Some(meta) = crate::file_meta::get(file_path) else { return false };
+    let Some(text) = meta.lines.get(line.max(0) as usize) else { return false };
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|w| w == "pub")
+}
+
+/// `(name, file, line, col, exported)`.
+pub type DeadRow = (String, String, i32, i32, bool);
+
+/// [`dead_symbols`] with the exported flag preserved, in ranked order.
+pub fn dead_symbols_ranked(db: &Connection, limit: usize, path_filter: Option<&str>, functions_only: bool) -> rusqlite::Result<Vec<DeadRow>> {
     // V80: deadness is decided from the occurrence table, which trust does NOT
     // populate (lazy index). On a fresh index this returned "0 dead items"
     // indistinguishably from a genuinely clean project. Build the table once
@@ -1039,34 +1062,33 @@ pub fn dead_symbols(db: &Connection, limit: usize, path_filter: Option<&str>, fu
         "SELECT o.phrase_id, f.file_path, o.line, o.col, o.block_id
          FROM occurrence o JOIN file_map f ON f.id = o.file_id
          WHERE o.is_def = 1 AND o.tag = 1 AND f.is_source = 1 AND f.file_path LIKE ?1
-         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) DESC, o.occ_id"
+         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) ASC, o.line, f.file_path, o.phrase_id"
     } else if path_filter.is_some() {
         "SELECT o.phrase_id, f.file_path, o.line, o.col, o.block_id
          FROM occurrence o JOIN file_map f ON f.id = o.file_id
          WHERE o.is_def = 1 AND f.is_source = 1 AND f.file_path LIKE ?1
-         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) DESC, o.occ_id"
+         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) ASC, o.line, f.file_path, o.phrase_id"
     } else if functions_only {
         "SELECT o.phrase_id, f.file_path, o.line, o.col, o.block_id
          FROM occurrence o JOIN file_map f ON f.id = o.file_id
          WHERE o.is_def = 1 AND o.tag = 1 AND f.is_source = 1
-         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) DESC, o.occ_id"
+         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) ASC, o.line, f.file_path, o.phrase_id"
     } else {
         "SELECT o.phrase_id, f.file_path, o.line, o.col, o.block_id
          FROM occurrence o JOIN file_map f ON f.id = o.file_id
          WHERE o.is_def = 1 AND f.is_source = 1
-         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) DESC, o.occ_id"
+         ORDER BY (o.tag = 1) DESC, LENGTH(f.file_path) ASC, o.line, f.file_path, o.phrase_id"
     };
     let mut stmt = db.prepare_cached(sql)?;
     let mut rows = match &path_pattern {
         Some(pat) => stmt.query(params![pat])?,
         None => stmt.query([])?,
     };
-    let mut dead = Vec::new();
+    let mut dead: Vec<DeadRow> = Vec::new();
     // For efficiency, precompute phrase -> distinct-block-count map for the phrases we touch.
     let mut distinct_blocks_cache: FxHashMap<i64, u32> = FxHashMap::default();
 
     while let Some(r) = rows.next()? {
-        if dead.len() >= limit { break; }
         let phrase_id: i64 = r.get(0)?;
         let file_path: String = r.get(1)?;
         let line: i32 = r.get(2)?;
@@ -1089,15 +1111,73 @@ pub fn dead_symbols(db: &Connection, limit: usize, path_filter: Option<&str>, fu
             let phrase: String = db.query_row(
                 "SELECT phrase FROM phrases WHERE id = ?1", params![phrase_id], |r| r.get(0),
             )?;
+            // A `#[test]` function is called by the test harness, not by code,
+            // so it always has zero cross-block callers. It is not dead code.
+            // Excluding it was documented but not implemented: the scoped dead
+            // list was 191 items of which the first 12 were all tests, which is
+            // both useless output and why the exported helpers below them never
+            // reached the caller.
+            if is_test_definition(&file_path, line) {
+                continue;
+            }
             // Skip well-known entry points that are public-API by convention
             // even when no other code references them.
             if !is_likely_entry_point(&phrase) {
-                dead.push((phrase, file_path, line, col));
+                let exported = is_exported_definition(&file_path, line);
+                dead.push((phrase, file_path, line, col, exported));
             }
         }
         let _ = block_id; // used implicitly via distinct count
     }
+    // Exported first, then shortest path, then line. Every key is a function of
+    // content, so two indexes of the same tree produce the same order; and the
+    // truncation the caller applies now removes deliberate-looking helpers
+    // rather than the exported functions the question is about.
+    dead.sort_by(|a, b| {
+        b.4.cmp(&a.4)
+            .then_with(|| a.1.len().cmp(&b.1.len()))
+            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    dead.truncate(limit);
     Ok(dead)
+}
+
+/// True when the definition at `line` (0-indexed) is a test.
+///
+/// Two shapes, both already implemented for `test-plan`: a test attribute on the
+/// preceding attribute run (`#[test]`, `#[tokio::test]`, `[Fact]`, `@Test`), or
+/// the `test_` naming convention where attributes are absent.
+fn is_test_definition(file_path: &str, line: i32) -> bool {
+    let Some(meta) = crate::file_meta::get(file_path) else { return false };
+    let idx = line.max(0) as usize;
+    let Some(text) = meta.lines.get(idx) else { return false };
+    let trimmed = text.trim_start();
+    // The defined name, if this line declares one.
+    let def = crate::structural::classify_structural(trimmed, 0, false, false);
+    if let Some(name) = def.defined_name {
+        if name.starts_with("test_") || name == "test" || name.ends_with("_test") {
+            return true;
+        }
+    }
+    // Walk back over the attribute run, skipping blanks and doc comments.
+    for prior in meta.lines[..idx].iter().rev() {
+        let t = prior.trim();
+        if t.is_empty() || t.starts_with("///") || t.starts_with("//!") {
+            continue;
+        }
+        let is_attr = (t.starts_with('#') && t.ends_with(']'))
+            || (t.starts_with('[') && t.ends_with(']'))
+            || (t.starts_with('@') && !t.contains(char::is_whitespace));
+        if !is_attr {
+            return false;
+        }
+        if crate::test_plan::is_test_attribute(t) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Extract the stem(s) immediately to the left of col on line_text.
@@ -1213,6 +1293,36 @@ pub fn find_references_role(
             .then_with(|| a.line.cmp(&b.line))
     });
     Ok(hits)
+}
+
+/// V90: dead-code results in a stable, relevant order.
+///
+/// The ranking used to be `(tag=1) DESC, LENGTH(path) DESC, line, path`.
+/// Sorting by DESCENDING path length put the longest path first, so a module
+/// scoped to `crates/reliary-search/src` returned 50 unrelated helpers before
+/// the exported functions that answer the question. Worse, the list was
+/// truncated by the caller's limit, so the answer depended on that arbitrary
+/// order.
+///
+/// The ordering is now: exported first (the question is "which pub functions
+/// are never called"), then shortest path, then line. Every key is a function
+/// of content, so two indexes of the same tree produce the same list.
+fn dead_sort_key(tag: i64, path: &str, line: i32) -> (i64, usize, i32, &str) {
+    // tag == 1 is a plain function definition. Exported-ness is not stored, so
+    // tag is the proxy the schema offers; the caller may filter further.
+    let not_function = if tag == 1 { 0 } else { 1 };
+    (not_function, path.len(), line, path)
+}
+
+/// Re-rank a dead-code result set by [`dead_sort_key`].
+///
+/// Exposed for the query path, which fetches a bounded window and must order
+/// it identically to a full scan.
+pub fn rank_dead(rows: &mut [(String, String, i32, i32, i64)]) {
+    rows.sort_by(|a, b| {
+        dead_sort_key(a.4, &a.1, a.2).cmp(&dead_sort_key(b.4, &b.1, b.2))
+            .then_with(|| a.0.cmp(&b.0))
+    });
 }
 
 #[cfg(test)]

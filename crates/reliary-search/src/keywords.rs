@@ -57,6 +57,14 @@ pub fn is_noise_token(raw_token: &str, stemmed: &str) -> bool {
     if raw_token.starts_with(|c: char| c.is_ascii_uppercase()) {
         return false;
     }
+    // Oracle-found (ctags diff): a raw token LONGER than the keyword it
+    // stemmed to (`unioned`→`union`) is a distinct identifier, not the
+    // keyword — same Step-0 class as V77's PascalCase fix, extended to
+    // lowercase compounds. Only the keyword itself (unchanged by
+    // stemming) is noise. Shape comparison, no list.
+    if raw_token.to_ascii_lowercase() != stemmed {
+        return false;
+    }
     keywords().contains(stemmed)
 }
 
@@ -103,5 +111,15 @@ mod tests {
     fn test_lowercase_non_keywords_pass() {
         assert!(!is_noise_token("compute", "comput"));
         assert!(!is_noise_token("hello", "hello"));
+    }
+
+    /// Oracle negative control: `unioned` stems to keyword `union` but is
+    /// a distinct identifier and must survive; bare `union` is still noise.
+    #[test]
+    fn test_stemmed_longer_than_keyword_survives() {
+        assert!(!is_noise_token("unioned", "union"));
+        assert!(!is_noise_token("defaulted", "default"));
+        assert!(is_noise_token("union", "union"));
+        assert!(is_noise_token("default", "default"));
     }
 }

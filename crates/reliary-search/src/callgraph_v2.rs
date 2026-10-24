@@ -989,6 +989,7 @@ pub struct MethodsResult {
 /// pattern `impl <Trait> for <Type>` (optionally generic `impl<T> Trait for X`)
 /// and `#[derive(..., Trait, ...)]` followed by a `struct`/`enum`/`union`
 /// declaration. Bounded at 400 files like find_methods_on's fallback.
+#[derive(Debug)]
 pub struct TraitImpl {
     pub type_name: String,
     pub file: String,
@@ -1048,6 +1049,23 @@ pub fn find_trait_impls_scoped(
         while i < meta.lines.len() {
             let line = &meta.lines[i];
             let t = line.trim_start();
+            // V87: a comment is not a declaration. Three doc lines in this
+            // repository read as `impl` shapes — `///   `pub name: String``
+            // matched the C#/Kotlin `:` pattern and answered
+            // `def_only("String")` with a doc comment. The marker check is the
+            // same one `classify_structural` uses for its comment guard.
+            // `#[...]` is a Rust ATTRIBUTE, not a comment. The V87 guard took
+            // every `#` line as a comment, which made the `#[derive(...)]`
+            // branch below unreachable: `find_trait_impls("Default")` returned
+            // only the manual impl and none of the four derived structs.
+            let rust_attribute = t.starts_with("#[");
+            if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')
+                || (t.starts_with('#') && !rust_attribute)
+                || t.starts_with("--")
+            {
+                i += 1;
+                continue;
+            }
             // Pattern 1: `impl Trait for Type` (existing).
             if t.starts_with("impl ") || t.starts_with("impl<") {
                 if let Some(pos) = t.find(&needle) {
@@ -1114,6 +1132,15 @@ pub fn find_trait_impls_scoped(
                 let head = t[..sep_at].trim_end();
                 if let Some(ty) = last_ident(head) {
                     let tail = &t[sep_at + sep_len..];
+                    // V86: the trait must be a whole entry of the comma list.
+                    // A plain `tail.contains(trait_name)` (or a prefix-taking
+                    // identifier split) matched `struct Thing { pub field: i32 }`
+                    // and `pub x: i32,` for the trait name `i32`: the C#/Kotlin
+                    // `:` separator is also a Rust field annotation. Requiring
+                    // an exact entry is not enough on its own — the line must
+                    // also be a type declaration, which `impl_separator` checks.
+                    // Together these reject field annotations and struct
+                    // literals while keeping `class Foo : IBar` working.
                     let has_trait = tail.split(',').any(|e| {
                         let e = e.trim();
                         let id: String = e
@@ -1121,7 +1148,9 @@ pub fn find_trait_impls_scoped(
                             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
                             .collect();
                         let id = id.rsplit('.').next().unwrap_or(&id);
-                        id == trait_name
+                        // The entry must be EXACTLY the trait, not a prefix of a
+                        // longer identifier or an annotation's value.
+                        id == trait_name && !e.starts_with('"')
                     });
                     if has_trait && !ty.is_empty() {
                         out.push(TraitImpl {
@@ -1157,7 +1186,16 @@ fn impl_separator(line: &str, trait_name: &str) -> Option<(usize, usize)> {
     // C#/Kotlin `:` — take the FIRST colon that is followed later by the trait
     // name on the same line (so `class Foo : ControllerBase, IBar` works).
     if let Some(colon) = line.find(':') {
-        if line[colon..].contains(trait_name) {
+        // V86: a `:` that follows an opening brace is a field annotation or a
+        // struct literal, not a base/interface list:
+        //   `pub struct Thing { pub field: i32 }`
+        //   `let src = "pub struct Point {\n    pub x: i32, ...`
+        // Both were reported as `i32 is implemented by ...`. A real base list
+        // sits between the type name and the body brace, so a `{` before the
+        // colon disqualifies the line.
+        let brace_before = line[..colon].contains('{');
+        let quote_before = line[..colon].contains('"');
+        if !brace_before && !quote_before && line[colon..].contains(trait_name) {
             return Some((colon, 1));
         }
     }
@@ -1837,6 +1875,65 @@ mod v75_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// V87: a doc comment never reads as a declaration.
+    ///
+    /// `///   `pub name: String (op_table.rs:27)`` matched the C#/Kotlin `:`
+    /// pattern and made `def_only("String")` answer with a doc comment.
+    #[test]
+    fn trait_impl_scan_skips_comments() {
+        let d = tempfile::tempdir().unwrap();
+        // `tempfile::tempdir()` is a DOT directory, and the walker skips
+        // dot-directories: indexing it yields an empty index and the test
+        // passes vacuously (this exact trap bit the segmenter fixtures).
+        let root = d.path().join("corpus");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/a.rs"),
+            "///   `pub name: String (op_table.rs:27)`   (struct-field fallback)\n\
+             // class Doc : String {}\n\
+             pub struct Real { name: i32 }\n",
+        )
+        .unwrap();
+        let db = rusqlite::Connection::open(root.join("i.sqlite")).unwrap();
+        crate::schema::create_new_db(&db).unwrap();
+        crate::ingest::index_directory(&db, root.to_str().unwrap()).unwrap();
+        let impls = find_trait_impls_scoped(&db, "String", None);
+        assert!(
+            impls.iter().all(|i| i.type_name != "Doc"),
+            "a commented `class Doc : String` must not count: {:?}",
+            impls.iter().map(|i| (&i.type_name, &i.file)).collect::<Vec<_>>()
+        );
+        assert!(
+            impls.is_empty(),
+            "no real implementor of String exists here: {:?}",
+            impls.iter().map(|i| (&i.type_name, &i.file)).collect::<Vec<_>>()
+        );
+    }
+
+    /// V86: a Rust field annotation is not a base/interface list.
+    ///
+    /// `pub struct Thing { pub field: i32 }` and a struct literal embedded in a
+    /// string both reported `i32 is implemented by ...`: the C#/Kotlin `:`
+    /// separator and the Rust field annotation are the same character. A `{` or
+    /// `"` before the colon disqualifies the line.
+    #[test]
+    fn impl_separator_rejects_rust_field_annotations() {
+        for line in [
+            "pub struct Thing { pub field: i32 }",
+            "        let src = \"pub struct Point {\\n    pub x: i32,\\n}\";",
+            "    x: i32,",
+        ] {
+            assert!(
+                impl_separator(line, "i32").is_none(),
+                "{line:?} must not read as a base list for i32"
+            );
+        }
+        // The shapes it exists for still work.
+        assert!(impl_separator("class Foo : IBar", "IBar").is_some());
+        assert!(impl_separator("public class Foo : ControllerBase, IBar", "IBar").is_some());
+        assert!(impl_separator("public class Foo implements IBar", "IBar").is_some());
+    }
+
     #[test]
     fn impl_separator_detects_csharp_java_interfaces() {
         // C# base/interface list.
@@ -1877,5 +1974,103 @@ mod v75_tests {
         scan_type_body_for_members(f.to_str().unwrap(), "NotAType", &mut none);
         assert!(none.is_empty(), "unknown type must produce no members");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// V89: two ordering bugs made `find_references(Trait, def_only)` answer with
+/// a method instead of the implementing types.
+#[cfg(test)]
+mod v89_trait_tests {
+    use super::*;
+
+    /// `tempfile::tempdir()` yields a dot-prefixed directory, and the walker
+    /// skips dot-paths: indexing it directly produces an EMPTY index and every
+    /// assertion then passes vacuously. Build a real subdirectory under a
+    /// uniquely-named temp dir instead.
+    fn project() -> (tempfile::TempDir, std::path::PathBuf) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join(format!("proj{}", N.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir_all(&root).unwrap();
+        (d, root)
+    }
+
+    fn write(root: &std::path::Path, rel: &str, text: &str) {
+        let p = root.join(rel);
+        if let Some(d) = p.parent() { std::fs::create_dir_all(d).unwrap(); }
+        std::fs::write(p, text).unwrap();
+    }
+
+    fn db_for(root: &std::path::Path) -> rusqlite::Connection {
+        let db_path = root.parent().unwrap().join("probe.sqlite");
+        let db = crate::struct_diff::index_revision(root.to_str().unwrap(), db_path.to_str().unwrap())
+            .unwrap();
+        // Prove the fixture was indexed: an empty index makes every assertion
+        // below pass for the wrong reason.
+        let n: i64 = db
+            .query_row("SELECT COUNT(*) FROM file_map WHERE is_source = 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(n > 0, "fixture was not indexed (dot-directory trap?)");
+        db
+    }
+
+    /// A derived impl must be found. The V87 comment guard took every `#` line
+    /// as a comment, which made the `#[derive(...)]` branch unreachable: this
+    /// returned only the manual impl.
+    #[test]
+    fn derive_attributes_are_not_treated_as_comments() {
+        let (_d, root) = project();
+        write(&root, "a.rs",
+              "#[derive(Debug, Clone, Default)]\npub struct WithDefault {\n}\n\n\
+               #[derive(Debug, Clone)]\npub struct WithoutDefault {\n}\n");
+        let db = db_for(&root);
+        let impls = find_trait_impls_scoped(&db, "Default", None);
+        let names: Vec<&str> = impls.iter().map(|i| i.type_name.as_str()).collect();
+        assert_eq!(names, vec!["WithDefault"], "{impls:?}");
+    }
+
+    /// A manual `impl Trait for Type` must still be found (regression guard for
+    /// the same edit).
+    #[test]
+    fn manual_impls_still_found() {
+        let (_d, root) = project();
+        write(&root, "b.rs",
+              "pub struct Manual {}\n\nimpl Default for Manual {\n    fn default() -> Self { Self {} }\n}\n");
+        let db = db_for(&root);
+        let impls = find_trait_impls_scoped(&db, "Default", None);
+        assert_eq!(impls.len(), 1, "{impls:?}");
+        assert_eq!(impls[0].type_name, "Manual");
+    }
+
+    /// A comment that mentions an impl must NOT be reported. This is the guard
+    /// the V87 fix added; the V89 fix must not undo it.
+    ///
+    /// The fixture uses the C#/Kotlin `:` shape on purpose: a `// impl X for Y`
+    /// line can never match pattern 1 (`starts_with("impl ")` is false), so
+    /// testing with it would pass whether the comment guard exists or not —
+    /// the first version of this test was exactly that vacuous.
+    #[test]
+    fn comments_are_still_ignored() {
+        let (_d, root) = project();
+        write(&root, "c.rs",
+              "// class Ghost : Default {}\n               /// class DocGhost : Default {}\n               # class HashGhost : Default\n               * class StarGhost : Default\n               pub struct Real {}\n");
+        let db = db_for(&root);
+        let impls = find_trait_impls_scoped(&db, "Default", None);
+        assert!(impls.is_empty(), "a comment is not an impl: {impls:?}");
+    }
+
+    /// `path_filter` must scope the result. Without it the answer includes
+    /// types from every crate, which is why the scoped question returned
+    /// out-of-crate names.
+    #[test]
+    fn path_filter_scopes_derived_impls() {
+        let (_d, root) = project();
+        write(&root, "inside/a.rs", "#[derive(Default)]\npub struct InScope {}\n");
+        write(&root, "outside/b.rs", "#[derive(Default)]\npub struct OutOfScope {}\n");
+        let db = db_for(&root);
+        let impls = find_trait_impls_scoped(&db, "Default", Some("inside/"));
+        let names: Vec<&str> = impls.iter().map(|i| i.type_name.as_str()).collect();
+        assert_eq!(names, vec!["InScope"], "{impls:?}");
     }
 }

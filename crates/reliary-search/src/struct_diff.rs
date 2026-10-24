@@ -17,12 +17,46 @@ pub struct StructDiff {
 
 /// Build a fresh index for `dir` into `db_path` (removes any existing file).
 pub fn index_revision(dir: &str, db_path: &str) -> Result<Connection, String> {
+    index_revision_impl(dir, db_path, false)
+}
+
+/// Like [`index_revision`], but `file_map.file_path` is rewritten to be
+/// root-relative.
+///
+/// The indexer stores absolute canonical paths (`ingest::index_directory`).
+/// A cache that outlives the directory it was built from must not: the same
+/// content at a different root would otherwise produce absolute paths, and
+/// every definition would look relocated. Warrant keys its cache on content
+/// and reuses entries across roots, so it needs this variant.
+pub fn index_revision_relative(dir: &str, db_path: &str) -> Result<Connection, String> {
+    index_revision_impl(dir, db_path, true)
+}
+
+/// [`index_revision_relative`] with repo-relative paths excluded from indexing.
+pub fn index_revision_relative_excluding(
+    dir: &str,
+    db_path: &str,
+    exclude_rel: &std::collections::BTreeSet<String>,
+) -> Result<Connection, String> {
+    index_revision_impl_excluding(dir, db_path, true, exclude_rel)
+}
+
+fn index_revision_impl(dir: &str, db_path: &str, relative: bool) -> Result<Connection, String> {
+    index_revision_impl_excluding(dir, db_path, relative, &std::collections::BTreeSet::new())
+}
+
+fn index_revision_impl_excluding(
+    dir: &str,
+    db_path: &str,
+    relative: bool,
+    exclude_rel: &std::collections::BTreeSet<String>,
+) -> Result<Connection, String> {
     let _ = std::fs::remove_file(db_path);
     let _ = std::fs::remove_file(format!("{}-wal", db_path));
     let _ = std::fs::remove_file(format!("{}-shm", db_path));
     let db = Connection::open(db_path).map_err(|e| format!("open {}: {}", db_path, e))?;
     crate::schema::create_new_db(&db).map_err(|e| format!("schema: {}", e))?;
-    crate::ingest::index_directory(&db, dir)?;
+    crate::ingest::index_directory_excluding(&db, dir, exclude_rel)?;
     // Fresh indexes only have phrase_occ after trust — symbols live in the
     // occurrence table, which build_all_occurrence populates. Without this the
     // diff reports zero symbols.
@@ -31,7 +65,51 @@ pub fn index_revision(dir: &str, db_path: &str) -> Result<Connection, String> {
     if built == 0 {
         eprintln!("[struct_diff] warning: 0 occurrence rows indexed for {}", dir);
     }
+    if relative {
+        relativize_index(&db, dir)?;
+    }
     Ok(db)
+}
+
+/// Rewrite `file_map.file_path` as a path relative to `root`.
+///
+/// Only `file_map` changes: `occurrence`, `file_phrases` and `file_stats` are
+/// keyed by `file_id`, so the whole index follows. Idempotent — a path that
+/// is already relative has no `root` prefix and is left alone.
+pub fn relativize_index(db: &Connection, root: &str) -> Result<usize, String> {
+    let root = std::fs::canonicalize(root)
+        .map_err(|e| format!("cannot canonicalize {}: {}", root, e))?;
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = db
+            .prepare("SELECT id, file_path FROM file_map ORDER BY id")
+            .map_err(|e| format!("prepare file_map: {}", e))?;
+        let mapped = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| format!("query file_map: {}", e))?;
+        let mut out = Vec::new();
+        for row in mapped {
+            out.push(row.map_err(|e| format!("read file_map row: {}", e))?);
+        }
+        out
+    };
+    let mut changed = 0usize;
+    {
+        let mut upd = db
+            .prepare("UPDATE file_map SET file_path = ?1 WHERE id = ?2")
+            .map_err(|e| format!("prepare update: {}", e))?;
+        for (id, path) in rows {
+            let rel = match std::path::Path::new(&path).strip_prefix(&root) {
+                Ok(p) => p.to_string_lossy().replace('\\', "/"),
+                Err(_) => continue,
+            };
+            if rel != path {
+                upd.execute(rusqlite::params![rel, id])
+                    .map_err(|e| format!("update file_map: {}", e))?;
+                changed += 1;
+            }
+        }
+    }
+    Ok(changed)
 }
 
 /// (name, rel-path) -> (display basename, first line). The dedup key uses the
@@ -193,5 +271,87 @@ mod tests {
         let d = compute_diff(&a, &b);
         assert_eq!(d.symbols_removed.len(), 1);
         assert_eq!(d.symbols_removed[0].0, "oldfn");
+    }
+
+    // ── V85 A5 P0: path relativization (cache prerequisite) ──────────────
+
+    fn make_tree(root: &std::path::Path) {
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn alpha() {}\n").unwrap();
+    }
+
+    #[test]
+    fn relativize_makes_paths_root_relative() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        make_tree(&a);
+        let db_path = dir.path().join("a.sqlite");
+        let db = index_revision_relative(a.to_str().unwrap(), db_path.to_str().unwrap()).unwrap();
+        let paths: Vec<String> = db
+            .prepare("SELECT file_path FROM file_map ORDER BY file_path")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(paths, vec!["src/lib.rs".to_string()]);
+    }
+
+    /// The bug the cache would expose: the same content at a different root
+    /// must resolve to the same relative paths. Without `relativize_index`
+    /// the absolute paths differ and every definition looks relocated.
+    #[test]
+    fn relativized_index_survives_a_root_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        make_tree(&a);
+        let db_a = index_revision_relative(
+            a.to_str().unwrap(),
+            dir.path().join("a.sqlite").to_str().unwrap(),
+        )
+        .unwrap();
+
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(&b).unwrap();
+        for e in walkdir::WalkDir::new(&a).into_iter().filter_map(|e| e.ok()) {
+            if e.file_type().is_file() {
+                let rel = e.path().strip_prefix(&a).unwrap();
+                let dst = b.join(rel);
+                std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+                std::fs::copy(e.path(), &dst).unwrap();
+            }
+        }
+        let db_b = index_revision_relative(
+            b.to_str().unwrap(),
+            dir.path().join("b.sqlite").to_str().unwrap(),
+        )
+        .unwrap();
+
+        let ra = crate::warrant::def_rows(&db_a, &a).unwrap();
+        let rb = crate::warrant::def_rows(&db_b, &b).unwrap();
+        assert_eq!(ra, rb, "same content at a different root must agree");
+    }
+
+    #[test]
+    fn non_relativized_index_would_not_survive_a_move() {
+        // Negative control for the test above: plain `index_revision` keeps
+        // absolute paths, so the relative view still works (def_rows strips
+        // the root) but the stored paths differ. This pins WHY the relative
+        // variant exists: a cached DB is read from a root it was not built at.
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        make_tree(&a);
+        let db = index_revision(
+            a.to_str().unwrap(),
+            dir.path().join("plain.sqlite").to_str().unwrap(),
+        )
+        .unwrap();
+        let stored: String = db
+            .query_row("SELECT file_path FROM file_map LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            stored.starts_with('/'),
+            "index_revision stores absolute paths; a cache must not"
+        );
     }
 }

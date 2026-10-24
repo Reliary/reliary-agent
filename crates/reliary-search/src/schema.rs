@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i32 = 5;
+pub const SCHEMA_VERSION: i32 = 6;
 
 /// Oldest on-disk schema version `run_migrations` can upgrade in place. Older
 /// versions must be rebuilt from source. Used by the index resolver to reject
@@ -74,6 +74,33 @@ pub fn bump_index_gen(db: &Connection) -> rusqlite::Result<i64> {
         .unwrap_or(0))
 }
 
+/// Fingerprint of the indexer that produced this index, if recorded.
+///
+/// `SCHEMA_VERSION` covers table shape only. An index built by older code has
+/// the same schema but different *contents* — older classifiers stored type
+/// names and local variables as definitions. Without this stamp a user who
+/// upgrades keeps serving answers from the old extractor forever.
+pub fn write_indexer_fingerprint(db: &Connection) -> rusqlite::Result<()> {
+    db.execute(
+        "INSERT INTO meta (key, value) VALUES ('indexer_fp', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [crate::warrant::INDEXER_FINGERPRINT],
+    )?;
+    Ok(())
+}
+
+/// `Some(fp)` when the index carries a fingerprint, `None` for an index built
+/// before the stamp existed. Callers compare it with
+/// `warrant::INDEXER_FINGERPRINT` to decide whether to warn.
+pub fn indexer_fingerprint(db: &Connection) -> Option<String> {
+    db.query_row(
+        "SELECT value FROM meta WHERE key = 'indexer_fp'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
 pub fn index_gen(db: &Connection) -> i64 {
     db.query_row("SELECT value FROM meta WHERE key='index_gen'", [], |r| r.get::<_, f64>(0))
         .map(|v| v as i64)
@@ -123,6 +150,20 @@ fn backfill_file_phrases(db: &Connection) -> rusqlite::Result<()> {
 fn run_migrations(db: &Connection) -> rusqlite::Result<()> {
     let version: i32 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version == SCHEMA_VERSION { return Ok(()); }
+
+    if version == 5 {
+        // Schema v5 → v6: islands table for trust-time learned shapes.
+        // Additive only; old DBs simply have no islands (flag path
+        // falls back to structural classification until re-trust).
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS islands (
+                 pattern TEXT PRIMARY KEY,
+                 count INTEGER NOT NULL DEFAULT 0
+             );
+             PRAGMA user_version = 6;"
+        )?;
+        return Ok(());
+    }
 
     if version == 4 {
         // Schema v4 → v5: add is_source column to file_map, add file_phrases table.
@@ -197,6 +238,14 @@ fn create_tables(db: &Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS meta (
             key TEXT PRIMARY KEY,
             value REAL
+        );
+        -- Islands (step 4b wiring): trust-time learned definition shapes.
+        -- pattern: debug-printed generalized category sequence;
+        -- count: corpus frequency at selection time.
+        -- Empty unless RELIARY_SEGMENTER=1 was set at trust time.
+        CREATE TABLE IF NOT EXISTS islands (
+            pattern TEXT PRIMARY KEY,
+            count INTEGER NOT NULL DEFAULT 0
         );",
     )?;
     // Occurrence-level tables (schema v2) — additive, no break to v1 tables.
@@ -453,5 +502,36 @@ mod tests {
     fn test_overflow_count() {
         let packed = pack_flags(0, 0, 100);
         assert_eq!(unpack_count(packed[0]), 31); // overflow sentinel
+    }
+}
+
+#[cfg(test)]
+mod v86_fingerprint_tests {
+    use super::*;
+
+    /// An index records which indexer produced it, and an index built before
+    /// the stamp existed reports `None` rather than pretending to be current.
+    #[test]
+    fn indexer_fingerprint_round_trips_and_absence_is_visible() {
+        let db = Connection::open_in_memory().unwrap();
+        create_new_db(&db).unwrap();
+        assert_eq!(
+            indexer_fingerprint(&db),
+            None,
+            "a fresh schema has no stamp until something writes one"
+        );
+        write_indexer_fingerprint(&db).unwrap();
+        assert_eq!(
+            indexer_fingerprint(&db).as_deref(),
+            Some(crate::warrant::INDEXER_FINGERPRINT),
+            "the stamp must be the compiled-in fingerprint"
+        );
+        // Overwriting is idempotent, not appending.
+        write_indexer_fingerprint(&db).unwrap();
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM meta WHERE key='indexer_fp'", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 }

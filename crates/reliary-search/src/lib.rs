@@ -31,11 +31,36 @@ pub mod similar;
 pub mod impact;
 pub mod test_plan;
 pub mod struct_diff;
+pub mod warrant;
 pub mod map;
 pub mod full_file;
 pub mod compat;
 pub mod plan;
 pub mod qualified;
+pub mod islands;
+pub mod segment;
+pub mod lex;
+
+/// Negative file-role filter: known data/config formats that cannot contain
+/// symbol definitions.
+///
+/// This is deliberately a DENY-list. An unknown extension (`.zig`, `.ex`,
+/// `.foo`) is never rejected here — it proceeds to the content-based
+/// `is_source_like` test, which is what keeps the "works on every language"
+/// property. Only formats that are pure data by construction are skipped,
+/// and only before content scanning, never to decide definition-ness.
+///
+/// Layer 0 of the V84 admission model: negatives may exclude, never admit.
+#[inline]
+pub fn is_known_data_ext(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "toml" | "lock" | "json" | "yaml" | "yml" | "ini" | "csv" | "svg"
+    )
+}
 
 /// Content-based binary detection.
 ///
@@ -55,7 +80,16 @@ pub fn is_likely_binary(path: &Path, probe_bytes: usize) -> bool {
         Err(_) => return false,
     };
     buf.truncate(n);
+    is_likely_binary_bytes(&buf)
+}
 
+/// Content-only binary test on bytes the caller already holds.
+///
+/// Exists so hot callers that must read the whole file anyway (the warrant
+/// tree scan, which hashes and scans every byte) do not open and read the
+/// file a second time just to sniff its first 8 KB.
+pub fn is_likely_binary_bytes(buf: &[u8]) -> bool {
+    let n = buf.len();
     if n == 0 {
         return false; // empty file is text (won't get indexed anyway)
     }
@@ -108,6 +142,35 @@ pub fn bm25_score(idf: f32, tf: f32, doc_len: f32, avgdl: f32) -> f32 {
 /// Uses raw `tf` instead of log(1+tf), which is the BM25L variant. Raw TF
 /// preserves the relative weight of frequent terms so a doc with 50 hits
 /// ranks meaningfully higher than one with 1 hit.
+/// Grammar-free identifier scanning with byte offsets: yields
+/// (byte_start, identifier) for words of length 2..=100 starting with a
+/// letter/underscore. Offsets index `text` (ASCII-only vocabulary, so
+/// byte == char boundary for every word char). Used by the island
+/// backward-vocabulary feed, which needs the receiver lookbehind
+/// (B4) at each word's position.
+pub fn scan_identifiers_with_offsets(text: &str) -> Vec<(usize, String)> {
+    let mut seen = rustc_hash::FxHashSet::default();
+    let mut out = Vec::new();
+    let b = text.as_bytes();
+    let mut i = 0usize;
+    while i < b.len() {
+        let c = b[i] as char;
+        if c.is_ascii_alphabetic() || c == '_' {
+            let s = i;
+            while i < b.len() && ((b[i] as char).is_ascii_alphanumeric() || b[i] == b'_') {
+                i += 1;
+            }
+            let word = &text[s..i];
+            if (2..=100).contains(&word.len()) && seen.insert(word.to_ascii_lowercase()) {
+                out.push((s, word.to_string()));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Grammar-free identifier scanning: extract [A-Za-z_][A-Za-z0-9_]{3,40}
 pub fn scan_identifiers(text: &str) -> Vec<String> {
     // V21: lowered min length from 3 to 2 — Python/Ruby/JS commonly use
@@ -131,7 +194,7 @@ pub fn scan_identifiers(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .filter(|t| {
             let len = t.len();
-            (2..=40).contains(&len)
+            (2..=100).contains(&len)
                 && t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         })
         .filter(|t| seen.insert(t.to_ascii_lowercase()))
@@ -162,12 +225,12 @@ pub fn stem_identifier(name: &str) -> String {
 
 /// S9: Streaming iterator version of scan_identifiers. Yields borrowed slices —
 /// caller applies to_ascii_lowercase lazily, avoiding the per-line Vec allocation.
-/// Grammar-free: same ASCII-only alphanumeric + 3..=40 length filter.
+/// Grammar-free: same ASCII-only alphanumeric + 3..=100 length filter.
 pub fn scan_identifiers_iter(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .filter(|t| {
             let len = t.len();
-            (3..=40).contains(&len)
+            (3..=100).contains(&len)
                 && t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         })
 }

@@ -437,6 +437,49 @@ fn pipe_to_pager(text: &str) {
 // This is the CREATE location: `trust <path>`/`index <path>` build the index
 // at exactly `<path>/.reliary/index.sqlite`. Query commands should prefer
 // `cli_index_db_path`, which walks up to an existing index.
+/// Identity of a base tree for the warrant index cache.
+///
+/// A git revision is content-addressed, so its commit id is exact and free.
+/// A plain directory has no such id; we fall back to a walk over path + size +
+/// mtime, which is cheap but not content-exact (documented limitation).
+fn base_identity(base: &str, base_dir: &str) -> String {
+    let rev = std::process::Command::new("git")
+        .arg("-C").arg(base_dir)
+        .arg("rev-parse").arg("HEAD")
+        .output();
+    if let Ok(out) = rev {
+        if out.status.success() {
+            // Only trust HEAD when the requested base resolved to it. A
+            // worktree is always created detached at the requested rev, so
+            // HEAD there IS the requested commit.
+            return String::from_utf8_lossy(&out.stdout).trim().to_string();
+        }
+    }
+    let mut h = <sha2::Sha256 as sha2::Digest>::new();
+    for e in walkdir::WalkDir::new(base_dir)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.depth() == 0 { return true; }
+            let n = e.file_name().to_str().unwrap_or("");
+            !n.starts_with('.') && !reliary_search::ingest::SKIP_DIRS.contains(&n)
+        })
+        .filter_map(|e| e.ok())
+    {
+        if !e.file_type().is_file() { continue; }
+        let Ok(m) = e.metadata() else { continue };
+        let rel = e.path().strip_prefix(base_dir).unwrap_or(e.path());
+        let mt = m.modified().ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        <sha2::Sha256 as sha2::Digest>::update(&mut h, rel.to_string_lossy().as_bytes());
+        <sha2::Sha256 as sha2::Digest>::update(&mut h, m.len().to_le_bytes());
+        <sha2::Sha256 as sha2::Digest>::update(&mut h, mt.to_le_bytes());
+    }
+    let out = <sha2::Sha256 as sha2::Digest>::finalize(h);
+    format!("{base}:{out:x}")
+}
+
 pub fn index_db_path(path: &str) -> String {
     format!("{}/.reliary/index.sqlite", path.trim_end_matches('/'))
 }
@@ -519,6 +562,13 @@ pub fn run_index(path: &str) -> bool {
                     // so a real rebuild would look stale. Surface it.
                     if let Err(e) = reliary_search::schema::bump_index_gen(&db) {
                         eprintln!("warning: could not update the index generation stamp: {}", e);
+                    }
+                    // V86: record which indexer produced these rows. Without it
+                    // an upgraded binary keeps serving answers extracted by an
+                    // older classifier (which stored type names and locals as
+                    // definitions) and nothing reports the mismatch.
+                    if let Err(e) = reliary_search::schema::write_indexer_fingerprint(&db) {
+                        eprintln!("warning: could not record the indexer fingerprint: {}", e);
                     }
                     eprintln!("{} {} files indexed", color::green("✓"), count);
                     true
@@ -1068,6 +1118,28 @@ enum Commands {
         /// Max symbols per file (default 10)
         #[arg(long, default_value = "10")]
         max_symbols: usize,
+    },
+    /// Verify that a change is closed: check a contract against base/head.
+    /// Example: reliary warrant --base HEAD --contract done.json
+    Warrant {
+        /// Base revision (git rev or directory). Default: HEAD
+        #[arg(long, default_value = "HEAD")]
+        base: String,
+        /// Head directory (working tree). Default: current directory
+        #[arg(long, default_value = ".")]
+        head: String,
+        /// Contract JSON file (see docs/plans/V85_WARRANT.md)
+        #[arg(long)]
+        contract: String,
+        /// Write the certificate here (default: stdout)
+        #[arg(long)]
+        cert: Option<String>,
+        /// Escalate any non-waived unseen file to indeterminate
+        #[arg(long)]
+        strict_unseen: bool,
+        /// Do not reuse a cached base index (also: RELIARY_WARRANT_CACHE=0)
+        #[arg(long)]
+        no_cache: bool,
     },
     /// Deterministic benchmark: generate questions+GT from any index, score results.
     /// Example: reliary bench gen --out bench/questions.json
@@ -2627,6 +2699,270 @@ fn main() {
                 }
             }
         }
+        Commands::Warrant { base, head, contract, cert, strict_unseen, no_cache } => {
+            // V85: closure certificate for a change. The base revision is
+            // exported to a detached worktree (or used as a directory), the
+            // head is the working tree. Both are indexed, then the contract
+            // is evaluated by reliary_search::warrant.
+            let head_root = head.trim_end_matches('/').to_string();
+            let tmp = std::env::temp_dir().join(format!("reliary-warrant-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&tmp);
+            // Assigned only on the success path below; every other path sets it
+            // and breaks, so the initial value is never observably read.
+            #[allow(unused_assignments)]
+            let mut exit_code: i32 = 0;
+            let mut written: Option<String> = None;
+            // Phase timings behind RELIARY_WARRANT_TIMING=1, matching the
+            // existing RELIARY_TIMING convention. stderr only.
+            let timing = std::env::var("RELIARY_WARRANT_TIMING").is_ok();
+            let t_start = std::time::Instant::now();
+            let mut t_phase = std::time::Instant::now();
+            let phase = |name: &str, t_phase: &mut std::time::Instant| {
+                if timing {
+                    eprintln!("[warrant] {name}: {:?}", t_phase.elapsed());
+                }
+                *t_phase = std::time::Instant::now();
+            };
+            'warrant: {
+                let contract_text = match std::fs::read_to_string(contract) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("cannot read contract {}: {}", contract, e);
+                        exit_code = 2;
+                        break 'warrant;
+                    }
+                };
+                let mut parsed: reliary_search::warrant::Contract =
+                    match serde_json::from_str(&contract_text) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("invalid contract {}: {}", contract, e);
+                            exit_code = 2;
+                            break 'warrant;
+                        }
+                    };
+                if *strict_unseen {
+                    parsed.strict_unseen = true;
+                }
+
+                // Resolve the base: a directory, or a git rev exported to a
+                // detached worktree next to the head.
+                let base_dir = if std::path::Path::new(&base).is_dir() {
+                    base.to_string()
+                } else {
+                    let slot = tmp.join("base");
+                    let out = std::process::Command::new("git")
+                        .arg("-C").arg(&head_root)
+                        .arg("worktree").arg("add").arg("--detach")
+                        .arg("--").arg(&slot).arg(base)
+                        .output();
+                    match out {
+                        Ok(o) if o.status.success() => slot.to_string_lossy().to_string(),
+                        Ok(o) => {
+                            eprintln!("cannot resolve base '{}': {}", base, String::from_utf8_lossy(&o.stderr).trim());
+                            exit_code = 2;
+                            break 'warrant;
+                        }
+                        Err(e) => {
+                            eprintln!("cannot run git: {}", e);
+                            exit_code = 2;
+                            break 'warrant;
+                        }
+                    }
+                };
+
+                let head_db_path = tmp.join("head.sqlite");
+
+                // Base index: content-addressed cache. A git rev is already
+                // content-addressed, so its commit id is the identity; a plain
+                // directory falls back to a size+mtime digest (weaker: an edit
+                // that preserves size and mtime is invisible to it).
+                let cache_enabled = !*no_cache
+                    && std::env::var("RELIARY_WARRANT_CACHE").map(|v| v != "0").unwrap_or(true);
+                let cache_dir = std::path::Path::new(&head_root).join(".reliary/warrant");
+
+                // The contract file and the certificate output must not be
+                // part of the warranted tree: a certificate written into the
+                // repo would change the head manifest on the next run.
+                // Gitignored files on disk are not part of the change either.
+                // Untracked-but-NOT-ignored files (an agent's new work) stay
+                // in scope, so only `--ignored` entries are excluded.
+                let mut exclude: Vec<std::path::PathBuf> = vec![
+                    std::path::PathBuf::from(&contract),
+                ];
+                if let Some(c) = cert {
+                    exclude.push(std::path::PathBuf::from(c));
+                }
+                let mut ignored_rel: std::collections::BTreeSet<String> =
+                    std::collections::BTreeSet::new();
+                if let Ok(out) = std::process::Command::new("git")
+                    .arg("-C").arg(&head_root)
+                    .arg("ls-files").arg("--others").arg("--ignored")
+                    // Collapse ignored directories to one entry each. Without
+                    // this a repository with a large node_modules or build
+                    // directory yields tens of thousands of paths and the
+                    // listing alone costs more than the scan it protects.
+                    .arg("--directory")
+                    .arg("--exclude-standard")
+                    .output()
+                {
+                    if out.status.success() {
+                        for line in String::from_utf8_lossy(&out.stdout).lines() {
+                            let rel = line.trim();
+                            if !rel.is_empty() {
+                                ignored_rel.insert(rel.to_string());
+                                exclude.push(std::path::Path::new(&head_root).join(rel));
+                            }
+                        }
+                    }
+                }
+
+                // Head manifest first. It is a read + sha256 pass with no
+                // lexer work, and it is exactly the identity the head index
+                // cache is keyed on. The contract file and certificate are
+                // excluded so writing a certificate cannot change the next
+                // run's identity.
+                let t_manifest = std::time::Instant::now();
+                let head_identity = match reliary_search::warrant::manifest_digest(
+                    std::path::Path::new(&head_root), &exclude) {
+                    Ok(d) => d,
+                    Err(e) => { eprintln!("scan head: {}", e); exit_code = 2; break 'warrant; }
+                };
+                phase("head-manifest", &mut t_phase);
+                let _ = t_manifest;
+
+                // Base identity: a git rev is content-addressed already; a
+                // plain directory uses its manifest digest (exact, and no
+                // second walk because we just computed it).
+                let base_identity = if base_dir != head_root.trim_end_matches('/') {
+                    base_identity(base, &base_dir)
+                } else {
+                    head_identity.clone()
+                };
+                let key = reliary_search::warrant::cache_key(&base_identity);
+                // Definitions normally come from the tree scan, which reads and
+                // classifies every byte anyway. The island classifier
+                // (`RELIARY_SEGMENTER=1`) is the one mode the scan does not
+                // reproduce, so that mode builds indexes and takes defs from
+                // them. Everything else no longer builds an index at all.
+                let index_defs = reliary_search::segment::segment_enabled();
+                let mut base_index_defs: Option<Vec<reliary_search::warrant::DefRow>> = None;
+                let mut head_index_defs: Option<Vec<reliary_search::warrant::DefRow>> = None;
+                if index_defs {
+                    let base_db = if cache_enabled {
+                        match reliary_search::warrant::open_or_build_cached_index(
+                            std::path::Path::new(&base_dir), &cache_dir, &key, &ignored_rel) {
+                            Ok((db, _hit)) => db,
+                            Err(e) => { eprintln!("index base: {}", e); exit_code = 2; break 'warrant; }
+                        }
+                    } else {
+                        match reliary_search::struct_diff::index_revision_relative(
+                            &base_dir, tmp.join("base.sqlite").to_string_lossy().as_ref()) {
+                            Ok(d) => d,
+                            Err(e) => { eprintln!("index base: {}", e); exit_code = 2; break 'warrant; }
+                        }
+                    };
+                    base_index_defs = match reliary_search::warrant::def_rows(
+                        &base_db, std::path::Path::new(&base_dir)) {
+                        Ok(d) => Some(d),
+                        Err(e) => { eprintln!("defs base: {}", e); exit_code = 2; break 'warrant; }
+                    };
+                    phase("base-index", &mut t_phase);
+
+                    let head_key = reliary_search::warrant::cache_key(&head_identity);
+                    let (head_db, head_hit) = if cache_enabled {
+                        match reliary_search::warrant::open_or_build_cached_index(
+                            std::path::Path::new(&head_root), &cache_dir, &head_key, &ignored_rel) {
+                            Ok((db, hit)) => (db, hit),
+                            Err(e) => { eprintln!("index head: {}", e); exit_code = 2; break 'warrant; }
+                        }
+                    } else {
+                        match reliary_search::struct_diff::index_revision_relative_excluding(
+                            &head_root, head_db_path.to_string_lossy().as_ref(), &ignored_rel) {
+                            Ok(d) => (d, false),
+                            Err(e) => { eprintln!("index head: {}", e); exit_code = 2; break 'warrant; }
+                        }
+                    };
+                    head_index_defs = match reliary_search::warrant::def_rows(
+                        &head_db, std::path::Path::new(&head_root)) {
+                        Ok(d) => Some(d),
+                        Err(e) => { eprintln!("defs head: {}", e); exit_code = 2; break 'warrant; }
+                    };
+                    if timing {
+                        eprintln!("[warrant] head-index-cache-hit: {head_hit}");
+                    }
+                    phase("head-index", &mut t_phase);
+                }
+                if timing {
+                    eprintln!(
+                        "[warrant] defs-source: {}",
+                        if index_defs { "index (segmenter)" } else { "scan" }
+                    );
+                }
+
+                let certificate = match reliary_search::warrant::evaluate(
+                    reliary_search::warrant::WarrantInput {
+                        base_root: std::path::Path::new(&base_dir),
+                        head_root: std::path::Path::new(&head_root),
+                        base_defs: base_index_defs.as_deref(),
+                        head_defs: head_index_defs.as_deref(),
+                        contract: &parsed,
+                        exclude: &exclude,
+                        cache_dir: if cache_enabled { Some(&cache_dir) } else { None },
+                        base_identity: base_identity.clone(),
+                        head_identity: head_identity.clone(),
+                    }) {
+                    Ok(c) => c,
+                    Err(e) => { eprintln!("warrant: {}", e); exit_code = 2; break 'warrant; }
+                };
+                phase("evaluate", &mut t_phase);
+                let text = match reliary_search::warrant::canonical_json(&certificate) {
+                    Ok(t) => t,
+                    Err(e) => { eprintln!("certificate: {}", e); exit_code = 2; break 'warrant; }
+                };
+                written = Some(text.clone());
+                exit_code = match certificate.verdict {
+                    reliary_search::warrant::Verdict::Closed => 0,
+                    reliary_search::warrant::Verdict::Open => 1,
+                    reliary_search::warrant::Verdict::Indeterminate => 3,
+                };
+            }
+            // Cleanup on every path (process::exit inside the block would
+            // bypass destructors, so exit only after this).
+            let _ = std::process::Command::new("git")
+                .arg("-C").arg(&head_root)
+                .arg("worktree").arg("remove").arg("--force")
+                .arg(tmp.join("base"))
+                .output();
+            let _ = std::fs::remove_file(tmp.join("base.sqlite"));
+            let _ = std::fs::remove_file(tmp.join("head.sqlite"));
+            let _ = std::fs::remove_file(tmp.join("base.sqlite-wal"));
+            let _ = std::fs::remove_file(tmp.join("head.sqlite-wal"));
+            let _ = std::fs::remove_file(tmp.join("base.sqlite-shm"));
+            let _ = std::fs::remove_file(tmp.join("head.sqlite-shm"));
+            let _ = std::fs::remove_dir(&tmp);
+            // Bounded growth: keep the 4 newest entries under a 512 MB cap.
+            reliary_search::warrant::prune_cache(
+                &std::path::Path::new(&head_root).join(".reliary/warrant"),
+                4,
+                512 * 1024 * 1024,
+            );
+            if timing {
+                eprintln!("[warrant] total: {:?}", t_start.elapsed());
+            }
+            if let Some(text) = written {
+                match cert {
+                    Some(path) => {
+                        if let Err(e) = std::fs::write(path, &text) {
+                            eprintln!("cannot write certificate {}: {}", path, e);
+                            std::process::exit(2);
+                        }
+                    }
+                    None => println!("{}", text),
+                }
+            }
+            if exit_code != 0 { std::process::exit(exit_code); }
+        }
         Commands::Map { path, out, max_files, max_symbols } => {
             let db_path = cli_index_db_path_or_literal(path);
             if !std::path::Path::new(&db_path).exists() {
@@ -2812,16 +3148,38 @@ fn main() {
                         let tests: Vec<serde_json::Value> = plan.tests.iter()
                             .map(|(f, r)| serde_json::json!({"file": f, "reasons": r}))
                             .collect();
+                        let inline: Vec<serde_json::Value> = plan.inline.iter()
+                            .map(|t| serde_json::json!({
+                                "file": t.file, "line": t.line, "name": t.name}))
+                            .collect();
                         println!("{}", serde_json::json!({
                             "tests": tests,
                             "commands": plan.commands,
+                            "inline": inline,
+                            "inline_skipped": plan.inline_skipped,
                         }));
-                    } else if plan.tests.is_empty() {
+                    } else if plan.tests.is_empty() && plan.inline.is_empty() {
                         println!("no tests found that exercise the given files/symbols");
+                        // An empty result from a file we could not read is not
+                        // the same as "this file has no tests".
+                        for s in &plan.inline_skipped {
+                            eprintln!("warning: {} was not read (not indexed, or not a source file)", s);
+                        }
                     } else {
-                        println!("test plan ({} file(s)):", plan.tests.len());
-                        for (f, reasons) in &plan.tests {
-                            println!("  {}  [{}]", f, reasons.join(", "));
+                        // Inline tests are listed first and individually: the
+                        // question is "which test should I run", and the answer
+                        // is a function name, not the file that contains it.
+                        if !plan.inline.is_empty() {
+                            println!("inline tests ({}):", plan.inline.len());
+                            for t in &plan.inline {
+                                println!("  {}::{}  (line {})", t.file, t.name, t.line);
+                            }
+                        }
+                        if !plan.tests.is_empty() {
+                            println!("test files ({}):", plan.tests.len());
+                            for (f, reasons) in &plan.tests {
+                                println!("  {}  [{}]", f, reasons.join(", "));
+                            }
                         }
                         if !plan.commands.is_empty() {
                             println!("\nrun:");

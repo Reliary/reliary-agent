@@ -32,6 +32,16 @@ fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| file.to_string());
 
+    // V86: a data/config file never enters the index. Trust skips these by
+    // role; reindex used to insert a file_map row for them anyway, and the
+    // schema default (`is_source = 1`) then made the file a definition source.
+    // A `.md` written after trust was a real case: its fenced code became
+    // findable definitions. Refuse before touching the database.
+    if reliary_search::is_known_data_ext(std::path::Path::new(&canonical)) {
+        eprintln!("reindex: {} is a data/config format, not indexed", file);
+        return false;
+    }
+
     // Step 1: Ensure file_map entry exists for this file.
     if let Err(e) = db.execute(
         "INSERT OR IGNORE INTO file_map (file_path) VALUES (?1)",
@@ -49,10 +59,22 @@ fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
         Err(e) => { eprintln!("reindex file_map SELECT: {}", e); return false; }
     };
 
+    // V86: trust recomputes `is_source` from content; reindex never did, so a
+    // file that changed from prose to code (or the reverse) kept its old flag,
+    // and a newly created row inherited the schema default of 1.
+    if let Err(e) = db.execute(
+        "UPDATE file_map SET is_source = ?1 WHERE id = ?2",
+        params![reliary_search::lazy_occurrence::is_source_like(content) as i32, file_id],
+    ) {
+        eprintln!("reindex is_source: {}", e);
+        return false;
+    }
+
     // V73: extract via the SHARED pipeline (stem_identifier, keywords, is_def,
     // zones, blocks). The old code used `tokenize()` (porter_stem) and wrote a
     // flags=0 stub — both silently degraded search after any edit.
-    let (phrase_locations, _line_count) = reliary_search::ingest::extract_file_phrases(content);
+    let (phrase_locations, _line_count) =
+        reliary_search::ingest::extract_file_phrases_for_path(content, &canonical);
     let token_len = phrase_locations.len() as i64;
     let content_len = content.len() as i64;
 
@@ -165,6 +187,42 @@ fn reindex_file(db_path: &str, file: &str, content: &str) -> bool {
     }
     if let Err(e) = db.execute("DELETE FROM file_phrases WHERE file_id = ?1", params![file_id]) {
         fail!("reindex DELETE file_phrases: {}", e);
+    }
+
+    // V86: a removed file must leave no trace. The phrase_occ blobs and
+    // file_phrases rows are gone at this point; `file_stats`, `count_overflow`
+    // and `file_map` were never cleaned, so a deleted file stayed a search
+    // candidate (with token_len 0) and kept its definition citations alive.
+    //
+    // The watcher signals a removal by reindexing with empty content.
+    if content.is_empty() {
+        for table in ["file_stats", "count_overflow"] {
+            let exists: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    params![table],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if exists > 0 {
+                if let Err(e) = db.execute(&format!("DELETE FROM {} WHERE file_id = ?1", table), params![file_id]) {
+                    fail!("reindex DELETE {}: {}", table, e);
+                }
+            }
+        }
+        if let Err(e) = db.execute("DELETE FROM file_map WHERE id = ?1", params![file_id]) {
+            fail!("reindex DELETE file_map: {}", e);
+        }
+        if let Err(e) = db.execute_batch("COMMIT;") {
+            fail!("reindex COMMIT: {}", e);
+        }
+        tx_guard.committed.set(true);
+        reliary_search::lazy_occurrence::invalidate_all_phrase_gens();
+        reliary_search::file_meta::invalidate(&canonical);
+        if let Err(e) = reliary_search::schema::bump_index_gen(&db) {
+            eprintln!("reindex bump_index_gen: {}", e);
+        }
+        return true;
     }
 
     // Step 2: resolve phrase_ids for the file's tokens (insert new phrases).
@@ -288,8 +346,86 @@ pub fn reindex_single_file(db_path: &str, file: &str, content: &str) -> usize {
         return 0;
     }
     if reindex_file(db_path, file, content) {
-        reliary_search::ingest::extract_file_phrases(content).0.len()
+        reliary_search::ingest::extract_file_phrases_for_path(content, file).0.len()
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod v86_reindex_tests {
+    use super::*;
+
+    /// A markdown file created after `trust` must not become a definition
+    /// source. `reindex_file` used to insert a `file_map` row and the schema
+    /// default (`is_source = 1`) made its fenced code a real definition.
+    #[test]
+    fn reindex_refuses_data_formats_and_writes_is_source() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("c");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "pub fn alpha() {}\n").unwrap();
+        let db_path = root.join(".reliary/index.sqlite");
+        std::fs::create_dir_all(root.join(".reliary")).unwrap();
+        let db = rusqlite::Connection::open(&db_path).unwrap();
+        reliary_search::schema::create_new_db(&db).unwrap();
+        reliary_search::ingest::index_directory(&db, root.to_str().unwrap()).unwrap();
+        drop(db);
+
+        let p = db_path.to_str().unwrap();
+        // Deny-listed: refused, and no row created.
+        let md = root.join("pkg.json");
+        std::fs::write(&md, "{\"k\": \"pub fn ghost() {}\"}\n").unwrap();
+        assert!(!reindex_file(p, md.to_str().unwrap(), "{\"k\": 1}\n"));
+        let db = rusqlite::Connection::open(&db_path).unwrap();
+        let n: i64 = db
+            .query_row("SELECT COUNT(*) FROM file_map WHERE file_path LIKE '%pkg.json'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "a data format must not get a file_map row");
+
+        // Prose that passes admission: is_source is written, not defaulted.
+        let md2 = root.join("notes.md");
+        std::fs::write(&md2, "# Notes\n\n```rust\npub fn from_md() {}\n```\n").unwrap();
+        reindex_file(p, md2.to_str().unwrap(), "# Notes\n\n```rust\npub fn from_md() {}\n```\n");
+        let is_source: i64 = db
+            .query_row("SELECT is_source FROM file_map WHERE file_path LIKE '%notes.md'", [], |r| r.get(0))
+            .unwrap();
+        // is_source_like judges the *content*; whatever it decides must be the
+        // stored value, not an unset default.
+        let expected = reliary_search::lazy_occurrence::is_source_like(
+            "# Notes\n\n```rust\npub fn from_md() {}\n```\n",
+        ) as i64;
+        assert_eq!(is_source, expected, "reindex must store the computed is_source");
+    }
+
+    /// Deleting a file through the watcher path (empty content) must remove
+    /// every row, including `file_map` and `file_stats`.
+    #[test]
+    fn reindex_with_empty_content_removes_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("c");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let f = root.join("src/a.rs");
+        std::fs::write(&f, "pub fn alpha() -> i32 { 1 }\n").unwrap();
+        let db_path = root.join(".reliary/index.sqlite");
+        std::fs::create_dir_all(root.join(".reliary")).unwrap();
+        let db = rusqlite::Connection::open(&db_path).unwrap();
+        reliary_search::schema::create_new_db(&db).unwrap();
+        reliary_search::ingest::index_directory(&db, root.to_str().unwrap()).unwrap();
+        reliary_search::lazy_occurrence::build_all_occurrence(&db).unwrap();
+        drop(db);
+
+        assert!(reindex_file(db_path.to_str().unwrap(), f.to_str().unwrap(), ""));
+        let db = rusqlite::Connection::open(&db_path).unwrap();
+        for (table, sql) in [
+            ("file_map", "SELECT COUNT(*) FROM file_map"),
+            ("occurrence", "SELECT COUNT(*) FROM occurrence"),
+            ("file_stats", "SELECT COUNT(*) FROM file_stats"),
+            ("file_phrases", "SELECT COUNT(*) FROM file_phrases"),
+            ("phrase_occ", "SELECT COUNT(*) FROM phrase_occ"),
+        ] {
+            let n: i64 = db.query_row(sql, [], |r| r.get(0)).unwrap();
+            assert_eq!(n, 0, "{table} still has rows for a deleted file");
+        }
     }
 }

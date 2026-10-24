@@ -116,7 +116,12 @@ fn parse_pat_token(s: &str) -> Result<(Pat, usize), String> {
         return Ok((Pat::Ident(kind), end));
     }
 
-    Err(format!("unexpected token at: {}", &s[..20.min(s.len())]))
+    // Truncate at a character boundary: `s` is arbitrary user input, and a
+    // 3-byte character straddling byte 20 made this panic. Under
+    // `panic = "abort"` that aborted the whole MCP server — every tool gone
+    // for the rest of the session because of one bad pattern.
+    let cut = s.floor_char_boundary(20.min(s.len()));
+    Err(format!("unexpected token at: {}", &s[..cut]))
 }
 
 fn is_ident_start(b: u8) -> bool {
@@ -356,6 +361,17 @@ fn walk(pat: &Pat, expr: &ExprNode, results: &mut Vec<Bindings>) {
 
 #[cfg(test)]
 mod tests {
+
+    /// A multibyte character straddling the truncation point used to panic.
+    /// The server aborts on panic, so this must never slice mid-character.
+    #[test]
+    fn error_message_never_slices_mid_character() {
+        // 7 euro signs = 21 bytes; byte 20 is inside the 7th character.
+        let err = parse_pattern("\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}").unwrap_err();
+        assert!(err.contains("unexpected token"), "got: {err}");
+        // The same input with an ASCII prefix that lands on a boundary still works.
+        assert!(parse_pattern("!\u{20ac}\u{20ac}").is_err());
+    }
     use super::*;
 
     fn make_call() -> ExprNode {
