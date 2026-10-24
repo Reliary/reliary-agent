@@ -4,6 +4,15 @@
 //! this one is not, so both `ctags_oracle.rs` and `segment_spike.rs` can
 //! `mod common;` without producing a third empty test binary.
 //!
+//! `mod common;` compiles a **separate copy** of this file into each test
+//! binary, and each binary uses a different subset: `ctags_oracle` uses
+//! `ctags_defs`, `segment_spike` uses `ctags_entries`. Since the module is
+//! private to each binary, the unused half trips `dead_code` under
+//! `-D warnings`. Allowing it here is the honest fix; the alternative is
+//! splitting the file, which would recreate the duplication this exists to
+//! remove.
+#![allow(dead_code)]
+//!
 //! Why this exists: two test files independently parsed ctags output and both
 //! took the first letter of the kind field. With short kinds (`--fields=+n`),
 //! `field` becomes `f`, which is also `function`'s initial, so every struct

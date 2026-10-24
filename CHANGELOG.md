@@ -5,6 +5,14 @@ All notable changes to Reliary will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.16] - 2026-10-24
+
+Fixes the CI failure 0.8.15 shipped with. The shared test module is compiled
+separately into each test binary, and each binary calls a different subset of
+it, so the unused half was dead code under the warnings-as-errors gate.
+Allowing dead code in that one file is the fix; splitting it would recreate
+the duplication it exists to remove.
+
 ## [0.8.15] - 2026-10-24
 
 The oracle test file still carried its own copy of the ctags parser, so the
