@@ -50,7 +50,10 @@ fn have_ctags() -> bool {
 
 fn ctags_defs(path: &std::path::Path) -> HashMap<String, i64> {
     let out = std::process::Command::new("ctags")
-        .args(["-o", "-", "--excmd=number", "--fields=+n"])
+        // `+K` requests long kind names. Mapping kinds by their first letter
+        // (`field` -> `f`, `member` -> `m`) silently counted struct fields as
+        // functions, because `f` is also `function`'s initial.
+        .args(["-o", "-", "--excmd=number", "--fields=+nK"])
         .arg(path)
         .output()
         .expect("run ctags");
@@ -71,8 +74,8 @@ fn ctags_defs(path: &std::path::Path) -> HashMap<String, i64> {
         };
         let _file = parts.next();
         let addr = parts.next().unwrap_or("");
-        let kind = parts.next().unwrap_or("").chars().next().unwrap_or('f');
-        if !"fcmsdptgun".contains(kind) {
+        let kind = parts.next().unwrap_or("");
+        if !is_definition_kind(kind) {
             continue;
         }
         // address looks like `42;"` — strip the `;"` trailer.
@@ -82,6 +85,48 @@ fn ctags_defs(path: &std::path::Path) -> HashMap<String, i64> {
         }
     }
     defs
+}
+
+/// Which ctags kinds are definitions for this comparison.
+///
+/// Matched on the long kind word, never on its first letter. `member` is
+/// kept because ctags reports Python methods as members; `field` is dropped
+/// because a struct field is a slot, not a definition, and V86/V87 spent real
+/// effort removing exactly that false positive from the index.
+fn is_definition_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function"
+            | "method"
+            | "member"
+            | "class"
+            | "struct"
+            | "enumerator"
+            | "enum"
+            | "union"
+            | "interface"
+            | "implementation"
+            | "namespace"
+            | "typedef"
+            | "define"
+            | "macro"
+            | "prototype"
+    )
+}
+
+#[test]
+fn ctags_kind_mapping_uses_the_word_not_its_first_letter() {
+    // Regression: `field` collapsed to `f` and matched `function`, so every
+    // struct field entered the oracle as a definition we had "missed".
+    assert!(!is_definition_kind("field"));
+    assert!(!is_definition_kind("constant"));
+    assert!(!is_definition_kind("variable"));
+    assert!(!is_definition_kind("getter"));
+    assert!(!is_definition_kind("setter"));
+    assert!(is_definition_kind("function"));
+    assert!(is_definition_kind("method"));
+    assert!(is_definition_kind("member")); // Python methods
+    assert!(is_definition_kind("struct"));
 }
 
 fn our_defs(dir: &std::path::Path, file: &str) -> HashSet<(String, i64)> {

@@ -5,6 +5,21 @@ All notable changes to Reliary will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.13] - 2026-10-24
+
+Fixes a defect CI caught in 0.8.12.
+
+- The ctags oracle harness mapped ctags kind names by their first letter.
+  With short kinds, `field` becomes `f`, which is also `function`'s initial, so
+  every struct field entered the oracle as a definition we had "missed". The
+  harness now requests long kind names and matches on the whole word, drops
+  `field` and `constant` (a field is a slot, not a definition) and keeps
+  `member`, which is how ctags reports Python methods. A unit test pins the
+  mapping.
+- The oracle had been red since V84 and nobody saw it: ctags is not installed
+  on the development host, and the test skips when the binary is absent. CI
+  installs it, which is where it surfaced.
+
 ## [0.8.12] - 2026-10-23
 
 Everything below was unreleased since 0.8.11: the cross-line lexer, the island
