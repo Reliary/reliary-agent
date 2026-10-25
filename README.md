@@ -202,7 +202,7 @@ are cost, output size, and zero dead-ends.
 
 | | F1 | Billed cost | Tool bytes | Dead-ends | Refusals |
 |---|---|---|---|---|---|
-| reliary | 0.937 | 20,605 | 11.7K | 0.0 | 0/40 |
+| reliary | 0.948 | 22,925 | 10.5K | 0.0 | 0/40 |
 | codebase-memory-mcp | 0.495 | 21,901 | 11.1K | 2.0 | 4/40 |
 | grep | 0.596 | 35,456 | 23.7K | 0.0 | 1/40 |
 

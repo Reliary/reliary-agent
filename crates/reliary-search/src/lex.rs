@@ -40,6 +40,23 @@ pub enum Ml {
     Raw(u8),
 }
 
+/// Longest a multi-line BACKTICK literal may span before it is treated as a
+/// misparse.
+///
+/// A backtick in prose is the problem case: doc comments quote code with
+/// `` ` `` constantly, and one unpaired backtick opens a Go/JS template
+/// literal that never closes, so every later definition in the file is masked
+/// and disappears from the index. `httpx/_urlparse.py` lost its `ParseResult`
+/// class and five methods this way, from a lone backtick inside a `#` comment.
+///
+/// The bound applies ONLY to backticks. Triple-quoted strings are Python
+/// docstrings and C#/Java text blocks, which are routinely longer than this
+/// (a 59-line `httpx` docstring is normal), so bounding those would delete
+/// real definitions — the opposite failure. Real template literals are short;
+/// 50 lines is generous, and the heredoc already uses the same
+/// abandon-on-timeout fail-safe.
+const ML_MAX_LINES: u16 = 50;
+
 /// Cross-line lexical state. Reset once per file — the state is carried
 /// across the lines of one file and must never leak into the next file on
 /// the same thread under Rayon (callers own that reset).
@@ -47,6 +64,9 @@ pub enum Ml {
 pub struct LexState {
     pub block_comment: bool,
     pub ml: Ml,
+    /// Lines spent inside the current multi-line literal. Used to abandon a
+    /// literal that runs implausibly long (see `ML_MAX_LINES`).
+    pub ml_lines: u16,
     /// Active heredoc terminator (V84 P-B). `None` when not inside one.
     /// Ruby/Shell/PHP heredoc bodies are literal text — braces, quotes and
     /// comment markers inside them are not code. The tag is stored inline
@@ -98,7 +118,7 @@ impl HeredocTag {
 impl LexState {
     /// Const constructor (usable in `thread_local! { ... const { } }`).
     pub const fn new() -> Self {
-        LexState { block_comment: false, ml: Ml::None, heredoc: None }
+        LexState { block_comment: false, ml: Ml::None, ml_lines: 0, heredoc: None }
     }
     pub fn reset(&mut self) {
         *self = LexState::new();
@@ -351,6 +371,7 @@ fn scan_regex(b: &[u8], i: usize) -> Option<usize> {
 
 fn walk_code(line: &str, st: &mut LexState, hash_comment: bool, on_code: &mut dyn FnMut(usize)) {
     let b = line.as_bytes();
+    let entered_in_ml = st.ml != Ml::None;
 
     // V84 P-B: heredoc body. Everything until the terminator line is literal
     // text — braces and quotes inside it are not code. A heredoc that runs
@@ -613,6 +634,26 @@ fn walk_code(line: &str, st: &mut LexState, hash_comment: bool, on_code: &mut dy
         on_code(i);
         i += 1;
     }
+
+    // V92: bound multi-line literals. Counted only for lines that CONTINUE an
+    // existing literal, so the opening line is not charged. A literal that
+    // outlives the bound is a misparse, not a literal: drop the state and let
+    // the rest of the file lex normally.
+    if st.ml == Ml::Backtick {
+        if entered_in_ml {
+            st.ml_lines = st.ml_lines.saturating_add(1);
+            if st.ml_lines > ML_MAX_LINES {
+                // Misparse, not a literal: drop the state so the rest of the
+                // file lexes normally instead of being masked wholesale.
+                st.ml = Ml::None;
+                st.ml_lines = 0;
+            }
+        } else {
+            st.ml_lines = 0;
+        }
+    } else {
+        st.ml_lines = 0;
+    }
 }
 
 /// Is the next line's first byte already inside a string or block comment?
@@ -690,6 +731,66 @@ mod tests {
     fn mask1(line: &str, hash: bool) -> String {
         let mut st = LexState::default();
         masked_line(line, &mut st, hash)
+    }
+
+    #[test]
+    fn unpaired_backtick_in_prose_does_not_swallow_the_file() {
+        // Regression: one stray backtick in a comment opened a template
+        // literal that never closed, so every later definition in the file was
+        // masked. `httpx/_urlparse.py` lost six definitions this way.
+        // `hash_comment = false`, which is what the ingest path passes: the
+        // lexer cannot tell a Python `#` comment from a C preprocessor line, so
+        // a backtick inside a Python comment IS seen as an opener.
+        let mut st = LexState::new();
+        // One unpaired backtick on the opening line...
+        let _ = masked_line("# prose mentioning a ` backtick", &mut st, false);
+        assert_eq!(st.ml, Ml::Backtick, "the stray backtick opens a literal");
+        // ...and then ordinary lines that contain no backtick, so the literal
+        // never closes. Before the bound this ran to the end of the file.
+        let mut abandoned = false;
+        for _ in 0..(ML_MAX_LINES as usize + 10) {
+            let _ = masked_line("more prose, no backtick here", &mut st, false);
+            if st.ml == Ml::None {
+                abandoned = true;
+                break;
+            }
+        }
+        assert!(abandoned,
+                "an unterminated literal must be abandoned ({:?} after {} lines)",
+                st.ml, st.ml_lines);
+        // Definitions after the give-up point classify normally again.
+        let m = masked_line("class ParseResult:", &mut st, false);
+        assert!(m.contains("ParseResult"));
+    }
+
+    #[test]
+    fn long_docstring_is_not_abandoned() {
+        // The bound is backtick-only. A 60-line Python docstring is ordinary
+        // and must keep its enclosing file's definitions visible.
+        let mut st = LexState::new();
+        let _ = masked_line("    \"\"\"", &mut st, false);
+        assert_eq!(st.ml, Ml::TripleDq);
+        for _ in 0..80 {
+            let _ = masked_line("    doc line", &mut st, false);
+        }
+        assert_eq!(st.ml, Ml::TripleDq, "docstrings are not bounded");
+        let _ = masked_line("    \"\"\"", &mut st, false);
+        assert_eq!(st.ml, Ml::None);
+        let m = masked_line("    def after(self):", &mut st, false);
+        assert!(m.contains("def"));
+    }
+
+    #[test]
+    fn short_multiline_literal_is_still_honoured() {
+        // The bound must not break legitimate strings.
+        let mut st = LexState::new();
+        let _ = masked_line("s = `first", &mut st, false);
+        assert_eq!(st.ml, Ml::Backtick);
+        let m = masked_line("still inside", &mut st, false);
+        assert!(!m.contains("still"));
+        let m = masked_line("last`", &mut st, false);
+        assert_eq!(st.ml, Ml::None);
+        let _ = m;
     }
 
     #[test]

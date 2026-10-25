@@ -194,7 +194,7 @@ pub fn scan_identifiers(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .filter(|t| {
             let len = t.len();
-            (2..=100).contains(&len)
+            (1..=100).contains(&len)
                 && t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         })
         .filter(|t| seen.insert(t.to_ascii_lowercase()))
@@ -214,9 +214,14 @@ pub fn stem_identifier(name: &str) -> String {
     if name.contains('_') {
         // snake_case compound — use full name, don't stem
         name.to_ascii_lowercase()
-    } else if name.chars().filter(|c| c.is_ascii_uppercase()).count() >= 2 {
-        // CamelCase compound (≥2 capitals = multi-word type like
-        // StructuralResult, BraceNode, FileMeta) — preserve as-is.
+    } else if name.starts_with(|c: char| c.is_ascii_uppercase()) {
+        // V91: any name that starts with a capital is a type or a PascalCase
+        // identifier, not an English word, so it keeps its identity. The old
+        // rule only protected two-capital compounds, which Porter-stemmed
+        // single-word types: `session` ends in `-sion`, so `Session` became
+        // `ses` and collided with the lowercase `session` — 181 rows merged
+        // into one phrase and "who calls Session" answered with lowercase
+        // `session` sites. Same class for `Transaction`, `Connection`.
         name.to_ascii_lowercase()
     } else {
         porter_stem(name)
@@ -225,12 +230,19 @@ pub fn stem_identifier(name: &str) -> String {
 
 /// S9: Streaming iterator version of scan_identifiers. Yields borrowed slices —
 /// caller applies to_ascii_lowercase lazily, avoiding the per-line Vec allocation.
-/// Grammar-free: same ASCII-only alphanumeric + 3..=100 length filter.
+///
+/// V92: the floor is 1, not 3. It was 3 while `scan_identifiers` was 2, so the
+/// two scanners disagreed and this one silently dropped single-character
+/// identifiers. Python and Go use them routinely (`def u(s)` in
+/// `requests/tests/compat.py`, loop variables, `x`/`y`), and the definitions
+/// were missing from the index entirely. One-letter names are cheap to store
+/// and the phrase table dedups them, so there is no reason to filter them.
+/// Grammar-free: ASCII-only, starts with a letter or underscore.
 pub fn scan_identifiers_iter(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .filter(|t| {
             let len = t.len();
-            (3..=100).contains(&len)
+            (1..=100).contains(&len)
                 && t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         })
 }

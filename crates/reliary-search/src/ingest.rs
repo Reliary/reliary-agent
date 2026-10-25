@@ -368,6 +368,12 @@ pub fn extract_file_phrases_ctx_with_path(
 
     let DetectBlocksOut { blocks, line_block } = detect_blocks(&lines);
 
+    // V93: tokenization needs CROSS-LINE literal state. The per-line
+    // `tokenizable_code` resets its lexer on every call, so every line of a
+    // Python docstring or JS template literal was tokenized as code and prose
+    // words became call sites (`request` picked up 241 docstring hits in
+    // psf/requests). One state, reset here, carried through the loop.
+    let mut token_state = crate::lex::LexState::new();
     for (li, line) in lines.iter().enumerate() {
         let zone = crate::schema::classify_line(line);
         let block_local = line_block[li];
@@ -375,8 +381,9 @@ pub fn extract_file_phrases_ctx_with_path(
         let line_is_def = lines_is_def.get(li).copied().unwrap_or(false);
         let line_def_name: Option<&str> = defined_names.get(li).and_then(|n| n.as_deref());
         // Strip comments AND string-literal contents before tokenizing: a
-        // name inside `panic!("call_me()")` is not a call site.
-        let code = crate::structural::tokenizable_code(line);
+        // name inside `panic!("call_me()")` is not a call site. The state is
+        // carried across lines so a docstring interior is blanked too.
+        let code = crate::structural::tokenizable_code_with(line, &mut token_state);
         for (col, token) in scan_identifiers(&code).into_iter().enumerate() {
             let stemmed = stem_identifier(&token);
             let is_def_name = line_def_name
@@ -714,6 +721,8 @@ pub fn index_directory_excluding(
         // Prose gate: a `.md` file never supplies definitions, and a line that
         // begins inside a multi-line literal is prose whatever the extension.
         let mut lex_state = crate::lex::LexState::new();
+        // V93: cross-line state for tokenization (see the other pipeline).
+        let mut token_state = crate::lex::LexState::new();
         reset_comment_state();
         for (li, line) in lines.iter().enumerate() {
             let _ = li;
@@ -782,9 +791,8 @@ pub fn index_directory_excluding(
             // P9-4: use &str reference instead of cloning Option<String>.
             let line_def_name: Option<&str> = defined_names.get(li).and_then(|n| n.as_deref());
             // Path B: strip trailing // comments before scanning identifiers.
-            // Without this, doc-comment prose like "consume" gets indexed as
-            // a real identifier and pollutes find_references with false call sites.
-            let code = crate::structural::tokenizable_code(line);
+            // V93: cross-line state so docstring interiors are blanked.
+            let code = crate::structural::tokenizable_code_with(line, &mut token_state);
             for (col, token) in scan_identifiers(&code).into_iter().enumerate() {
                 let stemmed = crate::stem_identifier(&token);
 

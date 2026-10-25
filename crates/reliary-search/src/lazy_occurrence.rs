@@ -785,6 +785,7 @@ pub fn ensure_occurrence_for_phrase(
             let mut line_def_names: Vec<Option<String>> = Vec::with_capacity(lines.len());
             let defs_allowed = !crate::ingest::is_prose_path(file_path);
             let mut lex_state = crate::lex::LexState::new();
+            let mut token_state = crate::lex::LexState::new();
             crate::ingest::reset_comment_state();
             for line in &lines {
                 let (open_count, close_count) = crate::ingest::count_braces(line);
@@ -810,7 +811,7 @@ pub fn ensure_occurrence_for_phrase(
                 // a name inside a string/comment (`panic!("write_vocab")`) a
                 // phantom occurrence, and diverged the `col` ordinal from the
                 // file-path build.
-                let code_line = crate::structural::tokenizable_code(line);
+                let code_line = crate::structural::tokenizable_code_with(line, &mut token_state);
                 for (col, token) in crate::scan_identifiers(&code_line).into_iter().enumerate() {
                     let stemmed = crate::stem_identifier(&token);
                     if stemmed != phrase_text {
@@ -1031,6 +1032,8 @@ fn ensure_occurrence_for_file_impl(
         std::collections::HashSet::new()
     };
     crate::ingest::reset_comment_state();
+    // V93: cross-line literal state for tokenization (docstring interiors).
+    let mut token_state = crate::lex::LexState::new();
     for (li, line) in lines.iter().enumerate() {
         let (open_count, close_count) = crate::ingest::count_braces(line);
         let prev_depth = brace_depth;
@@ -1049,7 +1052,7 @@ fn ensure_occurrence_for_file_impl(
                     break;
                 }
             }
-            let masked = crate::structural::tokenizable_code(line);
+            let masked = crate::structural::tokenizable_code_with(line, &mut token_state);
             if open_count > 0
                 && brace_depth > prev_depth
                 && crate::islands::opens_import_group(&masked)
@@ -1200,6 +1203,8 @@ fn ensure_occurrence_for_file_impl(
         // M6: Accumulate rows into a batch, flush in chunks of 500.
         // Multi-row INSERT is 3-10× faster than individual executes for large files.
         let mut batch: Vec<(i64, i64, i32, i32, i32, i64, i64)> = Vec::with_capacity(500);
+        // V93: cross-line literal state for tokenization.
+        let mut token_state = crate::lex::LexState::new();
 
         for (li, line) in lines.iter().enumerate() {
             let line_tag = line_tags.get(li).copied().unwrap_or(0);
@@ -1211,7 +1216,7 @@ fn ensure_occurrence_for_file_impl(
 
             // Path B: strip trailing // comments and string-literal contents
             // before scanning identifiers (a name in a string is not a call site).
-            let code = crate::structural::tokenizable_code(line);
+            let code = crate::structural::tokenizable_code_with(line, &mut token_state);
 
             for (col, token) in crate::scan_identifiers(&code).into_iter().enumerate() {
                 // V39: use stem_identifier to preserve snake_case identifiers.
@@ -1455,6 +1460,8 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
             map
         };
 
+        // V93: cross-line literal state for tokenization.
+        let mut token_state = crate::lex::LexState::new();
         for (li, line) in lines.iter().enumerate() {
             let line_tag = line_tags.get(li).copied().unwrap_or(0);
             let line_def = line_is_def.get(li).copied().unwrap_or(false);
@@ -1464,7 +1471,7 @@ pub fn ensure_occurrence_for_file_with_content(db: &Connection, file_id: i64, co
             let block_id = block_ids.get(li).copied().unwrap_or(0);
 
             // V79: strip comments/strings before tokenizing (see the other path).
-            let code_line = crate::structural::tokenizable_code(line);
+            let code_line = crate::structural::tokenizable_code_with(line, &mut token_state);
             for (col, token) in crate::scan_identifiers(&code_line).into_iter().enumerate() {
                 // V41: use stem_identifier to preserve snake_case identifiers.
                 // porter_stem strips the `al` suffix from `structural` → `structur`,

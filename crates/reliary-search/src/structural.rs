@@ -276,6 +276,13 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
         return StructuralResult { tag: 1, is_def: true, defined_name: Some(name) };
     }
 
+    // V92: brace-less `impl` headers (multi-line where-clauses). Checked
+    // before the delimiter search, which requires a `{` on the same line.
+    if let Some(name) = impl_header_without_brace(trimmed) {
+        if block_depth <= 4 {
+            return StructuralResult { tag: 2, is_def: true, defined_name: Some(name) };
+        }
+    }
     // Step 1: Find the block-start delimiter.
     // The delimiter is one of: `(`, `<`, `{`, `:` at end of line.
     // For brace languages: `{` at end (struct/class body), `(` (function signature).
@@ -294,7 +301,13 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     // Grammar-free block-start detection.
     // A line is a block-start if it has `{` (brace block) or `:` (Python block) at end,
     // OR if it has `(` and looks like a function/method signature (not an assignment/call).
-    let ends_with_brace = bytes.last() == Some(&b'{');
+    // V92: `{}` is an empty body, not a missing one. `unsafe impl<T> Send for
+    // X {}` and `fn f() {}` end with `}` and were falling through every
+    // branch, so all 478 `implementation` definitions in tokio that have an
+    // empty body were invisible. A match arm ending in `{}` is guarded below
+    // by the `=>` check.
+    let ends_with_brace = bytes.last() == Some(&b'{')
+        || (bytes.len() >= 2 && bytes[bytes.len() - 2] == b'{' && bytes[bytes.len() - 1] == b'}');
     let ends_with_colon = bytes.last() == Some(&b':');
     let ends_with_eq = trimmed.ends_with('=');
     let ends_with_semi = trimmed.ends_with(';');
@@ -376,15 +389,31 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     // produced `find_references("vec", def_only)` answers. Real signatures put
     // their `(` after the generic list closes (`fn foo<T>(x: T)`), so the angle
     // depth at the paren position separates the two by position alone.
-    let first_sig_paren = first_paren_outside_angle(trimmed);
+    let first_sig_paren = first_signature_paren(trimmed);
     let has_open_paren = first_sig_paren.is_some();
     let is_function_signature = has_open_paren && !ends_with_eq && !ends_with_semi && !ends_with_comma;
 
     // C9: trait method declaration has `(self`/`(&self`/`(&mut self` as first param
     // and ends with `;` (no body). Detect this to mark it as a function def.
     // Example: `fn bar(&self, amt: usize);` inside `trait Foo { ... }`.
-    let is_trait_method_decl = if ends_with_semi && has_open_paren && !ends_with_eq {
-        let paren_idx = delims.first_paren_pos();
+    // V94: a `fn`/`def` declaration line that ends in `;` has no body, so it
+    // is a trait/interface method whether or not it takes `self`.
+    // `unsafe fn from_raw_handle(h: RawHandle) -> Self;` in `tokio/src/doc/os.rs`
+    // was invisible; the C9 rule below only accepted `self` receivers.
+    let is_bodyless_decl = ends_with_semi
+        && has_open_paren
+        && !ends_with_eq
+        && {
+            let head = trimmed[..first_sig_paren.unwrap_or(0)].trim_end();
+            head.split_whitespace().rev().take(3).any(|w| {
+                let w = w.trim_end_matches(['<', '>']);
+                matches!(w, "fn" | "def" | "func" | "function")
+            })
+        };
+    let is_trait_method_decl = if is_bodyless_decl {
+        true
+    } else if ends_with_semi && has_open_paren && !ends_with_eq {
+        let paren_idx = first_sig_paren;
         if let Some(p) = paren_idx {
             // Look for self/&self/&mut self as the first parameter
             let after = trimmed[p + 1..].trim_start();
@@ -488,7 +517,7 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     // Check if there's a `(` BEFORE the `{` (function with signature on same line as body open).
     // `function foo() {` has `(` before `{`. `struct Foo {` does not.
     // P3-1: use pre-scanned positions from scan_delimiters.
-    let paren_pos = delims.first_paren_pos();
+    let _paren_pos = delims.first_paren_pos();
     let brace_pos = if ends_with_brace { delims.first_brace_pos() } else { None };
     let colon_pos = if ends_with_colon {
         if delims.colon_mask != 0 {
@@ -513,13 +542,27 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
         }
     }
 
-    if is_function_signature && paren_pos.is_some() {
+    if is_function_signature && first_sig_paren.is_some() {
         // P3-1 principled: the function name is the LAST identifier whose
         // next non-whitespace char is `(` or `<`, restricted to the part of
         // the line before any inline body (`{`). Without that restriction a
         // one-liner like `pub fn alpha() -> i32 { beta() + 1 }` would record
         // the definition under the trailing call's name.
-        if let Some((name_start, idx)) = find_function_name_pos_before(&delims, delims.first_brace_pos()) {
+        // The name comes from the signature paren chosen above, not from a
+        // line-wide "last ident followed by (" scan.
+        // Take the name from the chosen signature paren. If that lands on a
+        // declaration word (a return type such as `-> impl Iterator`), use the
+        // identifier immediately after the declaration keyword instead of
+        // falling back to a line-wide scan that would pick the same word.
+        let from_sig_paren = first_sig_paren.and_then(|p| name_before_paren(trimmed, p));
+        let after_keyword = decl_keyword_follower(trimmed);
+        let from_ident_scan =
+            find_function_name_pos_before(&delims, delims.first_brace_pos());
+        let chosen = from_sig_paren
+            .map(|(s, _n)| (s, 0usize))
+            .or_else(|| after_keyword)
+            .or(from_ident_scan);
+        if let Some((name_start, _idx)) = chosen {
             // V65: a bare call like `impl_target_identifier(before_brace)` is
             // NOT a definition. The name must be preceded by a declaration
             // keyword (`fn`, `pub`, `async`, `unsafe`, `extern`, `const`) or
@@ -587,15 +630,17 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
             if !decl_ok {
                 return StructuralResult { tag: 0, is_def: false, defined_name: None };
             }
-            delim_pos = Some(delims.ident_ends[idx] as usize);
+            delim_pos = Some(name_start + trimmed[name_start..].bytes().take_while(
+                |c| c.is_ascii_alphanumeric() || *c == b'_').count());
         } else {
             return StructuralResult { tag: 0, is_def: false, defined_name: None };
         }
         delim_char = b'(';
-    } else if is_trait_method_decl && paren_pos.is_some() {
+    } else if is_trait_method_decl && first_sig_paren.is_some() {
         // C9: trait method declaration — same principled logic.
-        if let Some((_, idx)) = find_function_name_pos(&delims) {
-            delim_pos = Some(delims.ident_ends[idx] as usize);
+        if let Some((ns, _)) = first_sig_paren.and_then(|p| name_before_paren(trimmed, p)) {
+            delim_pos = Some(ns + trimmed[ns..].bytes().take_while(
+                |c| c.is_ascii_alphanumeric() || *c == b'_').count());
         } else {
             return StructuralResult { tag: 0, is_def: false, defined_name: None };
         }
@@ -710,6 +755,38 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
         if let Some(cp) = cpos {
             before = before[..cp].trim_end();
         }
+        // V92: a top-level `:` before the body opens a bound/base list:
+        //   `pub trait StreamExt: Stream {`      -> StreamExt
+        //   `public class Foo: Bar, IBaz {`      -> Foo
+        // Inside `<...>` the colon is a generic bound and is already skipped
+        // by the angle-depth check; a `::` path segment is not a separator.
+        let bytes = before.as_bytes();
+        let mut angle: i32 = 0;
+        let mut cpos: Option<usize> = None;
+        let mut k = 0usize;
+        while k < bytes.len() {
+            match bytes[k] {
+                b'<' => angle += 1,
+                b'>' if angle > 0 => angle -= 1,
+                b':' if angle == 0 => {
+                    let prev = if k > 0 { bytes[k - 1] } else { 0 };
+                    let next = if k + 1 < bytes.len() { bytes[k + 1] } else { 0 };
+                    if prev != b':' && next != b':' {
+                        cpos = Some(k);
+                    }
+                }
+                _ => {}
+            }
+            k += 1;
+        }
+        if let Some(cp) = cpos {
+            let head = before[..cp].trim_end();
+            // Only cut when the head still names something: `a: b` alone is
+            // a field, not a declaration.
+            if head.bytes().any(|c| c.is_ascii_alphabetic() || c == b'_') {
+                before = head;
+            }
+        }
     }
     // V59: for brace-terminated type defs (`struct Foo<T> {`), the last ident
     // before `{` is a generic param/lifetime. Walk back past the `<...>` group
@@ -718,19 +795,17 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
         let trimmed_before = before.trim_end();
         let bytes_b = trimmed_before.as_bytes();
         if !bytes_b.is_empty() && *bytes_b.last().unwrap() == b'>' {
-            let mut angle: i32 = 0;
+            // V94: cut at the FIRST `<` whose angle depth is 0 on this line.
+            // Walking backwards from the trailing `>` breaks when the generic
+            // list contains an arrow: `struct CallOnDrop<O, F: FnOnce() -> O>`
+            // stopped at the `->`'s `>`, leaving `O` as the name.
+            let depths = angle_depth_at(trimmed_before);
             let mut cut: Option<usize> = None;
-            let mut i = bytes_b.len() - 1;
-            while i > 0 {
-                match bytes_b[i] {
-                    b'>' => angle += 1,
-                    b'<' => {
-                        angle -= 1;
-                        if angle == 0 { cut = Some(i); break; }
-                    }
-                    _ => {}
+            for (i, d) in depths.iter().enumerate() {
+                if *d == 0 && bytes_b[i] == b'<' {
+                    cut = Some(i);
+                    break;
                 }
-                i -= 1;
             }
             if let Some(cp) = cut {
                 before = &trimmed[..cp];
@@ -756,18 +831,41 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     // `impl<T: Bound> Foo for Bar<T> {` → defined_name = "Bar" (last identifier
     // before `{` after skipping the `for` clause). For `impl Foo {`, simply
     // returns "Foo".
-    let is_impl_line = trimmed.starts_with("impl") 
-        && (trimmed.as_bytes().get(4) == Some(&b' ') || trimmed.as_bytes().get(4) == Some(&b'<'));
+    // V94: `unsafe impl` / `default impl` are impl headers too. The old test
+    // required the line to START with `impl`, so `unsafe impl<T> Send for
+    // JoinHandle<T> {}` fell through to the generic path and recorded the
+    // name `impl`.
+    let is_impl_line = {
+        let mut rest = trimmed;
+        for p in ["unsafe ", "default "] {
+            if let Some(r) = rest.strip_prefix(p) {
+                rest = r.trim_start();
+            }
+        }
+        rest.starts_with("impl")
+            && matches!(rest.as_bytes().get(4), Some(b' ') | Some(b'<') | Some(b'{'))
+    };
     let name = if is_impl_line {
         let before_brace = &trimmed[..delim_pos];
         // Find the `for` keyword — after it is the target type.
-        let target_type = if let Some(for_pos) = before_brace.find(" for ") {
+        // V94: look for ` for ` in the header BEFORE the where-clause strip,
+        // which removes `for St` in `impl<St> Trait for St where St: Bound {}`.
+        let header_full = &trimmed[..delim_pos];
+        let for_in_header = header_full.find(" for ");
+        let target_type = if let Some(for_pos) = for_in_header {
+            self_type_name(header_full[for_pos + 5..].trim())
+        } else if let Some(for_pos) = before_brace.find(" for ") {
             after_for_identifiers(before_brace[for_pos + 5..].trim())
         } else {
             // No `for`: pick the identifier after `impl` skipping generics.
             impl_target_identifier(before_brace)
-        }.unwrap_or(last_id);
-        target_type
+        };
+        // An impl whose self type has no name (`impl X for ()`) declares
+        // nothing queryable. Falling back to `last_id` here named `for`.
+        match target_type {
+            Some(t) => t,
+            None => return StructuralResult { tag: 0, is_def: false, defined_name: None },
+        }
     } else {
         last_id
     };
@@ -830,7 +928,15 @@ impl<'a> StructuralResult<'a> {
 /// Uses `is_ascii_uppercase()` which checks `A <= b <= Z` (0x41-0x5A).
 /// Note: `_` (0x5F) is NOT uppercase despite having bit 5 clear.
 fn is_pascal_case(name: &str) -> bool {
-    name.as_bytes().first().map(|&b| b.is_ascii_uppercase()).unwrap_or(false)
+    // V92: skip leading underscores. `_CookieCompatResponse` is a private
+    // class, `__Version__` a private type; the old check looked at byte 0,
+    // saw `_`, and rejected them, so every underscore-prefixed type in every
+    // Python codebase was invisible to `class X:` detection.
+    name.trim_start_matches('_')
+        .as_bytes()
+        .first()
+        .map(|&b| b.is_ascii_uppercase())
+        .unwrap_or(false)
 }
 
 /// V21: Grammar-free Python definition detection.
@@ -1364,6 +1470,11 @@ fn find_top_level_eq(s: &str) -> Option<usize> {
         if in_string { continue; }
         match b {
             b'(' | b'<' | b'{' | b'[' => depth += 1,
+            // `->` and `=>` are operators, not closers. Without this guard the
+            // arrow's `>` decremented a depth it never incremented, so every
+            // later `=` looked top-level: `fn f() -> impl Iterator<Item = u8>`
+            // was read as an assignment and the definition was lost.
+            b'>' if i > 0 && (bytes[i - 1] == b'-' || bytes[i - 1] == b'=') => {}
             b')' | b'>' | b'}' | b']' => depth -= 1,
             b'=' if depth == 0 => return Some(i),
             _ => {}
@@ -1387,6 +1498,7 @@ fn top_level_assign_eq(s: &str) -> Option<usize> {
         if in_string { continue; }
         match b {
             b'(' | b'<' | b'{' | b'[' => depth += 1,
+            b'>' if i > 0 && (bytes[i - 1] == b'-' || bytes[i - 1] == b'=') => {}
             b')' | b'>' | b'}' | b']' => depth -= 1,
             b'=' if depth == 0 => {
                 let prev = if i > 0 { bytes[i - 1] } else { b' ' };
@@ -1458,7 +1570,13 @@ pub fn decl_assign_name(line: &str) -> Option<&str> {
     let all_caps = b
         .iter()
         .all(|c| c.is_ascii_uppercase() || *c == b'_' || c.is_ascii_digit());
-    if first_up || all_caps {
+    // V94: a `type` alias is a declaration whatever the name's case. Rust
+    // aliases are snake_case (`pub type uid_t = u32;`), and the case gate
+    // exists only to keep `x = 1` a local binding. The keyword carries the
+    // shape, so it does not need the case.
+    // The `type` keyword may follow visibility modifiers (`pub type X`).
+    let type_led = name_src.split_whitespace().any(|w| w == "type");
+    if first_up || all_caps || type_led {
         Some(name)
     } else {
         None
@@ -1529,6 +1647,304 @@ fn first_paren_outside_angle(line: &str) -> Option<usize> {
         if b[i] == b'(' && depth[i] == 0 {
             return Some(i);
         }
+    }
+    None
+}
+
+/// Name declared by a brace-less `impl` header.
+///
+/// A multi-line impl keeps its `{` on the next line:
+///
+/// ```text
+/// impl<I> Stream for Iter<I>
+/// where
+///     I: Stream,
+/// {
+/// ```
+///
+/// The brace path requires the `{` on the same line, so all 248 such impls in
+/// tokio were invisible and `implementation` recall sat at 0.88 after the
+/// other fixes. Positional: the line must start with `impl` (optionally after
+/// `unsafe`/`default`), must not already end in `{`/`}`, and the declared type
+/// is the last `::` segment of the token before the generic group, taken from
+/// after a top-level ` for ` when one is present.
+fn impl_header_without_brace(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    let mut rest = t;
+    for prefix in ["unsafe ", "default "] {
+        if let Some(r) = rest.strip_prefix(prefix) {
+            rest = r.trim_start();
+        }
+    }
+    let rest = rest.strip_prefix("impl")?;
+    // `impl` must be a whole word: `implementation` is not a header.
+    if !rest
+        .bytes()
+        .next()
+        .map(|c| !(c.is_ascii_alphanumeric() || c == b'_'))
+        .unwrap_or(true)
+    {
+        return None;
+    }
+    if t.ends_with('{') || t.ends_with('}') || t.ends_with(';') {
+        return None;
+    }
+    // A header's remaining text is a type path, optionally followed by
+    // ` for <type>`. `impl Trace for X` style keywords are ordinary words.
+    // Reject only when the rest is empty (a bare `impl`).
+    if rest.trim().is_empty() {
+        return None;
+    }
+    let mut r = rest.trim_start();
+    // Skip the impl's own generic parameter list, honouring nesting.
+    if r.starts_with('<') {
+        let b = r.as_bytes();
+        let mut angle = 0i32;
+        let mut paren = 0i32;
+        let mut end = None;
+        for (i, &c) in b.iter().enumerate() {
+            match c {
+                b'(' => paren += 1,
+                b')' if paren > 0 => paren -= 1,
+                b'<' => angle += 1,
+                // `->` inside a bound is not a closing angle.
+                b'>' if angle > 0 && i > 0 && b[i - 1] == b'-' => {}
+                b'>' if angle > 0 => {
+                    angle -= 1;
+                    if angle == 0 && paren == 0 {
+                        end = Some(i + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let e = end?;
+        // The end offset is ASCII-aligned, but guard anyway.
+        if !r.is_char_boundary(e) {
+            return None;
+        }
+        r = r[e..].trim_start();
+    }
+    // A top-level ` for ` introduces the self type.
+    let target = {
+        let b = r.as_bytes();
+        let mut d = 0i32;
+        let mut found = None;
+        let mut i = 0usize;
+        while i + 5 <= b.len() {
+            match b[i] {
+                b'<' => d += 1,
+                b'>' if d > 0 => d -= 1,
+                _ => {}
+            }
+            if d == 0 && &b[i..i + 5] == b" for " {
+                found = Some(i + 5);
+                break;
+            }
+            i += 1;
+        }
+        match found {
+            Some(p) => &r[p..],
+            None => r,
+        }
+    };
+    // The name is the last path segment before its generic/argument group.
+    let head_end = target
+        .find(['<', '(', '{', ','])
+        .map(|i| target[..i].len())
+        .unwrap_or(target.len());
+    let head = target[..head_end].trim();
+    let name = head.rsplit("::").next()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let mut chars = name.bytes();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == b'_') {
+        return None;
+    }
+    Some(name)
+}
+
+/// Identifier immediately after the declaration keyword.
+///
+/// Used when the name taken from the signature paren is a keyword, which
+/// happens when the chosen paren belongs to a return type
+/// (`async fn f() -> impl Iterator<Item = u8>`). Positional: the keyword must
+/// be a whole word followed by whitespace, and the follower must be a valid
+/// identifier.
+fn decl_keyword_follower(line: &str) -> Option<(usize, usize)> {
+    let b = line.as_bytes();
+    let mut i = 0usize;
+    while i < b.len() {
+        let start = i;
+        while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+            i += 1;
+        }
+        if i > start {
+            let word = &line[start..i];
+            if matches!(word, "fn" | "func" | "def" | "function" | "class" | "struct"
+                              | "enum" | "trait" | "interface" | "type")
+                && b.get(i) == Some(&b' ')
+            {
+                let mut j = i + 1;
+                while j < b.len() && (b[j] == b' ' || b[j] == b'\t') {
+                    j += 1;
+                }
+                let ns = j;
+                while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+                    j += 1;
+                }
+                if j > ns {
+                    return Some((ns, 0usize));
+                }
+            }
+        }
+        i = start.max(i) + 1;
+    }
+    None
+}
+
+/// Identifier that names the declaration whose parameter list opens at
+/// `paren`, skipping a generic group between the name and the `(`.
+///
+/// `pub(super) fn throttle<T>(` has three `(`-adjacent identifiers (`pub`,
+/// `throttle<T>`, and the params), and the old "last ident followed by `(`"
+/// rule picked `pub`. `unsafe fn clone(raw: *const ())` picked `const`, from
+/// the pointer type inside the parameters. Both produced a definition of the
+/// wrong symbol, or none at all. Taking the name from the chosen signature
+/// paren is positional and cannot drift into the parameter list.
+fn name_before_paren(line: &str, paren: usize) -> Option<(usize, &str)> {
+    // The identifier found this way can still be a keyword when the real name
+    // is elsewhere (`async fn f() -> impl Trait` lands on `impl` only if the
+    // signature paren was mis-located). Reject declaration words.
+
+    let b = line.as_bytes();
+    let mut end = paren;
+    while end > 0 && (b[end - 1] == b' ' || b[end - 1] == b'\t') {
+        end -= 1;
+    }
+    // Walk back over a `<...>` generic group.
+    if end > 0 && b[end - 1] == b'>' {
+        let mut d = 0i32;
+        let mut i = end;
+        while i > 0 {
+            i -= 1;
+            match b[i] {
+                b'>' => d += 1,
+                b'<' => {
+                    d -= 1;
+                    if d == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        while end > 0 && (b[end - 1] == b' ' || b[end - 1] == b'\t') {
+            end -= 1;
+        }
+    }
+    let mut start = end;
+    while start > 0 && (b[start - 1].is_ascii_alphanumeric() || b[start - 1] == b'_') {
+        start -= 1;
+    }
+    if start == end {
+        return None;
+    }
+    let name = &line[start..end];
+    if is_declarator_word_pub(name) {
+        return None;
+    }
+    Some((start, name))
+}
+
+/// First `(` that can open a parameter list, skipping a leading qualifier
+/// group.
+///
+/// `pub(crate) struct FastRand {` has a `(` — in the visibility qualifier —
+/// so the plain "first paren" test called it a function signature, named the
+/// qualifier word, and rejected it: 304 `pub(crate) struct|trait|enum`
+/// declarations in tokio alone were invisible, which is most of why struct
+/// recall was 0.73 and trait recall 0.44.
+///
+/// Positional rule: a leading `word(...)` group is a qualifier when a word
+/// follows the closing paren. `pub(crate) fn close(&self) {` keeps its
+/// signature paren (it follows the group); `pub(crate) struct X {` has none
+/// and falls through to the brace path. `foo(x)` at line start has nothing
+/// after the group, so it stays a call.
+fn first_signature_paren(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    let depth = angle_depth_at(line);
+    let mut i = 0usize;
+    let mut skip_from = 0usize;
+    let mut in_str = false;
+    let mut esc = false;
+    while i < b.len() {
+        // A trailing comment is prose, not syntax: `pub f: Vec<T>,  // (a, b)`
+        // must not supply a parameter list from inside the comment.
+        if !in_str && b[i] == b'/' && b.get(i + 1) == Some(&b'/') {
+            return None;
+        }
+        if esc { esc = false; i += 1; continue; }
+        if in_str && b[i] == b'\\' { esc = true; i += 1; continue; }
+        if b[i] == b'"' { in_str = !in_str; i += 1; continue; }
+        if in_str {
+            i += 1;
+            continue;
+        }
+        if i < skip_from || depth.get(i).copied().unwrap_or(0) != 0 {
+            i += 1;
+            continue;
+        }
+        if b[i] != b'(' {
+            i += 1;
+            continue;
+        }
+        // Is this paren part of a leading qualifier group?
+        let head = line[..i].trim_end();
+        let head_is_single_word = !head.is_empty()
+            && head
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'#');
+        if !head_is_single_word {
+            return Some(i);
+        }
+        // Find the matching `)`.
+        let mut d = 0i32;
+        let mut j = i;
+        let mut close = None;
+        while j < b.len() {
+            if b[j] == b'(' {
+                d += 1;
+            } else if b[j] == b')' {
+                d -= 1;
+                if d == 0 {
+                    close = Some(j);
+                    break;
+                }
+            }
+            j += 1;
+        }
+        let Some(c) = close else { return Some(i) };
+        let after = line[c + 1..].trim_start();
+        let word_follows = after
+            .bytes()
+            .next()
+            .map(|c| c.is_ascii_alphabetic() || c == b'_')
+            .unwrap_or(false);
+        if !word_follows {
+            // `foo(x)` — the group is the call itself.
+            return Some(i);
+        }
+        // Qualifier: keep scanning after it.
+        skip_from = c + 1;
+        i = c + 1;
     }
     None
 }
@@ -2002,6 +2418,28 @@ pub fn classify_preprocessor_line(line: &str) -> Option<Preproc<'_>> {
 ///
 /// Use ONLY at identifier-tokenization sites (ingest + JIT). Brace-graph,
 /// block, and comment paths keep calling `strip_strings_and_comments`.
+/// Tokenizable code with CROSS-LINE literal state.
+///
+/// `tokenizable_code` is per-line: it resets its lexer on every call, so it
+/// cannot know that a line is in the middle of a Python docstring or a
+/// JS template literal. Every line of a docstring was therefore tokenized as
+/// code, and prose words became call sites: in `psf/requests`, `request`
+/// picked up 241 docstring occurrences (`>>> import requests`,
+/// `:param request: ...`), which is why usage precision was 0.48 there while
+/// it was 0.99 on Rust.
+///
+/// This variant carries `st` across calls. Callers reset it once per file.
+pub fn tokenizable_code_with(line: &str, st: &mut crate::lex::LexState) -> String {
+    let t = line.trim_start();
+    if !t.starts_with('#') {
+        return crate::lex::masked_line(line, st, true);
+    }
+    // Preprocessor handling is per-line by nature; keep it, but still advance
+    // the cross-line state so a directive cannot desync the literal tracker.
+    let _ = crate::lex::starts_in_code(line, st, true);
+    tokenizable_code(line)
+}
+
 pub fn tokenizable_code(line: &str) -> String {
     let t = line.trim_start();
     if !t.starts_with('#') {
@@ -2155,8 +2593,13 @@ fn find_byte_outside_string_from(s: &str, target: u8, start: usize) -> Option<us
 }
 
 /// Check if a string is a valid identifier (for local bindings).
+///
+/// V92: single-character identifiers are valid. The floor was 2, so
+/// `def u(s):` — a real function in `requests/tests/compat.py` — never
+/// classified, and `x`/`y`/`i` definitions were invisible in every language
+/// that uses them. One-letter names are common in Python, Go and shell.
 fn is_valid_identifier(s: &str) -> bool {
-    if s.is_empty() || s.len() < 2 { return false; }
+    if s.is_empty() { return false; }
     let bytes = s.as_bytes();
     let first = bytes[0];
     if !(first.is_ascii_alphabetic() || first == b'_') { return false; }
@@ -2172,39 +2615,135 @@ fn impl_target_identifier(before_brace: &str) -> Option<&str> {
     let rest = after[4..].trim_start();
     // Skip generic parameters `<T: Bound>` if present.
     let rest = if rest.starts_with('<') {
+        let b = rest.as_bytes();
         let mut depth = 1i32;
+        let mut paren = 0i32;
         let mut i = 1;
-        while i < rest.len() && depth > 0 {
-            match rest.as_bytes()[i] {
+        let mut end = rest.len();
+        while i < b.len() && depth > 0 {
+            match b[i] {
+                b'(' => paren += 1,
+                b')' if paren > 0 => paren -= 1,
                 b'<' => depth += 1,
-                b'>' => depth -= 1,
+                // `->` in a bound (`FnOnce() -> O`) is an operator, not a closer.
+                b'>' if i > 0 && (b[i - 1] == b'-' || b[i - 1] == b'=') => {}
+                b'>' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i + 1;
+                        break;
+                    }
+                }
                 _ => {}
             }
             i += 1;
         }
-        rest[i..].trim_start()
+        let _ = paren;
+        if end > rest.len() {
+            return None;
+        }
+        rest[end..].trim_start()
     } else {
         rest
     };
-    // Find `for` clause — return first identifier after it.
+    // Find `for` clause — the declared type is the self type after it.
     if let Some(for_idx) = rest.find(" for ") {
-        let after_for = rest[for_idx + 5..].trim_start();
-        // First identifier in `for Bar<T>` — scan chars directly.
-        let id_start = after_for.find(|c: char| c.is_ascii_alphabetic() || c == '_')?;
-        let id_end = after_for[id_start..].find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(after_for[id_start..].len());
-        return Some(&after_for[id_start..id_start + id_end]);
+        return self_type_name(&rest[for_idx + 5..]);
     }
-    // No `for`: first identifier after `impl` + generics.
-    let id_start = rest.find(|c: char| c.is_ascii_alphabetic() || c == '_')?;
-    let id_end = rest[id_start..].find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(rest[id_start..].len());
-    Some(&rest[id_start..id_start + id_end])
+    // No `for`: the self type is what follows `impl` and its generics.
+    self_type_name(rest)
+}
+
+/// Name of the self type in an `impl` header's type expression.
+///
+/// `impl From<Elapsed> for std::io::Error {` used to record `std` (the first
+/// path segment) and `impl Read for &'_ MockFile {` recorded `_`. Both are
+/// ctags `implementation` sites, and tokio has 73 such impls, so the
+/// `implementation` recall gap was almost entirely this.
+///
+/// Positional: skip leading `&`, a lifetime, `mut`, `dyn`; take the last
+/// `::` segment before any generic or argument group. A tuple self type
+/// (`impl X for ()`) has no name.
+fn self_type_name(s: &str) -> Option<&str> {
+    // A trailing `where` clause is a constraint, not part of the type.
+    let s = match s.find(" where ") {
+        Some(i) => &s[..i],
+        None => s,
+    };
+    let b = s.as_bytes();
+    let mut i = 0usize;
+    loop {
+        while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+            i += 1;
+        }
+        match b.get(i) {
+            Some(b'&') => {
+                i += 1;
+                // Skip a lifetime: `'a`, `'_`.
+                if b.get(i) == Some(&b'\'') {
+                    i += 1;
+                    while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            Some(b'\'') => {
+                i += 1;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        // `mut` / `dyn` as whole words.
+        for word in ["mut", "dyn"] {
+            if b[i..].starts_with(word.as_bytes())
+                && b.get(i + word.len())
+                    .map(|c| !(c.is_ascii_alphanumeric() || *c == b'_'))
+                    .unwrap_or(true)
+            {
+                i += word.len();
+                continue;
+            }
+        }
+        break;
+    }
+    if i >= b.len() {
+        return None;
+    }
+    let rest = &s[i..];
+    // Cut at the first generic/argument group; the name precedes it.
+    let cut = rest
+        .find(|c: char| c == '<' || c == '(' || c == '[' || c == '{' || c == ',')
+        .unwrap_or(rest.len());
+    let head = rest[..cut].trim_end();
+    if head.is_empty() {
+        return None;
+    }
+    let name = head.rsplit("::").next()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let mut ch = name.bytes();
+    let first = ch.next()?;
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return None;
+    }
+    if !ch.all(|c| c.is_ascii_alphanumeric() || c == b'_') {
+        return None;
+    }
+    if name.chars().all(|c| c == '_') {
+        return None;
+    }
+    Some(name)
 }
 
 fn after_for_identifiers(s: &str) -> Option<&str> {
-    let trimmed = s.trim_start();
-    let id_start = trimmed.find(|c: char| c.is_ascii_alphabetic() || c == '_')?;
-    let id_end = trimmed[id_start..].find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(trimmed[id_start..].len());
-    Some(&trimmed[id_start..id_start + id_end])
+    // `impl` headers now use `self_type_name` so a path or reference resolves
+    // to its last segment rather than its first.
+    self_type_name(s)
 }
 
 #[cfg(test)]
@@ -2677,12 +3216,230 @@ mod tests {
         // Depth gate: an equation inside a body (depth > 0) is a local.
         let r = classify_structural("helper x = x + 1", 2, false, false);
         assert!(!r.is_def, "indented/depth>0 equation must stay local");
-        // Indent gate: OCaml let inside a function is indented.
+        // V92: an INDENTED binder-led equation at depth 0 is an OCaml
+        // module-level definition, not a local. This assertion used to read
+        // "indented `let` must stay local" and passed only because a
+        // single-character name was rejected by the identifier length floor
+        // — a test passing for the wrong reason. The documented rule (V84
+        // B9) is that 1,626 of 3,149 ocaml-lsp function sites are indented
+        // `let`s inside module bodies, so they must type. The real guard is
+        // the depth gate, covered by the `helper x` case above and by the
+        // indented NON-binder case below.
         let r = classify_structural("  let f x = x + 1", 0, false, false);
-        assert!(!r.is_def, "indented `let` must stay local");
+        assert_eq!(r.defined_name, Some("f"),
+                   "an indented binder-led equation is a module-level definition");
+        // Indented, no binder, no args: still a local, whatever the depth.
+        let r = classify_structural("    helper = compute()", 0, false, false);
+        assert!(!r.is_def, "bare indented binding must stay local");
+        // A zero-argument binder is a value binding, not a function.
+        let r = classify_structural("  let f = 1", 0, false, false);
+        assert!(!r.is_def, "zero-argument `let` binding is not a definition");
+        // Single-character definitions are real (Python `def u(s):`, Go `i`).
+        let r = classify_structural("def u(s):", 0, false, false);
+        assert_eq!(r.defined_name, Some("u"),
+                   "one-character Python function must classify");
         // Annotations bail: `x: T = ...` keeps its binding treatment.
         let r = classify_structural("result: usize = compute();", 0, false, false);
         assert!(!r.is_def, "annotated binding must stay a binding");
+    }
+
+    #[test]
+    fn bodyless_and_aliased_declarations() {
+        // V94: four shapes ctags counts as definitions that we dropped.
+        for (line, want) in [
+            // lowercase type alias (Rust aliases are snake_case)
+            ("pub type uid_t = u32;", "uid_t"),
+            ("type Message = String;", "Message"),
+            // trait method without a `self` receiver
+            ("unsafe fn from_raw_handle(handle: RawHandle) -> Self;", "from_raw_handle"),
+            ("fn required(&self) -> u8;", "required"),
+            // generic list containing an arrow
+            ("struct CallOnDrop<O, F: FnOnce() -> O> {", "CallOnDrop"),
+            // where-clause on the impl header
+            ("impl<St: ?Sized> StreamExt for St where St: Stream {}", "St"),
+            // `unsafe impl` is still an impl
+            ("unsafe impl<T> Send for JoinHandle<T> {}", "JoinHandle"),
+        ] {
+            let r = classify_structural(line, 0, false, false);
+            assert!(r.is_def, "{line:?} must be a definition");
+            assert_eq!(r.defined_name, Some(want), "{line:?}");
+        }
+        // A local binding must not become a type alias.
+        let r = classify_structural("total = compute();", 0, false, false);
+        assert_eq!(r.defined_name, Some("total"));
+        assert!(!r.is_def);
+    }
+
+    #[test]
+    fn cross_line_literal_state_keeps_docstrings_out_of_the_index() {
+        use crate::lex::LexState;
+        // V93: the per-line masker reset its lexer every call, so every line
+        // of a Python docstring was tokenized as code and prose became call
+        // sites (`request` had 241 docstring hits in psf/requests).
+        let mut st = LexState::new();
+        let lines = [
+            "class Thing:",
+            "    \"\"\"",
+            "    >>> request = get()",
+            "    \"\"\"",
+            "    def go(self):",
+            "        return request",
+        ];
+        let masked: Vec<String> = lines
+            .iter()
+            .map(|l| tokenizable_code_with(l, &mut st))
+            .collect();
+        assert!(masked[0].contains("Thing"));
+        assert!(!masked[2].contains("request"),
+                "docstring interior must not be tokenized: {:?}", masked[2]);
+        assert!(masked[5].contains("request"),
+                "real code after the docstring must be tokenized");
+
+        // A one-line masker cannot see this, which is why the state exists.
+        assert!(tokenizable_code("    >>> request = get()").contains("request"));
+    }
+
+    #[test]
+    fn impl_self_type_is_the_last_path_segment() {
+        // V93: `impl From<Elapsed> for std::io::Error {` recorded `std`, and
+        // `impl Read for &'_ MockFile {` recorded `_`. 73 impls were missing
+        // from tokio's index because of this.
+        for (line, want) in [
+            ("impl From<Elapsed> for std::io::Error {", "Error"),
+            ("impl Listener for tokio::net::TcpListener {", "TcpListener"),
+            ("impl Read for &'_ MockFile {", "MockFile"),
+            ("impl<T> AsyncBufRead for io::Cursor<T> {", "Cursor"),
+            ("impl<O, F: FnOnce() -> O> CallOnDrop<O, F> {", "CallOnDrop"),
+            ("impl sealed::FromStreamPriv<()> for () {", "FromStreamPriv"),
+        ] {
+            let r = classify_structural(line, 0, false, false);
+            assert_eq!(r.defined_name, Some(want), "{line:?} -> {r:?}");
+        }
+        // A bare `()` self type has no name at all.
+        let r = classify_structural("impl Trait for () {", 0, false, false);
+        assert_eq!(r.defined_name, None);
+        // A mut reference resolves to the type, not to `mut`.
+        let r = classify_structural("impl Trait for &mut String {", 0, false, false);
+        assert_eq!(r.defined_name, Some("String"));
+    }
+
+    #[test]
+    fn arrow_does_not_break_angle_depth() {
+        // `->`'s `>` used to decrement a depth it never incremented, so the
+        // `=` in `<Item = u8>` looked top-level and the line was read as an
+        // assignment. Both functions below were lost this way.
+        for (line, want) in [
+            ("async fn impl_trait() -> impl Iterator<Item = u8> {", "impl_trait"),
+            ("fn f() -> impl Iterator<Item = u8> {", "f"),
+            ("fn g() -> Result<Vec<u8>, Error> {", "g"),
+            ("fn h(x: u8) -> u8 {", "h"),
+        ] {
+            let r = classify_structural(line, 0, false, false);
+            assert!(r.is_def, "{line:?} must be a definition");
+            assert_eq!(r.defined_name, Some(want), "{line:?}");
+        }
+        // The same guard must not hide a real assignment.
+        let r = classify_structural("total = compute();", 0, false, false);
+        assert!(!r.is_def);
+    }
+
+    #[test]
+    fn signature_name_skips_generics_and_parameter_types() {
+        // V92: the name is taken from the chosen signature paren, not from a
+        // line-wide "last identifier followed by (" scan. That scan picked
+        // `pub` (from `pub(super)`), `const` (from `*const ()` in the
+        // parameters) and `impl` (from a return type), producing wrong or
+        // missing definitions for ~90 functions in tokio.
+        for (line, want) in [
+            ("pub(super) fn throttle<T>(duration: Duration) -> Throttle<T>", "throttle"),
+            ("pub(crate) fn try_join3<T1, F1, T2, F2, T3, F3, E>(", "try_join3"),
+            ("unsafe fn clone(raw: *const ()) -> RawWaker {", "clone"),
+            ("fn extend(_: Internal, _collection: &mut (), _item: ()) -> bool {", "extend"),
+            ("pub fn abort_matching(&mut self, mut predicate: impl FnMut(&K) -> bool) {", "abort_matching"),
+            ("pub(crate) async fn asyncify<F, T>(f: F) -> io::Result<T>", "asyncify"),
+            ("async fn plain() -> u8 {", "plain"),
+            ("async fn impl_trait() -> impl Iterator<Item = u8> {", "impl_trait"),
+        ] {
+            let r = classify_structural(line, 0, false, false);
+            assert!(r.is_def, "{line:?} must be a definition");
+            assert_eq!(r.defined_name, Some(want), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn qualifier_paren_is_not_a_parameter_list() {
+        // V92: `pub(crate) struct FastRand {` has a `(` inside the visibility
+        // qualifier, so the signature test fired, named `crate`, and rejected
+        // the line. 304 pub(crate)/pub(super) declarations in tokio were
+        // invisible, which is most of why struct recall was 0.73.
+        for (line, want) in [
+            ("pub(crate) struct FastRand {", "FastRand"),
+            ("pub(crate) trait T: X + Y {", "T"),
+            ("pub(crate) enum Fast {", "Fast"),
+            ("pub(super) struct S {", "S"),
+            ("pub(in crate::io) struct Deep {", "Deep"),
+        ] {
+            let r = classify_structural(line, 0, false, false);
+            assert!(r.is_def, "{line:?} must be a definition");
+            assert_eq!(r.defined_name, Some(want), "{line:?}");
+        }
+        // The qualifier must not swallow a real signature.
+        let r = classify_structural("pub(crate) fn close(&self) -> bool {", 0, false, false);
+        assert_eq!(r.defined_name, Some("close"));
+    }
+
+    #[test]
+    fn empty_body_and_bound_lists() {
+        // `unsafe impl<T> Send for X {}` ends with `}`; the old brace test
+        // only accepted a trailing `{`, so every empty body was invisible.
+        for (line, want) in [
+            ("impl<T> Unpin for Empty<T> {}", "Empty"),
+            ("unsafe impl<T> Send for JoinHandle<T> {}", "JoinHandle"),
+            ("impl<T> Stream for Iter<T> {", "Iter"),
+            ("pub trait StreamExt: Stream {", "StreamExt"),
+        ] {
+            let r = classify_structural(line, 0, false, false);
+            assert_eq!(r.defined_name, Some(want), "{line:?} -> {r:?}");
+        }
+    }
+
+    #[test]
+    fn brace_less_impl_header_names_the_self_type() {
+        // Multi-line impls keep `{` on the next line. 248 in tokio alone.
+        for (line, want) in [
+            ("impl<I> Stream for Iter<I>", "Iter"),
+            ("impl<T> Fuse<T>", "Fuse"),
+            ("impl<T, U> Collect<T, U, U::InternalCollection>", "Collect"),
+            ("impl<T: Fn() -> u8> Weird<T>", "Weird"),
+            ("impl<T> Stream for Iter<T> where", "Iter"),
+        ] {
+            let r = classify_structural(line, 0, false, false);
+            assert_eq!(r.defined_name, Some(want), "{line:?} -> {r:?}");
+        }
+        // Not headers.
+        for line in ["impl", "let x = impl_thing();", "impl<T> Foo<T> {"] {
+            let r = classify_structural(line, 0, false, false);
+            if line == "impl<T> Foo<T> {" {
+                assert_eq!(r.defined_name, Some("Foo"));
+            } else {
+                assert!(!r.is_def, "{line:?} must not be a definition");
+            }
+        }
+    }
+
+    #[test]
+    fn underscore_prefixed_types_are_definitions() {
+        // V92: `class _CookieCompatResponse:` was invisible because the
+        // PascalCase test looked at byte 0, saw `_`, and rejected it.
+        for src in ["class _CookieCompatResponse:",
+                    "class __Version__:",
+                    "class _Private:"] {
+            let r = classify_structural(src, 0, false, false);
+            assert!(r.is_def, "{src} must classify as a definition");
+        }
+        // Lowercase-after-underscore stays water: `_helper = 1` is a binding.
+        let r = classify_structural("_helper:", 0, false, false);
+        assert!(!r.is_def, "underscore + lowercase is not a type");
     }
 
     #[test]

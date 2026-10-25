@@ -624,7 +624,7 @@ pub fn tool_definitions() -> &'static Vec<serde_json::Value> {
             // 1. SEARCH: Find files/symbols by name or topic.
             serde_json::json!({ "name": "reliary_search", "description": "BM25 full-text search across the indexed codebase. Returns matching files ranked by relevance. USE THIS TOOL when you don't know the exact symbol name — e.g. 'find files about connection pooling', 'where is request handling implemented', 'find authentication code'. For symbol-level lookups (where is X defined, who calls X, etc.), use reliary_find_references instead — it returns structured one-line answers. Search returns a list of files with paths and relevance scores. The tool never returns empty — if no exact match, closest files by vocabulary similarity are returned.", "inputSchema": { "type": "object", "properties": { "query": {"type": "string", "description": "Natural-language search query. Examples: 'connection pooling', 'request handling', 'authentication'."}, "path": {"type": "string", "description": "Project directory to search. Defaults to the client's workspace root, else '.'."}, "limit": {"type": "integer", "default": 15, "description": "Max files to return (default 15)"} }, "required": ["query"], "input_examples": [ { "query": "connection pooling" }, { "query": "request handling", "limit": 5 }, { "query": "authentication middleware" } ] } }),
             // 2. FIND_REFERENCES: Find all usages of a symbol. Absorbs with_source, type_flow, boltzmann.
-            serde_json::json!({ "name": "reliary_find_references", "description": "Find references to a symbol in the indexed codebase. USE THIS TOOL for ALL symbol-level code questions. It replaces goto_def, find_references, call_graph, list_methods, find_dead_code, and describe in a single entry point with mode parameters. The output is a structured one-line answer with raw code evidence — copy it verbatim into your response. Mode flags: def_only=true → 'where is X defined' (returns top definition with source code). usage_only=true → 'who calls X' or 'callers of X' (returns CALLERS only — NOT what X calls). For 'what does X call / which helpers does X use', use reliary_call_graph with direction=outbound instead. methods=true → 'list methods on Type X' (returns method names of an impl block). dead_only=true → 'find dead code in path=X' (returns unused functions; path required, name ignored). path_filter='io/util/' → restrict to one module/folder (use when question specifies a module). NO params → general references to the symbol. If unsure which mode, call WITHOUT mode flags first — the tool returns all relevant knowledge.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol name to look up. Use the exact identifier name including underscores (e.g. 'block_on', 'Sleep', 'consume')."}, "def_only": {"type": "boolean", "default": false, "description": "Return ONLY the definition location. Use for 'where is X defined'."}, "usage_only": {"type": "boolean", "default": false, "description": "Return ONLY call sites (non-test files). Use for 'who calls X' or 'callers of X'."}, "methods": {"type": "boolean", "default": false, "description": "List methods on a type. Use for 'what methods does X have'."}, "dead_only": {"type": "boolean", "default": false, "description": "Find unused code. Pass path to scope the search."}, "path": {"type": "string", "description": "Project directory (also selects which project to query). Required for dead_only. Defaults to the client's workspace root, else '.'."}, "path_filter": {"type": "string", "description": "Restrict to one module. Examples: 'io/util/' for tokio io utilities, 'crates/reliary-search/' for a Rust subdirectory. Use when question mentions a specific module."}, "file_only": {"type": "boolean", "default": false, "description": "Return only the distinct list of files that mention this symbol (no file:line, no qualified names). Use for 'which files use X' or 'find files importing X' queries. Cheaper than full references."} }, "required": [], "input_examples": [ { "name": "block_on", "def_only": true }, { "name": "spawn", "usage_only": true }, { "name": "Sleep", "methods": true }, { "name": "consume", "path_filter": "io/util/" }, { "name": "", "dead_only": true, "path": "src/" }, { "name": "HashMap", "file_only": true } ] } }),
+            serde_json::json!({ "name": "reliary_find_references", "description": "Find references to a symbol in the indexed codebase. USE THIS TOOL for ALL symbol-level code questions. It replaces goto_def, find_references, call_graph, list_methods, find_dead_code, and describe in a single entry point with mode parameters. The output is a structured one-line answer with raw code evidence — copy it verbatim into your response. Mode flags: def_only=true → 'where is X defined' (returns top definition with source code). usage_only=true → 'who calls X' or 'callers of X' (returns CALLERS only — NOT what X calls). For 'what does X call / which helpers does X use', use reliary_call_graph with direction=outbound instead. methods=true → 'list methods on Type X' (returns method names of an impl block). dead_only=true → 'find dead code in path=X' (returns unused functions; path required, name ignored). path_filter='io/util/' → restrict to one module/folder (use when question specifies a module). NO params → general references to the symbol. If unsure which mode, call WITHOUT mode flags first — the tool returns all relevant knowledge.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol name to look up. Use the exact identifier name including underscores (e.g. 'block_on', 'Sleep', 'consume')."}, "def_only": {"type": "boolean", "default": false, "description": "Return ONLY the definition location. Use for 'where is X defined'."}, "usage_only": {"type": "boolean", "default": false, "description": "Return ONLY call sites (non-test files). Use for 'who calls X' or 'callers of X'."}, "methods": {"type": "boolean", "default": false, "description": "List methods on a type. Use for 'what methods does X have'."}, "dead_only": {"type": "boolean", "default": false, "description": "Find unused code. Pass path to scope the search."}, "path": {"type": "string", "description": "Project directory (also selects which project to query). Required for dead_only. Defaults to the client's workspace root, else '.'."}, "path_filter": {"type": "string", "description": "Restrict to one module. Examples: 'io/util/' for tokio io utilities, 'crates/reliary-search/' for a Rust subdirectory. Use when question mentions a specific module."}, "file_only": {"type": "boolean", "default": false, "description": "Return only the distinct list of files that mention this symbol (no file:line, no qualified names). Use for 'which files use X' or 'find files importing X' queries. Cheaper than full references."}, "limit": {"type": "integer", "default": 12, "minimum": 1, "maximum": 500, "description": "Maximum call sites to list. Raise it when the answer says '(+N more)' and you need the rest."}, "include_tests": {"type": "boolean", "default": false, "description": "Include call sites in tests/, examples/ and benches/. Default false. Set true when the change must be complete everywhere, e.g. before renaming a symbol."} }, "required": [], "input_examples": [ { "name": "block_on", "def_only": true }, { "name": "spawn", "usage_only": true }, { "name": "Sleep", "methods": true }, { "name": "consume", "path_filter": "io/util/" }, { "name": "", "dead_only": true, "path": "src/" }, { "name": "HashMap", "file_only": true } ] } }),
             // 3. GOTO_DEF: Jump to the definition of a symbol.
             serde_json::json!({ "name": "reliary_goto_def", "description": "DEPRECATED: use reliary_find_references(name=X, def_only=true) instead — it returns the same information in a structured format. This tool still works but is not the preferred entry point.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string"}, "anchor_file": {"type": "string", "description": "Optional. Path to file containing the usage."}, "anchor_line": {"type": "integer", "description": "Optional. 1-based line of the usage."}, "path": {"type": "string"} }, "required": ["name"] } }),
             // 4. CALL_GRAPH: Who calls X? What does X call? Absorbs callgraph, callgraph_v2, trace_path, call_graph.
@@ -1750,6 +1750,18 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             // V37: def_only replaces goto_def. usage_only replaces call_graph(inbound).
             let def_only = args.get("def_only").and_then(|v| v.as_bool()).unwrap_or(false);
             let usage_only = args.get("usage_only").and_then(|v| v.as_bool()).unwrap_or(false);
+            // V91: `limit` lets a caller ask for the complete set. The default
+            // stays 12 so existing answers do not grow, but "who calls X" with
+            // 60 callers was previously unanswerable: the answer said
+            // "(+48 more)" and offered no way to retrieve them.
+            let ref_limit = args.get("limit").and_then(|v| v.as_u64())
+                .map(|n| n.clamp(1, 500) as usize).unwrap_or(12);
+            // V91d: usage_only excludes tests by design, which is right for
+            // "who calls this in production" and wrong for "rename this and
+            // miss nothing". The flag makes the second question answerable
+            // without changing the default.
+            let include_tests = args.get("include_tests")
+                .and_then(|v| v.as_bool()).unwrap_or(false);
 
             // V38 bug fix: if methods=true or dead_only=true was passed to find_references,
             // route to describe's methods/dead_only handlers instead of silently ignoring.
@@ -1876,17 +1888,34 @@ let phrase_id = reliary_search::symbol::phrase_id_for(db, &sym_stemmed).ok().fla
                 // V59 A3: also prefer crates/ source trees over bench/scripts dirs —
                 // a Rust symbol name often collides with a Python wrapper of the
                 // same name in the bench harness.
-                let sql = "SELECT f.file_path, o.line, o.col, o.is_def, o.tag
+                // V91c: `usage_only` excludes test paths, but the exclusion used
+                // to happen AFTER a hard `LIMIT 50`, so any symbol whose
+                // occurrences are mostly in tests returned almost nothing: the
+                // 50-row budget was consumed by rows that were then discarded.
+                // `Response` in requests has 227 occurrences and usage_only
+                // answered with 4. Filter in SQL so the limit applies to the
+                // rows that actually survive, and let `limit` drive it.
+                let sql_limit = if usage_only { ref_limit.max(50) } else { 50 };
+                let test_filter = if usage_only && !include_tests {
+                    " AND f.file_path NOT LIKE '%/tests/%' \
+                       AND f.file_path NOT LIKE '%/test/%' \
+                       AND f.file_path NOT LIKE '%/examples/%' \
+                       AND f.file_path NOT LIKE '%/benches/%' \
+                       AND f.file_path NOT LIKE '%/test_%' "
+                } else {
+                    ""
+                };
+                let sql = format!("SELECT f.file_path, o.line, o.col, o.is_def, o.tag
                      FROM occurrence o JOIN file_map f ON f.id = o.file_id
-                     WHERE o.phrase_id = ?1 AND f.file_path LIKE ?2 AND f.is_source = 1
+                     WHERE o.phrase_id = ?1 AND f.file_path LIKE ?2 AND f.is_source = 1{}
                      ORDER BY o.is_def DESC,
                               (CASE WHEN f.file_path LIKE '%.rs' THEN 0 ELSE 1 END),
                               (CASE WHEN f.file_path LIKE '%/crates/%' THEN 0 ELSE 1 END),
                               (CASE WHEN f.file_path LIKE '%/bench/%' THEN 1 ELSE 0 END),
                               (CASE WHEN f.file_path LIKE '%/tests/%' THEN 1 ELSE 0 END),
                               o.line ASC
-                     LIMIT 50";
-                let mut stmt = match db.prepare_cached(sql) {
+                     LIMIT {}", test_filter, sql_limit);
+                let mut stmt = match db.prepare_cached(&sql) {
                     Ok(s) => s,
                     Err(e) => {
                         eprintln!("[V39] occurrence query prepare failed: {}", e);
@@ -2074,6 +2103,7 @@ if def_only {
                 let non_def: Vec<_> = hits.iter()
                     .filter(|h| !h.is_def)
                     .filter(|h| {
+                        if include_tests { return true; }
                         let fp = &h.file_path;
                         !fp.contains("/tests/") && !fp.contains("/test/") && !fp.contains("/examples/") && !fp.contains("/benches/")
                         // V66c: bench dirs with or without leading slash (relative paths)
@@ -2092,9 +2122,12 @@ if def_only {
                 let total = non_def.len();
                 // Reserve up to 6 slots for same-file callers (tests, helpers);
                 // the rest go to cross-file. Cap still 12 for token budget.
-                let same_budget = same_file.len().min(6);
+                // Default 12 keeps the old 6-slot reservation, so existing
+                // answers are byte-identical. An explicit larger `limit` means
+                // "give me everything", so the reservation must not cap it.
+                let same_budget = same_file.len().min(if ref_limit > 12 { ref_limit } else { 6 });
                 let callers: Vec<_> = cross.into_iter()
-                    .take(12usize.saturating_sub(same_budget))
+                    .take(ref_limit.saturating_sub(same_budget))
                     .chain(same_file.into_iter().take(same_budget))
                     .collect();
                 // Keep deterministic order: cross-file then same-file, line ASC within group

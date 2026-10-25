@@ -5,6 +5,104 @@ All notable changes to Reliary will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-10-24
+
+Everything below 0.8.16 was measured after 0.8.16 shipped. The headline is a
+correction, not a feature: **the tool's advantage is precision and output size,
+not recall.** Full methodology and reproduction in `bench/RECALL_BENCH_P0.md`.
+
+### Measured: recall is at parity with grep, precision is not
+
+Head-to-head, tools driven over MCP with no model, scored against an
+independent lexical oracle (comments and string literals blanked, whole-word
+match). Symbols chosen by occurrence frequency, never by any tool's result.
+
+| | reliai | codebase-memory-mcp | grep |
+|---|---:|---:|---:|
+| Python usage recall | **0.929** | 0.846 | 0.905 |
+| Python usage precision | **0.957** | 0.668 | 0.824 |
+| Rust usage recall | 0.905 | 0.867 | **0.920** |
+| Rust usage precision | **0.988** | 0.694 | 0.780 |
+| Definition hit (Rust) | **1.000** | 0.750 | — |
+| Output bytes per answer | **1.4–1.8K** | 11.6–12.7K | 4.9–5.4K |
+
+An index does not beat a text scan at finding occurrences. It returns far less
+noise and far fewer bytes for the same recall.
+
+### Fixed: a stray backtick was hiding whole files
+
+The worst defect found was not a ranking problem. `tokenizable_code` reset its
+lexer on every call, and the multi-line literal tracker had no bound, so:
+
+- **one unpaired backtick in a Python comment opened a template literal that
+  never closed**, masking every later definition in the file.
+  `httpx/_urlparse.py` had been silently half-indexed;
+- **every docstring line was tokenized as code**, so prose became call sites.
+  `request` in `psf/requests` had 241 docstring hits, which was the entire
+  Python precision gap (0.48 → 0.96).
+
+Multi-line backtick literals are now abandoned after 50 lines (triple-quoted
+strings are not bounded — Python docstrings are legitimately longer), and the
+tokenizer carries its state across a file.
+
+### Fixed: eight definition shapes were invisible
+
+| shape | example | was |
+|---|---|---|
+| visibility qualifier with a paren | `pub(crate) struct FastRand {` | read as a signature (304 tokio sites) |
+| empty body | `unsafe impl<T> Send for X<T> {}` | fell through every branch (478 sites) |
+| name from a line-wide scan | `pub(super) fn throttle<T>(` | named `pub` |
+| arrow in the signature | `fn f() -> impl Iterator<Item = u8>` | `->` broke angle depth |
+| impl self-type | `impl From<E> for std::io::Error` | named `std` |
+| lowercase type alias | `pub type uid_t = u32;` | required a capitalised name |
+| bodyless trait method | `unsafe fn f(h: H) -> Self;` | required a `self` receiver |
+| `unsafe impl` | `unsafe impl<T> Send for X<T>` | named `impl` |
+
+Definition recall against the blind ctags oracle:
+
+```
+tokio     0.918 -> 0.9976   function 1.000  method 1.000  typedef 1.000
+                            interface 1.000  struct 0.999  impl 0.989
+requests  0.79  -> 0.9988
+httpx       --  -> 1.0000
+```
+
+Every change has a mutation-verified negative control.
+
+### Fixed: `list_methods` returned nothing for any language without braces
+
+The type-body walk was brace-based, so a Python `class` never entered its own
+body. `Session`, `Response`, `PreparedRequest` and `HTTPAdapter` all answered
+"No methods found" while their `def`s were indexed and findable. Layout
+languages now walk indentation. The competitor exposes no per-type method list
+at all.
+
+### Fixed: `build-all` reported rows inserted, not table totals
+
+On an already-built index it printed `occurrence=0` while the table held 26,921
+rows, which reads as data loss. It now prints the total plus the new-row count.
+
+### Known limitation: homonyms cannot be separated
+
+The index keys references by name, not by binding. 683 of tokio's 1,124
+multi-definition names are declared twice in the same file, where `path_filter`
+cannot help. For those, the tool returns all sites of the name — correct, but
+not scoped to one definition. `path_filter` does separate the cross-file cases.
+Documented in `bench/RECALL_BENCH_P0.md` rather than left implicit.
+
+### Not proven
+
+That any of this converts into better *fixing*. Four attempts tied at 100%.
+The corpus analysis says why: the Rust compiler repairs missed call sites, and
+the Python fix commits available are localizable in a couple of greps. The
+claim is not made.
+
+### Regression check
+
+Comprehension benchmark re-run on this binary (condition A, 4 seeds):
+F1 0.948–0.950, precision 0.985–0.990, recall 0.913, coverage 1.00, zero
+refusals, zero dead-ends. No regression from the indexing changes.
+
 ## [0.8.16] - 2026-10-24
 
 Fixes the CI failure 0.8.15 shipped with. The shared test module is compiled
@@ -317,7 +415,7 @@ claim-weighted:
 
 | | F1 | billed | tool bytes | dead-ends | refusals |
 |---|---|---|---|---|---|
-| reliary | 0.937 | 20,605 | 11.7K | 0.0 | 0/40 |
+| reliary | 0.948 | 22,925 | 10.5K | 0.0 | 0/40 |
 | codebase-memory-mcp | 0.495 | 21,901 | 11.1K | 2.0 | 4/40 |
 | grep | 0.596 | 35,456 | 23.7K | 0.0 | 1/40 |
 

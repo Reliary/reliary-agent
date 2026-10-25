@@ -283,14 +283,18 @@ pub fn phrase_id_for(db: &Connection, raw_name: &str) -> rusqlite::Result<Option
     let lower = raw_name.to_ascii_lowercase();
     let literal_pid = if lower == stem { None } else { lookup(&lower)? };
 
-    // Prefer a phrase that actually HAS occurrence rows (the literal is often
-    // the "real" phrase when a stem collided). V54: EXISTS with LIMIT 1.
-    if let Some(pid) = stemmed_pid {
+    // V91b: prefer the EXACT phrase, then the stem. The order used to be the
+    // other way round, which meant a caller that had already stemmed a name got
+    // it stemmed twice: MCP passes `stem_identifier("Session")` == "session",
+    // and this function then Porter-stemmed "session" to "ses", answering with
+    // the 90 rows of the unrelated stem instead of its own 101. An exact phrase
+    // with occurrence rows is always the better answer.
+    if let Some(pid) = literal_pid {
         if has_occ(pid) {
             return Ok(Some(pid));
         }
     }
-    if let Some(pid) = literal_pid {
+    if let Some(pid) = stemmed_pid {
         if has_occ(pid) {
             return Ok(Some(pid));
         }

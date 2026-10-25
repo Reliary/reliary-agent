@@ -39,16 +39,16 @@ Corpus: a snapshot of this repository. Model: `deepseek-v4-flash`. Seeds:
 
 | Metric | A (reliary) | B (codebase-memory-mcp) | C (grep) |
 |--------|-------------|----------------|----------|
-| F1 (claim-weighted) | **0.937** | 0.495 | 0.596 |
-| Precision | 0.939 | 0.876 | 0.830 |
-| Recall | **0.935** | 0.348 | 0.467 |
+| F1 (claim-weighted) | **0.948** | 0.495 | 0.596 |
+| Precision | 0.985 | 0.876 | 0.830 |
+| Recall | **0.913** | 0.348 | 0.467 |
 | Coverage | **1.00** | 0.90 | 0.85 |
-| Billed cost | **20,605** | 21,901 | 35,456 |
-| Tool output bytes | 11.7K | **11.1K** | 23.7K |
+| Billed cost | **22,925** | 21,901 | 35,456 |
+| Tool output bytes | 10.5K | 11.1K | 23.7K |
 | Dead-ends (unanswered queries) | **0.0** | 2.0 | 0.0 |
 | Refusals (explicit "cannot answer") | **0/40** | 4/40 | 1/40 |
 | Wall, median | **33s** | 34s | 43s |
-| Keyword rubric /30 | 26.8 | 27.5 | 27.3 |
+| Keyword rubric /30 | 28.0 | 27.5 | 27.3 |
 
 Read F1, not the keyword rubric. The `/30` row is a substring matcher kept only
 as a smoke test: it is gameable by keyword-stuffing and roughly doubles the
@@ -69,7 +69,7 @@ Billed cost includes the provider's cache discount (~92% cache hit on all three
 conditions). Wall time is provider-latency bound and the spread is within noise;
 reliary is inside the band, not the leader.
 
-**On this corpus reliary answers more of the verifiable claims.** F1 0.937 vs
+**On this corpus reliary answers more of the verifiable claims.** F1 0.948 vs
 0.596 for grep and 0.495 for codebase-memory-mcp, with full coverage: every
 query produced at least one checkable claim, and 94% of claims verified
 correctly. Grep's precision is 0.83 — one claim in six was wrong.

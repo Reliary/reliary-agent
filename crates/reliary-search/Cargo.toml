@@ -20,7 +20,7 @@ parking_lot = "0.12"
 ahash = "0.8"
 sha2 = "0.10"
 
-reliary-memory = { version = "0.8", path = "../reliary-memory" }
+reliary-memory = { version = "0.9", path = "../reliary-memory" }
 
 [build-dependencies]
 sha2 = "0.10"

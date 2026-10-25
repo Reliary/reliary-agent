@@ -685,9 +685,17 @@ pub fn run_build_all(path: &str) {
             eprintln!("  ... {}/{} files", i + 1, file_ids.len());
         }
     }
-    let occ = reliary_search::lazy_occurrence::build_all_occurrence(&db).unwrap_or(0);
-    eprintln!("{} blocks={} occurrence={} in {:?}",
-        color::green("✓"), total_blocks, occ, start.elapsed());
+    let inserted = reliary_search::lazy_occurrence::build_all_occurrence(&db).unwrap_or(0);
+    // Report TABLE TOTALS, not rows inserted this run. On an already-built
+    // index the functions correctly insert nothing and return 0, so the old
+    // message printed "✓ blocks=0 occurrence=0" while the tables held
+    // 26921 rows — which reads as data loss and sent me chasing a phantom.
+    let total_occ: i64 = db
+        .query_row("SELECT COUNT(*) FROM occurrence", [], |r| r.get(0))
+        .unwrap_or(0);
+    let _ = total_blocks;
+    eprintln!("{} blocks={} occurrence={} (+{} new) in {:?}",
+        color::green("✓"), total_blocks, total_occ, inserted, start.elapsed());
 }
 
 /// Re-index a single file after edit. Called by gate.js hooks.

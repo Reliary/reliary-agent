@@ -1325,6 +1325,25 @@ fn scan_type_body_for_members(file_path: &str, type_name: &str, out: &mut Vec<Me
         }
     }
     let Some(decl) = decl else { return; };
+
+    // V95: layout languages (Python/Ruby/YAML) have no braces, so the
+    // brace-matching walk below never "opens" and the member loop skips every
+    // line. `list_methods("Session")` returned "No methods found" for every
+    // Python class, even though the class and its `def`s are indexed.
+    // Detect the layout form positionally: the declaration line carries no `{`
+    // and the next non-blank line is indented deeper.
+    let decl_no_brace = !lines[decl].contains('{');
+    let decl_indent = lines[decl].len() - lines[decl].trim_start().len();
+    let next_indent = lines
+        .iter()
+        .skip(decl + 1)
+        .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        .map(|l| l.len() - l.trim_start().len());
+    if decl_no_brace && next_indent.map(|n| n > decl_indent).unwrap_or(false) {
+        scan_layout_type_body(&lines, file_path, decl, decl_indent, out);
+        return;
+    }
+
     // Body extent: brace matching from the declaration line (handles the
     // Allman style where `{` is on the following line).
     let mut depth: i32 = 0;
@@ -1387,6 +1406,81 @@ fn scan_type_body_for_members(file_path: &str, type_name: &str, out: &mut Vec<Me
             continue;
         }
         // A property/field line.
+        if let Some((name, ftype)) = field_from_line(t) {
+            out.push(MethodOn {
+                name,
+                file: file_path.to_string(),
+                line: (li + 1) as i32,
+                source: ftype,
+                is_pub: vis,
+                is_field: true,
+            });
+        }
+    }
+}
+
+/// Members of an indentation-delimited type body (Python, Ruby, YAML).
+///
+/// A `class Foo:` block has no braces, so the brace walk in
+/// `scan_type_body_for_members` never enters the body and every Python type
+/// reported "No methods found". Members here are the lines indented exactly
+/// one level deeper than the declaration; the body ends at the first
+/// non-blank line indented at or below it. Decoration (`@property`,
+/// `@staticmethod`) is skipped because it carries no name of its own.
+fn scan_layout_type_body(
+    lines: &[&str],
+    file_path: &str,
+    decl: usize,
+    decl_indent: usize,
+    out: &mut Vec<MethodOn>,
+) {
+    // The body's member indent is the first real line deeper than the header.
+    let mut member_indent: Option<usize> = None;
+    for line in lines.iter().skip(decl + 1) {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let ind = line.len() - line.trim_start().len();
+        if ind <= decl_indent {
+            break;
+        }
+        member_indent = Some(ind);
+        break;
+    }
+    let Some(member_indent) = member_indent else { return };
+
+    for (li, line) in lines.iter().enumerate().skip(decl + 1) {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let ind = line.len() - line.trim_start().len();
+        if ind <= decl_indent {
+            break;
+        }
+        // Decorators and other one-level lines belong to the member that
+        // follows them, not to the type.
+        if ind != member_indent || t.starts_with('@') {
+            continue;
+        }
+        let vis = is_pub_decl(t) || is_public_decl(t);
+        if t.contains('(') {
+            let r = crate::structural::classify_structural(line, 1, false, false);
+            if r.is_def && r.tag == 1 {
+                if let Some(name) = r.defined_name {
+                    out.push(MethodOn {
+                        name: name.to_string(),
+                        file: file_path.to_string(),
+                        line: (li + 1) as i32,
+                        source: t.to_string(),
+                        is_pub: vis,
+                        is_field: false,
+                    });
+                }
+            }
+            continue;
+        }
         if let Some((name, ftype)) = field_from_line(t) {
             out.push(MethodOn {
                 name,
@@ -1979,6 +2073,38 @@ mod v75_tests {
 
 /// V89: two ordering bugs made `find_references(Trait, def_only)` answer with
 /// a method instead of the implementing types.
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    /// V95: `list_methods` was brace-based, so every Python/Ruby class
+    /// reported "No methods found". The layout scanner walks indentation.
+    #[test]
+    fn layout_type_body_finds_python_members() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("reliary_layout_{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = "class Alpha:\n    def first(self):\n        return 1\n\n    @property\n    def prop(self):\n        return 2\n\nclass Beta:\n    def other(self):\n        return 3\n";
+        let path = dir.join("m.py");
+        std::fs::write(&path, src).unwrap();
+        let p = path.to_str().unwrap();
+
+        let mut alpha = Vec::new();
+        scan_type_body_for_members(p, "Alpha", &mut alpha);
+        let names: Vec<&str> = alpha.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"first"), "got {names:?}");
+        assert!(names.contains(&"prop"), "got {names:?}");
+        assert!(!names.contains(&"other"), "must not cross into Beta: {names:?}");
+        assert!(!names.contains(&"property"), "decorator is not a member: {names:?}");
+
+        let mut beta = Vec::new();
+        scan_type_body_for_members(p, "Beta", &mut beta);
+        let bnames: Vec<&str> = beta.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(bnames, vec!["other"]);
+    }
+}
+
 #[cfg(test)]
 mod v89_trait_tests {
     use super::*;
