@@ -560,7 +560,7 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
             find_function_name_pos_before(&delims, delims.first_brace_pos());
         let chosen = from_sig_paren
             .map(|(s, _n)| (s, 0usize))
-            .or_else(|| after_keyword)
+            .or(after_keyword)
             .or(from_ident_scan);
         if let Some((name_start, _idx)) = chosen {
             // V65: a bare call like `impl_target_identifier(before_brace)` is
@@ -1341,13 +1341,6 @@ pub fn scan_delimiters(line: &str) -> LineDelimiters {
     d
 }
 
-/// P3-1: Find the function name position — the LAST identifier whose next
-/// non-whitespace character is `(` or `<`. Principled grammar-free rule:
-/// "the function name is the last identifier followed by `(` or `<`".
-fn find_function_name_pos(delims: &LineDelimiters) -> Option<(usize, usize)> {
-    find_function_name_pos_before(delims, None)
-}
-
 /// P3-1: Find the function name, ignoring identifiers that appear inside an
 /// inline body.
 ///
@@ -1621,34 +1614,6 @@ fn angle_depth_at(line: &str) -> Vec<i32> {
     }
     out.push(depth);
     out
-}
-
-/// First `(` that is not inside an unclosed `<...>` group.
-///
-/// `fn map<B, F: FnOnce(A) -> B>(self, f: F)` has its first `(` inside the
-/// generic list; the parameter list starts at the `(` after `>`. Scanning for
-/// the first paren at angle depth 0 gives the real parameter list in both
-/// shapes, so a generic argument never masquerades as one.
-fn first_paren_outside_angle(line: &str) -> Option<usize> {
-    let b = line.as_bytes();
-    let depth = angle_depth_at(line);
-    let mut in_str = false;
-    let mut esc = false;
-    for i in 0..b.len() {
-        // A trailing comment is prose, not syntax. `// (name, file, line)`
-        // ends with `)` and would otherwise supply a parameter list.
-        if !in_str && b[i] == b'/' && b.get(i + 1) == Some(&b'/') {
-            return None;
-        }
-        if esc { esc = false; continue; }
-        if in_str && b[i] == b'\\' { esc = true; continue; }
-        if b[i] == b'"' { in_str = !in_str; continue; }
-        if in_str { continue; }
-        if b[i] == b'(' && depth[i] == 0 {
-            return Some(i);
-        }
-    }
-    None
 }
 
 /// Name declared by a brace-less `impl` header.
@@ -1951,8 +1916,7 @@ fn first_signature_paren(line: &str) -> Option<usize> {
 
 /// Is byte `pos` inside an unclosed `<...>` group?
 ///
-/// The classifier uses [`first_paren_outside_angle`] directly; this predicate
-/// is the shape-level assertion the operator-lookalike tests need.
+/// Shape-level assertion used by the operator-lookalike tests.
 #[cfg(test)]
 fn inside_angle_group(line: &str, pos: usize) -> bool {
     let d = angle_depth_at(line);
@@ -2716,7 +2680,7 @@ fn self_type_name(s: &str) -> Option<&str> {
     let rest = &s[i..];
     // Cut at the first generic/argument group; the name precedes it.
     let cut = rest
-        .find(|c: char| c == '<' || c == '(' || c == '[' || c == '{' || c == ',')
+        .find(['<', '(', '[', '{', ','])
         .unwrap_or(rest.len());
     let head = rest[..cut].trim_end();
     if head.is_empty() {
