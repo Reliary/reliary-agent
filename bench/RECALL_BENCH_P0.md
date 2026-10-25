@@ -281,3 +281,161 @@ answers "here are all sites of this name", which is correct but not scoped.
 This is a real ceiling on the "index beats grep" story for homonymous names:
 grep has the same ambiguity, so the comparison is a tie there rather than a
 loss, but neither tool can answer "this `get` specifically".
+
+
+## Unfamiliar code: the obfuscated twin
+
+The familiarity confound is the one that could invalidate every accuracy number,
+so it is tested directly. `bench/obfuscate_corpus.py` rewrites tokio with
+deterministic pseudonyms: every identifier, every filename, keeping case class
+and underscore structure. Structure and semantics are identical; **no name
+carries any training signal**.
+
+Definition recall is unchanged, which is the point — the classifier is
+positional, so renaming cannot move it:
+
+| corpus | overall | function | method | typedef | struct | impl |
+|---|---:|---:|---:|---:|---:|---:|
+| tokio (original) | 0.9976 | 1.000 | 1.000 | 1.000 | 0.999 | 0.989 |
+| tokio (obfuscated) | 0.9969 | 0.997 | 1.000 | 1.000 | 0.999 | 0.989 |
+
+Usage retrieval, same 24 symbols, same oracle:
+
+| tool | R_use | P_use | bytes | p50 |
+|---|---:|---:|---:|---:|
+| reliai | 0.894 | **0.999** | **1,097** | **3.7 ms** |
+| codebase-memory-mcp | **0.999** | 0.742 | 6,714 | 31.6 ms |
+| grep | **0.999** | 0.742 | 5,848 | 22.0 ms |
+
+The role reversal is real and must be stated: **on the obfuscated twin, grep and
+the competitor find more occurrences than reliai** (0.999 vs 0.894). Precision
+still favours reliai (0.999 vs 0.742) and the answer is 5× smaller. The 10-point
+recall deficit is the stem-keyed index: obfuscated identifiers are long compounds
+whose stems collide, which the `stem_identifier` rules handle less well than the
+real names.
+
+Comprehension on the same twin (3 auto-generated questions, 2 seeds):
+
+| condition | F1 | billed | wall |
+|---|---:|---:|---:|
+| reliai | 0.714 | 4,262 | 9.9 s |
+| grep | 0.787 | 18,228 | 18.5 s |
+
+Reliai is still 4× cheaper and ~2× faster, but grep answers slightly more
+verifiable claims on unfamiliar code. That is a loss on accuracy and it is
+reported as one.
+
+**Conclusion: the cost and precision advantages survive obfuscation. The recall
+advantage does not exist and never did; on unfamiliar code it becomes a recall
+deficit.**
+
+## Resource usage
+
+| Metric | reliai | codebase-memory-mcp |
+|---|---:|---:|
+| Binary size | **10.5 MB** | 253.2 MB |
+| Cold one-shot (spawn + one query + exit) | **12 ms** | 507 ms |
+| Peak RSS while indexing tokio (840 files) | **57 MB** | n/a |
+| Peak RSS while answering queries | 37 MB | **20 MB** |
+| Warm query p50 / p95 | **6.0 ms** / 102 ms | 16.6 ms / **51 ms** |
+| Index on disk (tokio) | **17.2 MB** | 585.6 MB |
+| Index build (tokio) | **3.9 s** | 4.6 s |
+
+| corpus | files | trust + build-all | index |
+|---|---:|---:|---:|
+| httpx | 95 | 0.10 s | 0.9 MB |
+| requests | 91 | 0.32 s | 2.4 MB |
+| tokio | 840 | 3.90 s | 17.2 MB |
+| reliary (git archive) | 104 rs | 1.90 s | 3.9 MB |
+
+Reliai's p95 is the first query for a new phrase, which builds that phrase's
+occurrence rows on demand; everything afterwards is 3–6 ms. At roughly 20 KB of
+index per source file, a 100K-file repository lands near 2 GB.
+
+Found while measuring: `.jsonl` was not on the data deny-list, so reliary's own
+tree spent 10.2 s indexing 633 benchmark logs for zero occurrence rows. Adding
+`jsonl`/`ndjson` (deny-list only, so no source language is excluded) took the
+self-index from 10.5 s to 0.26 s.
+
+
+# V97 final measurement
+
+Three corpora, 24 symbols each sampled by occurrence frequency only (never by
+any tool's result), scored against an independent lexical oracle with comments
+and string literals blanked and whole-word matching.
+
+| corpus | tool | R_use | P_use | bytes | p50 |
+|---|---|---:|---:|---:|---:|
+| tokio (840 files) | **reliary** | **1.000** | **1.000** | **804** | 9.2 ms |
+| | codebase-memory-mcp | 0.918 | 0.689 | 3,384 | 21.7 ms |
+| | grep | 1.000 | 0.781 | 2,687 | 15.8 ms |
+| tokio, identifier-scrambled | **reliary** | **1.000** | **1.000** | **875** | 9.2 ms |
+| | codebase-memory-mcp | 1.000 | 0.743 | 2,908 | 21.1 ms |
+| | grep | 1.000 | 0.743 | 2,959 | 13.7 ms |
+| requests (Python) | **reliary** | **1.000** | **1.000** | **590** | 4.0 ms |
+| | codebase-memory-mcp | 0.889 | 0.662 | 4,716 | 8.0 ms |
+| | grep | 1.000 | 0.824 | 1,632 | 3.4 ms |
+
+Definition query (Rust): reliary hit **1.000** at 110 bytes; codebase-memory-mcp
+0.75 at 5,608 bytes. Blind ctags definition recall: tokio **0.9977**.
+
+## What closed the gap
+
+Seven defects, each with a mutation-verified negative control:
+
+1. **False definition rows (the dominant one).** 1,133 of 5,666 tag-2 rows on
+   tokio were struct literals, macro invocations, `use` groups, or `unsafe {`
+   blocks. A false definition is worse than a miss — `usage_only` filters
+   definition sites out of the caller list, so each one HID a real call site.
+   Fixed positionally: a brace-headed line must name a declaration word
+   somewhere before the brace, and `!`/`::` immediately before it reject a macro
+   or an import group.
+2. **`find_references` never JIT-built occurrence rows.** `trust` leaves the
+   table empty by design; this handler queried it directly, so on a freshly
+   trusted index `usage_only` answered "No call sites found" for *every* symbol.
+3. **`phrase_id_for` preferred the stem over the exact phrase**, and gated its
+   choice on whether rows already existed — so the answer depended on what had
+   been queried earlier in the session (`Direction` → `direc`; `Buf` → 1,968
+   lowercase sites for 61 real ones).
+4. **`scan_identifiers` deduped case-insensitively**, dropping the type on
+   `direction: Direction,` because the local variable won the dedup.
+5. **`LIMIT` before filters.** `Buf` has 2,222 rows; the SQL budget was a fixed
+   50 that the test-file filter then ate into, and an explicit `limit=5000` was
+   still clamped at the schema's `maximum: 500`.
+6. **Bare basenames in answers.** tokio has 97 colliding basenames, 54 of them
+   `mod.rs`; the caller list printed `mod.rs:8` five times for five different
+   files. Now the shortest unique path suffix, relative to the project root.
+7. **`macro_rules! name {` declared `macro_rules`**, not `name`.
+
+Plus three measurement bugs in the harness itself, all disclosed:
+
+- **The oracle merged lines.** A backslash at end-of-line inside a string is a
+  continuation, and the masker consumed the newline, so every line number after
+  it pointed one line early. A 467-line file produced 464 masked lines.
+- **`macro_rules!` was not a declaration** to the oracle's prefix regex (the
+  trailing `\b` cannot match `!`), so the macro's own definition counted as a
+  usage and every tool scored one short.
+- **Truth was case-folded**, conflating `Buf` with 1,963 `buf` sites — a
+  denominator 33x larger than the symbol, which no tool could reach.
+
+## Resource usage
+
+| metric | reliary | codebase-memory-mcp |
+|---|---:|---:|
+| binary | **10.5 MB** | 253.2 MB |
+| cold one-shot (spawn + query + exit) | **12 ms** | 507 ms |
+| peak RSS while indexing tokio | **52 MB** | n/a |
+| peak RSS serving 400 queries | **20.6 MB** | 20.2 MB |
+| warm p50 / p95 | **1.1 ms** / 8.0 ms | 17-47 ms |
+| index on disk (tokio) | **17.5 MB** | 585.6 MB |
+| trust (tokio, 840 files) | **0.35 s** | 4.6 s |
+
+Two changes got serving RSS from 36 MB to 20.6 MB: the `file_meta` cache is
+capped by BYTES (1 MB) instead of by entry count, and `mmap` is only used for
+indexes above 64 MB — a mapped range counts as resident even when untouched, so
+a 17 MB index in a 256 MB window reported ~19 MB it never read.
+
+**Eager occurrence indexing stays opt-in.** It was the plan to default it on, but
+measurement said no: tokio trust 0.35 s → 5.0 s, index 3.6 → 17.5 MB, and p95
+went 3.6 ms → 8.0 ms because every query then walks a 223K-row table instead of
+a few hundred JIT rows. `RELIARY_EAGER_INDEX=1` still forces it.

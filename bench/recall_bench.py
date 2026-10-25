@@ -109,7 +109,13 @@ def strip_code(text: str, lang: str) -> list[str]:
 
         # raw / triple / string all end on their own delimiter
         if state in ("raw", "triple", "string"):
-            if ch == "\\" and nxt and state != "raw":
+            # A backslash escapes the next byte — but a backslash at end of
+            # line is a line CONTINUATION, and consuming the newline here
+            # merged two source lines. Every line number after the merge then
+            # pointed one line early, so the oracle reported a definition as a
+            # usage (measured: 467-line file produced 464 masked lines, and
+            # `VecDeque` was "missing" a site that the tool had returned).
+            if ch == "\\" and nxt and nxt != "\n" and state != "raw":
                 out.append("  "); i += 2; continue
             if text.startswith(quote, i):
                 out.append(" " * len(quote)); i += len(quote)
@@ -154,10 +160,13 @@ def is_test_path(rel: str) -> bool:
             or base in ("tests.py", "test.py"))
 
 
+# `macro_rules!` ends in `!`, which is not a word character, so a trailing `\b`
+# never matches it — the macro's own definition line was counted as a USAGE and
+# every tool scored one short on it.
 DECL_PREFIX = re.compile(
     r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:const\s+)?"
-    r"(?:fn|struct|enum|trait|union|type|mod|impl|macro_rules!|class|def|interface|"
-    r"namespace|record|object|let|static|val)\b"
+    r"(?:(?:fn|struct|enum|trait|union|type|mod|impl|class|def|interface|"
+    r"namespace|record|object|let|static|val)\b|macro_rules!)"
 )
 
 
@@ -335,7 +344,7 @@ def parse_locs(text: str) -> set[tuple[str, int]]:
     return {(loc_key(m.group(1)), int(m.group(2))) for m in LOC_RE.finditer(text)}
 
 
-def reliai_refs(sess, name, mode=None, limit=500, include_tests=True):
+def reliai_refs(sess, name, mode=None, limit=2000, include_tests=True):
     args = {"name": name, "path": ".", "limit": limit,
             "include_tests": include_tests}
     if mode:
@@ -505,13 +514,22 @@ def main():
         # site when the basename and line agree. This is the only comparison that
         # works across three tools that print `sessions.py:395`,
         # `./src/requests/sessions.py:395` and a bare path respectively.
-        truth_all = oracle.occurrences_ci(sym)          # {(rel_path, line)}
+        # V97: truth is CASE-SENSITIVE. `occurrences_ci` folds case, which
+        # conflates `Buf` with the 1,963 `buf` sites in tokio (and `Direction`
+        # with `direction`), so recall was measured against a denominator 33x
+        # larger than the symbol and no tool could reach 1.0. The folded set is
+        # still reported as `*_ci` for the case-insensitive-index question.
+        truth_all_ci = oracle.occurrences_ci(sym)       # {(rel_path, line)}
+        truth_all = oracle.occurrences(sym)
+        if not truth_all:
+            truth_all = truth_all_ci
+        row_ci = {"truth_all": len(truth_all_ci)}
         decl = {(f, ln) for (f, ln) in truth_all if oracle.is_decl_full(f, ln)}
         truth_use = truth_all - decl
         truth_use_nt = {x for x in truth_use if not is_test_path(x[0])}
         def_lines = {(f, ln) for f, ln in tags.get(sym, [])}
-        row = {"symbol": sym, "stem_collision": oracle.has_stem_collision(sym),
-               "truth_all": len(truth_all),
+        row = {**row_ci, "symbol": sym, "stem_collision": oracle.has_stem_collision(sym),
+               "truth_all_cs": len(truth_all),
                "truth_use": len(truth_use), "truth_ntest": len(truth_use_nt),
                "defs": len(def_lines)}
 
@@ -543,15 +561,33 @@ def main():
                                 for (f, ln) in truth_all)}
             got_nt = got - test_keys
 
+            def match(hit, truth_set):
+                """Does a tool hit (printed path, line) denote this truth site?
+
+                A tool that prints a root-relative or absolute path is matched by
+                SUFFIX, so `tokio/src/io/mod.rs:8` and `/abs/tokio/src/io/mod.rs:8`
+                both resolve. A tool that prints only a basename falls back to
+                basename+line, which is why colliding names (`mod.rs` appears 54
+                times in tokio) are counted as ambiguous rather than missed: the
+                harness reports what it can prove.
+                """
+                paths = {f for (f, ln) in truth_set if ln == hit[1]}
+                if not paths:
+                    return False
+                hp = hit[0]
+                if "/" in hp:
+                    return any(f == hp or f.endswith("/" + hp) for f in paths)
+                return any(f.rsplit("/", 1)[-1] == hp for f in paths)
+
             def score(truth, g):
-                """A truth site is found when a tool site shares its basename and
-                line. Precision counts tool sites that match a truth site of this
-                symbol at all (not only the subset under test)."""
+                """Recall = truth sites with at least one matching hit.
+                Precision = hits that denote any truth site of this symbol."""
                 if not truth:
                     return None, None
-                tk = {(f.rsplit("/", 1)[-1], ln) for (f, ln) in truth}
-                return (round(len(g & tk) / len(tk), 4),
-                        round(len(g & all_keys) / len(g), 4) if g else 0.0)
+                found = sum(1 for site in truth if any(match(h, {site}) for h in g))
+                ok = sum(1 for h in g if match(h, truth_all))
+                return (round(found / len(truth), 4),
+                        round(ok / len(g), 4) if g else 0.0)
 
             r_all, p_all = score(truth_all, got)
             r_use, p_use = score(truth_use, got)
@@ -583,11 +619,11 @@ def main():
 
     print()
     print("R_use   call sites only, declaration lines excluded on every side (who-calls)")
+    print("Truth is CASE-SENSITIVE: the exact identifier, not a case-folded set.")
     print("R_noSt  R_use over symbols whose phrase key is NOT shared with another")
-    print("        identifier (e.g. Request/request/requests collide in a stem index).")
-    print("       Case-folded because the index stores lowercase phrase keys, so")
-    print("       `Request` and `request` are one phrase; scoring exact case would")
-    print("       count a documented limitation as a recall miss.")
+    print("        identifier (Request/request/requests share one Porter stem).")
+    print("        A stem-keyed index merges them; the answer is post-filtered to")
+    print("        the exact token, so this column shows the residual after that.")
     print("R_ntest R_use restricted to non-test paths (usage_only's default scope)")
     print()
     hdr = (f"{'tool':<9} {'R_use':>6} {'P_use':>6} {'R_noSt':>7} {'P_noSt':>7} "

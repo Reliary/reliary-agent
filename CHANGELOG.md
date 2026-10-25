@@ -5,6 +5,45 @@ All notable changes to Reliary will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-10-25
+
+### Recall is now 1.000 with 1.000 precision on all three corpora
+
+The 0.9.0 entry below said recall was at parity with grep and the advantage was
+precision and output size. That was true of the code at the time and it is no
+longer: seven defects were hiding call sites, and fixing them moved recall from
+0.905 to 1.000 on tokio and from 0.929 to 1.000 on requests, with precision also
+at 1.000. Full numbers in `bench/RECALL_BENCH_P0.md`.
+
+The dominant defect: **a false definition row is worse than a miss**, because
+`usage_only` filters definition sites out of the caller list. 1,133 of 5,666
+definition rows on tokio were struct literals, macro invocations, `use` groups,
+or `unsafe {` blocks, and each one silently hid a real call site.
+
+Also fixed:
+
+- `find_references` never triggered the lazy occurrence build, so on a freshly
+  trusted index `usage_only` answered "No call sites found" for **every** symbol.
+- `phrase_id_for` preferred the stem over the exact phrase and gated the choice
+  on whether rows already existed, making answers depend on query history.
+- `scan_identifiers` deduped case-insensitively, so `direction: Direction,`
+  dropped the type and kept the variable.
+- `LIMIT` ran before the test-file filter, and an explicit `limit` was clamped
+  at the schema ceiling of 500.
+- Answers printed bare basenames; tokio has 97 colliding basenames (54 `mod.rs`),
+  so five different files rendered as `mod.rs:8`.
+- `macro_rules! name {` declared `macro_rules` instead of `name`.
+- Serving RSS 36 MB → 20.6 MB: the `file_meta` cache is capped by bytes rather
+  than entry count, and `mmap` is used only above 64 MB because a mapped range
+  counts as resident even when untouched.
+- `.jsonl`/`.ndjson` are on the data deny-list, so indexing this repository spent
+  10.2 s on 633 benchmark logs for zero occurrence rows.
+
+Three measurement bugs in the harness were found and fixed too, disclosed rather
+than quietly recomputed: the oracle merged lines after a line-continuation
+backslash, it did not treat `macro_rules!` as a declaration, and its truth set
+was case-folded (conflating `Buf` with 1,963 `buf` sites).
+
 ## [0.9.0] - 2026-10-24
 
 Everything below 0.8.16 was measured after 0.8.16 shipped. The headline is a

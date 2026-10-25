@@ -1853,9 +1853,19 @@ fn do_trust(path: &str) {
         eprintln!("{} Failed to trust {}: the index could not be built", color::red("✗"), path);
         std::process::exit(1);
     }
-    // Arc 50: opt-in eager build (all lazy tables + occurrences materialized at trust time)
-    if std::env::var("RELIARY_EAGER_INDEX").is_ok() {
-        println!("{} Eager indexing enabled; building lazy tables...", color::yellow("!"));
+    // Eager build (all lazy tables + occurrences materialized at trust time).
+    //
+    // OPT-IN, and measurement says it should stay that way. The plan was to
+    // default it on below a file threshold to remove the first-query p95
+    // outlier, but the outlier is the first query only and the lazy path is
+    // already 3.6 ms at p95 once the file_meta cache is warm. Eager costs
+    // 5.0 s of trust time on tokio (0.35 -> 5.0), grows the index 3.6 -> 17.5 MB,
+    // and measured SLOWER at p95 (8.0 ms vs 3.6 ms) because every query then
+    // walks a 223K-row table instead of a few hundred JIT rows.
+    //
+    // `RELIARY_EAGER_INDEX=1` still forces it for callers that want a fully
+    // materialised table (the bench harness does, to make runs comparable).
+    if std::env::var("RELIARY_EAGER_INDEX").map(|v| v == "1").unwrap_or(false) {
         run_build_all(path);
     }
     // Validate config

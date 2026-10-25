@@ -185,3 +185,23 @@ Hard no-inflation guarantee: `wrap` emits the raw bytes whenever compression
 would produce a longer result. Source-file readers (`cat`/`head`/`tail`/`less`/
 `bat <source>`) pass through byte-identical so model-built edits never see
 mangled code.
+
+
+## V97 (current)
+
+Comprehension corpus, 4 seeds, claim-weighted F1:
+
+| | F1 | Precision | Recall | Billed | Tool bytes | Wall | Dead-ends |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reliary | **0.944** | 0.984 | 0.908 | **23,515** | **11.4K** | **28.5 s** | 0.0 |
+| codebase-memory-mcp | 0.442 | 0.921 | 0.293 | 25,006 | 14.9K | 34.3 s | 2.5 |
+| grep | 0.590 | 0.779 | 0.478 | 34,868 | 29.1K | 37.3 s | 0.0 |
+
+Retrieval recall (no model in the loop, mechanical scoring against an
+independent lexical oracle) — see `bench/RECALL_BENCH_P0.md`:
+
+| corpus | reliary R / P | cbm R / P | grep R / P |
+|---|---|---|---|
+| tokio | **1.000 / 1.000** | 0.918 / 0.689 | 1.000 / 0.781 |
+| tokio scrambled | **1.000 / 1.000** | 1.000 / 0.743 | 1.000 / 0.743 |
+| requests | **1.000 / 1.000** | 0.889 / 0.662 | 1.000 / 0.824 |

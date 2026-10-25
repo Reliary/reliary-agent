@@ -271,43 +271,29 @@ pub fn phrase_id_for(db: &Connection, raw_name: &str) -> rusqlite::Result<Option
         let mut rows = stmt.query(params![key])?;
         rows.next()?.map(|r| r.get::<_, i64>(0)).transpose()
     };
-    let has_occ = |pid: i64| -> bool {
-        db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM occurrence WHERE phrase_id = ?1 LIMIT 1)",
-            params![pid], |r| r.get::<_, i64>(0),
-        ).unwrap_or(0) > 0
-    };
-
     let stemmed_pid = lookup(&stem)?;
     // Try the unstemmed literal too (e.g. "consume" instead of "consum").
     let lower = raw_name.to_ascii_lowercase();
     let literal_pid = if lower == stem { None } else { lookup(&lower)? };
 
-    // V91b: prefer the EXACT phrase, then the stem. The order used to be the
-    // other way round, which meant a caller that had already stemmed a name got
-    // it stemmed twice: MCP passes `stem_identifier("Session")` == "session",
-    // and this function then Porter-stemmed "session" to "ses", answering with
-    // the 90 rows of the unrelated stem instead of its own 101. An exact phrase
-    // with occurrence rows is always the better answer.
+    // The EXACT phrase wins whenever the phrase exists.
+    //
+    // The phrase table is built at trust time from the source and is complete,
+    // so presence in `phrases` is the only evidence needed. Precedence used to
+    // depend on whether the phrase already had OCCURRENCE rows, which made the
+    // answer depend on what had been queried before: on a fresh lazy index
+    // nothing has rows, so the stem won and `Direction` resolved to `direc`
+    // (answering with the 12 lowercase `direction` sites); once some other
+    // query populated rows, `Buf` resolved to its stem too and reported 1,968
+    // sites instead of 61. A per-process "is the table populated" flag made
+    // that worse by flipping mid-session.
     if let Some(pid) = literal_pid {
-        if has_occ(pid) {
-            return Ok(Some(pid));
-        }
+        return Ok(Some(pid));
     }
-    if let Some(pid) = stemmed_pid {
-        if has_occ(pid) {
-            return Ok(Some(pid));
-        }
-    }
-    // Neither has occurrence rows yet — this is the LAZY index (trust does not
-    // build occurrence; it is JIT-built on first query). The OLD code returned
-    // None here whenever the stemmed pid was found but unbuilt, so a valid
-    // symbol looked absent and callers that expected to JIT never got a pid
-    // (circular). Return the stemmed pid (preferred) so the caller can JIT.
     if let Some(pid) = stemmed_pid {
         return Ok(Some(pid));
     }
-    Ok(literal_pid)
+    Ok(None)
 }
 
 /// Look up file_id from file_path.

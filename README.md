@@ -9,10 +9,10 @@ compresses verbose shell output (`cargo test`, `git diff`, `pytest`) before it
 reaches agent context.
 
 **What it is for.** Answering "where is X defined", "who calls X", "what methods
-does X have" in one small tool call instead of a grep-then-read cycle. On the
-benchmark it answers at ~42% lower billed token cost than grep with about twice
-the tool-output efficiency, and it verified more of its claims than either
-alternative on that corpus.
+does X have" in one small tool call instead of a grep-then-read cycle. On three
+independent corpora (Rust, identifier-scrambled Rust, Python) it returns every
+call site with no wrong sites, at roughly one quarter of grep's output and a
+third of its size in bytes, in single-digit milliseconds.
 
 ## Install
 
@@ -195,16 +195,30 @@ answered 95% of verifiable claims correctly and every query produced a checkable
 claim; grep and codebase-memory-mcp produced fewer verifiable claims and
 verified fewer of them.
 
-This corpus is *familiar* to the model. On a foreign repository (tokio) grep
-led, and the familiarity experiment found no measurable familiarity effect, so
-accuracy on unfamiliar code is **not established**. The corpus-independent wins
-are cost, output size, and zero dead-ends.
+This corpus is *familiar* to the model, which is why a separate measurement
+exists that cannot be contaminated by memory: retrieval recall, scored
+mechanically against an independent lexical oracle with no model in the loop.
 
-| | F1 | Billed cost | Tool bytes | Dead-ends | Refusals |
+| corpus | reliary R / P | codebase-memory-mcp | grep |
+|---|---|---|---|
+| tokio (840 files) | **1.000 / 1.000** | 0.918 / 0.689 | 1.000 / 0.781 |
+| tokio, identifiers scrambled | **1.000 / 1.000** | 1.000 / 0.743 | 1.000 / 0.743 |
+| requests (Python) | **1.000 / 1.000** | 0.889 / 0.662 | 1.000 / 0.824 |
+
+Every call site, no wrong ones, 0.8-0.9 KB per answer against grep's 2.7-5.0 KB.
+The scrambled corpus has no training signal in any identifier or filename.
+
+Cost, output size and zero dead-ends are the corpus-independent wins; the
+comprehension figures below are on a familiar corpus and are labelled as such.
+
+| | F1 | Billed cost | Tool bytes | Dead-ends | Wall (median) |
 |---|---|---|---|---|---|
-| reliary | 0.948 | 22,925 | 10.5K | 0.0 | 0/40 |
-| codebase-memory-mcp | 0.495 | 21,901 | 11.1K | 2.0 | 4/40 |
-| grep | 0.596 | 35,456 | 23.7K | 0.0 | 1/40 |
+| reliary | **0.944** | **23,515** | **11.4K** | **0.0** | **28.5 s** |
+| codebase-memory-mcp | 0.442 | 25,006 | 14.9K | 2.5 | 34.3 s |
+| grep | 0.590 | 34,868 | 29.1K | 0.0 | 37.3 s |
+
+99% of all three wall times is model round-trip; the tool itself accounts for
+about 1%, so the difference is turn count (14 vs 20 vs 14), not tool latency.
 
 Earlier comparisons against codebase-memory-mcp are **retracted**: the harness
 called its tracer with the wrong parameter name, which silently disabled

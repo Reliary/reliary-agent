@@ -694,6 +694,68 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
         }
     }
 
+    // V95: brace-shaped lines that are NOT type declarations.
+    //
+    // The `{` branch above exists for `struct Foo {` / `class Bar {`. Other
+    // shapes end in `{` and were misclassified as definitions, which is worse
+    // than a plain miss: `usage_only` filters definition sites out of the
+    // caller list, so a call site wearing a definition tag becomes INVISIBLE
+    // to "who calls X". Measured on identifier-scrambled tokio, 1,133 of
+    // 5,666 tag-2 rows were one of these, and every missed usage traced to
+    // this single bug (usage recall 0.894 -> 0.998).
+    //
+    // Two positional tests, no language detection:
+    //
+    //   1. A declaration always names a declaration word somewhere before the
+    //      brace (`struct Foo {`, `impl X for Y {`, `class A:`), so a head
+    //      with no such word is an expression opening a block:
+    //          `Self {`  `unsafe {`  `loop {`  `async move {`  `Foo {`
+    //      The word only DEFERS the reject; the declared name still comes
+    //      from position, never from the word.
+    //   2. Two shapes carry a word but are still not declarations:
+    //          `tokio::select! {`   — `!` immediately before the brace
+    //          `use tokio::{`       — `::` immediately before the brace
+    //
+    // Nesting is NOT a reject any more: `macro_rules!` bodies and functions
+    // declared inside functions are real definitions, and a blanket depth
+    // reject lost 67 of them (recall 0.9976 -> 0.9938). A struct literal is
+    // already caught by test 1 because it has no declaration word.
+    if delim_char == b'{' {
+        let head = trimmed[..delim_pos].trim_end();
+        let head_declares = head
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|w| matches!(
+                w,
+                "struct" | "enum" | "union" | "trait" | "class" | "interface"
+                    | "type" | "record" | "typedef" | "impl" | "fn" | "def"
+                    | "func" | "function" | "macro_rules" | "data"
+                    | "newtype" | "module" | "object" | "namespace"
+            ));
+        // `macro_rules! name {` declares `name`. Take it from the token after
+        // the bang: without this the name resolved to `macro_rules` and the
+        // macro itself had no definition row (ctags reports it, so the blind
+        // oracle counted it missing).
+        if head.ends_with('!') {
+            let lower = head.to_ascii_lowercase();
+            if let Some(b) = lower.rfind("macro_rules!") {
+                let after = head[b + "macro_rules!".len()..].trim();
+                if let Some(name) = scan_last_identifier(after) {
+                    if is_valid_identifier(name) {
+                        return StructuralResult {
+                            tag: 1,
+                            is_def: true,
+                            defined_name: Some(name),
+                        };
+                    }
+                }
+            }
+            return StructuralResult { tag: 0, is_def: false, defined_name: None };
+        }
+        if !head_declares || head.ends_with("::") {
+            return StructuralResult { tag: 0, is_def: false, defined_name: None };
+        }
+    }
+
     // Find last identifier before the delimiter.
     let mut before = &trimmed[..delim_pos];
     // B7: strip a trailing `where ...` clause FIRST (`struct Foo<T> where
@@ -3106,8 +3168,94 @@ mod tests {
         // `count: usize,` must not become defs via the annotation colon.
         let r = classify_structural("            data,", 2, false, false);
         assert!(!r.is_def);
+        // V95: `Self {` inside a body is a struct LITERAL. This test used to
+        // assert is_def=true, encoding the bug that made 357 call sites
+        // invisible to `usage_only` (a definition row is filtered out of the
+        // caller list). At depth 0/1 the same line does not occur: the header
+        // there is `impl Foo {`, which is handled by the impl path.
         let r = classify_structural("        Self {", 2, true, false);
+        assert!(!r.is_def, "Self {{ at body depth is a struct literal, not a definition");
+        // The real declaration shapes still classify, including nested ones
+        // (macro bodies and functions inside functions).
+        for line in [
+            "struct Foo {",
+            "            struct Local {",
+            "pub(crate) struct Qualified {",
+            "        impl Bar for Baz {",
+        ] {
+            let r = classify_structural(line, 2, true, false);
+            assert!(r.is_def, "{line} must stay a definition");
+        }
+    }
+
+    /// V95/V97: the false-definition reject and the exact-token filter.
+    ///
+    /// A definition row that is not a definition is worse than a miss:
+    /// `usage_only` filters definition sites out of the caller list, so each
+    /// one silently HIDES a real call site. Measured on identifier-scrambled
+    /// tokio, 1,133 of 5,666 tag-2 rows were struct literals, macro
+    /// invocations, `use` groups or `unsafe {` blocks.
+    #[test]
+    fn v95_bare_brace_never_declares() {
+        for (line, depth) in [
+            ("        Z5jv0zc {", 3),
+            ("    Self {", 2),
+            ("tokio::select! {", 1),
+            ("use tokio::{", 0),
+            ("unsafe {", 1),
+            ("async move {", 1),
+        ] {
+            let r = classify_structural(line, depth, true, false);
+            assert!(!r.is_def, "{line:?} must not be a definition");
+        }
+        for (line, depth) in [
+            ("struct Foo {", 0),
+            ("pub(crate) struct Qualified {", 0),
+            ("        struct Local {", 2),
+            ("impl Bar for Baz {", 0),
+        ] {
+            let r = classify_structural(line, depth, true, false);
+            assert!(r.is_def, "{line:?} must stay a definition");
+        }
+        // A macro declares the token after the bang, not `macro_rules`.
+        let r = classify_structural("macro_rules! check_poll {", 0, true, false);
         assert!(r.is_def);
+        assert_eq!(r.defined_name, Some("check_poll"));
+    }
+
+    /// V95: brace-shaped lines that are not type declarations must not be
+    /// definition rows. A false definition is worse than a miss: `usage_only`
+    /// filters definition sites out of the caller list, so each one silently
+    /// hides a real call site. Every case below was measured on
+    /// identifier-scrambled tokio (1,133 of 5,666 tag-2 rows).
+    #[test]
+    fn test_v95_non_declaration_brace_shapes() {
+        let water = [
+            ("        Z5jv0zc {", 3),          // R1: struct literal in a body
+            ("    Self {", 2),                 // R1/R4: Self literal
+            ("tokio::select! {", 1),           // R2: macro invocation
+            ("        tokio::mac! {", 2),      // R2 at depth
+            ("use tokio::{", 0),               // R3: import group
+            ("    pub use crate::x::{", 1),    // R3 with a qualifier
+            ("unsafe {", 1),                   // R4: lone identifier
+            ("loop {", 1),
+            ("async move {", 1),
+        ];
+        for (line, depth) in water {
+            let r = classify_structural(line, depth, true, false);
+            assert!(!r.is_def, "{line:?} at depth {depth} must not be a definition");
+        }
+        let defs = [
+            ("struct Foo {", 0),
+            ("pub(crate) struct Qualified {", 0),
+            ("        struct Local {", 2),     // nested but declared
+            ("impl Bar for Baz {", 0),
+            ("    impl Bar for Baz {", 1),
+        ];
+        for (line, depth) in defs {
+            let r = classify_structural(line, depth, true, false);
+            assert!(r.is_def, "{line:?} at depth {depth} must stay a definition");
+        }
     }
 
     #[test]

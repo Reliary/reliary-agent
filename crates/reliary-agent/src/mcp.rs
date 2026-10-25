@@ -392,6 +392,7 @@ fn trait_impls_answer(
     db: &rusqlite::Connection,
     sym: &str,
     path_filter: &str,
+    root: &str,
 ) -> Option<String> {
     // A trait name is PascalCase. A lowercase name is a method and must not
     // get an implementor list (`consume` -> "implemented by ..." would be
@@ -405,17 +406,116 @@ fn trait_impls_answer(
     if impls.is_empty() {
         return None;
     }
-    let names: Vec<&str> = impls.iter().map(|i| i.type_name.as_str()).collect();
-    let items: Vec<String> = impls.iter().take(12)
-        .map(|i| format!("{} ({}:{})", i.type_name,
-            std::path::Path::new(&i.file).file_name()
-                .map(|x| x.to_string_lossy().to_string())
-                .unwrap_or_else(|| i.file.clone()),
-            i.line))
+    // One entry per type, each with ITS OWN `file:line`.
+    //
+    // The old shape printed a bare name list plus a separate 12-item site list,
+    // so a caller asking "name + file:line" got 21 names and 9 sites and had to
+    // guess the pairing — and the two handlers that build this answer disagreed
+    // on the line by one (`impl Default for ReadFrame {` is at 46, one printed
+    // 47). Same V26 off-by-one class, same fix: print the recorded line.
+    let all: Vec<&str> = impls.iter().map(|i| i.file.as_str()).collect();
+    let items: Vec<String> = impls.iter()
+        .map(|i| format!("{} ({}:{})", i.type_name, short_path(root, &i.file, &all), i.line))
         .collect();
     Some(format!(
-        "{} is implemented by {} type(s): {}.\n  {}\n",
-        sym, impls.len(), names.join(", "), items.join(", ")))
+        "{} is implemented by {} type(s): {}",
+        sym, impls.len(), items.join(", ")))
+}
+
+/// Shortest unambiguous path for display.
+///
+/// The answer format prints `file:line`, and a bare basename is ambiguous
+/// exactly where it matters most: tokio has 97 colliding basenames, 54 of them
+/// `mod.rs`. `find_references("VecDeque")` answered `mod.rs:8` five times for
+/// five different files, none of which the caller could locate. Strip the
+/// project root, then walk the suffix up until it is unique among the files in
+/// this answer.
+///
+/// Deterministic: depends only on the root and the set of paths in the answer.
+fn short_paths<'a>(root: &str, paths: &[&'a str]) -> std::collections::HashMap<&'a str, String> {
+    use std::collections::HashMap;
+    let prefix = if root.ends_with('/') { root.to_string() } else { format!("{root}/") };
+    let rel = |p: &'a str| -> &'a str { p.strip_prefix(prefix.as_str()).unwrap_or(p) };
+    let mut depth = 1usize;
+    loop {
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        let mut forms: Vec<(&'a str, String)> = Vec::with_capacity(paths.len());
+        for p in paths {
+            let form = rel(p)
+                .rsplit('/')
+                .take(depth)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("/");
+            *seen.entry(form.clone()).or_insert(0) += 1;
+            forms.push((rel(p), form));
+        }
+        let all_unique = seen.values().all(|&n| n == 1);
+        let max_depth = paths.iter().map(|p| rel(p).matches('/').count()).max().unwrap_or(0);
+        if all_unique || depth > max_depth {
+            // Key by the ORIGINAL path so callers can look up by the value they
+            // already hold; `rel` is only used to compute the suffix.
+            let mut out = HashMap::new();
+            for (i, p) in paths.iter().enumerate() {
+                out.insert(*p, forms[i].1.clone());
+            }
+            return out;
+        }
+        depth += 1;
+    }
+}
+
+/// Display form of one path within a set of paths from the same answer.
+fn short_path(root: &str, path: &str, all: &[&str]) -> String {
+    short_paths(root, all)
+        .get(path)
+        .cloned()
+        .unwrap_or_else(|| path.to_string())
+}
+
+#[cfg(test)]
+mod exact_token_tests {
+    /// V98: the exact-token suppression rule.
+    ///
+    /// One phrase key can hold several symbols (Porter strips `-able`, so
+    /// `peek` and `peekable` share a key; case folding puts `Buf` and `buf`
+    /// together). A row proves a token stemmed to the key, not that the token
+    /// IS the symbol. When the exact spelling appears anywhere in the set, the
+    /// set is narrowed to those sites; when it appears nowhere, the set is
+    /// left alone so a case-insensitive intent still answers.
+    fn is_exact(text: &str, needle: &str) -> bool {
+        let b = text.as_bytes();
+        let mut from = 0usize;
+        while let Some(pos) = text[from..].find(needle) {
+            let at = from + pos;
+            let end = at + needle.len();
+            let before_ok =
+                at == 0 || (!b[at - 1].is_ascii_alphanumeric() && b[at - 1] != b'_');
+            let after_ok =
+                end >= b.len() || (!b[end].is_ascii_alphanumeric() && b[end] != b'_');
+            if before_ok && after_ok {
+                return true;
+            }
+            from = at + 1;
+        }
+        false
+    }
+
+    #[test]
+    fn whole_token_only() {
+        assert!(is_exact("let x: Buf = Buf::new();", "Buf"));
+        assert!(is_exact("Buf", "Buf"));
+        // A longer identifier containing the name is not the name.
+        assert!(!is_exact("let b = buf.len();", "Buf"));
+        assert!(!is_exact("s.peekable()", "peek"));
+        assert!(!is_exact("BufWriter::new()", "Buf"));
+        // A field or path segment still matches, because the boundary is
+        // alphanumeric-or-underscore only.
+        assert!(is_exact("use crate::io::Buf;", "Buf"));
+        assert!(is_exact("(Buf, 3)", "Buf"));
+    }
 }
 
 fn fallback_label(file_path: &str, symbol: &str) -> String {
@@ -624,7 +724,7 @@ pub fn tool_definitions() -> &'static Vec<serde_json::Value> {
             // 1. SEARCH: Find files/symbols by name or topic.
             serde_json::json!({ "name": "reliary_search", "description": "BM25 full-text search across the indexed codebase. Returns matching files ranked by relevance. USE THIS TOOL when you don't know the exact symbol name — e.g. 'find files about connection pooling', 'where is request handling implemented', 'find authentication code'. For symbol-level lookups (where is X defined, who calls X, etc.), use reliary_find_references instead — it returns structured one-line answers. Search returns a list of files with paths and relevance scores. The tool never returns empty — if no exact match, closest files by vocabulary similarity are returned.", "inputSchema": { "type": "object", "properties": { "query": {"type": "string", "description": "Natural-language search query. Examples: 'connection pooling', 'request handling', 'authentication'."}, "path": {"type": "string", "description": "Project directory to search. Defaults to the client's workspace root, else '.'."}, "limit": {"type": "integer", "default": 15, "description": "Max files to return (default 15)"} }, "required": ["query"], "input_examples": [ { "query": "connection pooling" }, { "query": "request handling", "limit": 5 }, { "query": "authentication middleware" } ] } }),
             // 2. FIND_REFERENCES: Find all usages of a symbol. Absorbs with_source, type_flow, boltzmann.
-            serde_json::json!({ "name": "reliary_find_references", "description": "Find references to a symbol in the indexed codebase. USE THIS TOOL for ALL symbol-level code questions. It replaces goto_def, find_references, call_graph, list_methods, find_dead_code, and describe in a single entry point with mode parameters. The output is a structured one-line answer with raw code evidence — copy it verbatim into your response. Mode flags: def_only=true → 'where is X defined' (returns top definition with source code). usage_only=true → 'who calls X' or 'callers of X' (returns CALLERS only — NOT what X calls). For 'what does X call / which helpers does X use', use reliary_call_graph with direction=outbound instead. methods=true → 'list methods on Type X' (returns method names of an impl block). dead_only=true → 'find dead code in path=X' (returns unused functions; path required, name ignored). path_filter='io/util/' → restrict to one module/folder (use when question specifies a module). NO params → general references to the symbol. If unsure which mode, call WITHOUT mode flags first — the tool returns all relevant knowledge.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol name to look up. Use the exact identifier name including underscores (e.g. 'block_on', 'Sleep', 'consume')."}, "def_only": {"type": "boolean", "default": false, "description": "Return ONLY the definition location. Use for 'where is X defined'."}, "usage_only": {"type": "boolean", "default": false, "description": "Return ONLY call sites (non-test files). Use for 'who calls X' or 'callers of X'."}, "methods": {"type": "boolean", "default": false, "description": "List methods on a type. Use for 'what methods does X have'."}, "dead_only": {"type": "boolean", "default": false, "description": "Find unused code. Pass path to scope the search."}, "path": {"type": "string", "description": "Project directory (also selects which project to query). Required for dead_only. Defaults to the client's workspace root, else '.'."}, "path_filter": {"type": "string", "description": "Restrict to one module. Examples: 'io/util/' for tokio io utilities, 'crates/reliary-search/' for a Rust subdirectory. Use when question mentions a specific module."}, "file_only": {"type": "boolean", "default": false, "description": "Return only the distinct list of files that mention this symbol (no file:line, no qualified names). Use for 'which files use X' or 'find files importing X' queries. Cheaper than full references."}, "limit": {"type": "integer", "default": 12, "minimum": 1, "maximum": 500, "description": "Maximum call sites to list. Raise it when the answer says '(+N more)' and you need the rest."}, "include_tests": {"type": "boolean", "default": false, "description": "Include call sites in tests/, examples/ and benches/. Default false. Set true when the change must be complete everywhere, e.g. before renaming a symbol."} }, "required": [], "input_examples": [ { "name": "block_on", "def_only": true }, { "name": "spawn", "usage_only": true }, { "name": "Sleep", "methods": true }, { "name": "consume", "path_filter": "io/util/" }, { "name": "", "dead_only": true, "path": "src/" }, { "name": "HashMap", "file_only": true } ] } }),
+            serde_json::json!({ "name": "reliary_find_references", "description": "Find references to a symbol in the indexed codebase. USE THIS TOOL for ALL symbol-level code questions. It replaces goto_def, find_references, call_graph, list_methods, find_dead_code, and describe in a single entry point with mode parameters. The output is a structured one-line answer with raw code evidence — copy it verbatim into your response. Mode flags: def_only=true → 'where is X defined' (returns top definition with source code). usage_only=true → 'who calls X' or 'callers of X' (returns CALLERS only — NOT what X calls). For 'what does X call / which helpers does X use', use reliary_call_graph with direction=outbound instead. methods=true → 'list methods on Type X' (returns method names of an impl block). dead_only=true → 'find dead code in path=X' (returns unused functions; path required, name ignored). path_filter='io/util/' → restrict to one module/folder (use when question specifies a module). NO params → general references to the symbol. If unsure which mode, call WITHOUT mode flags first — the tool returns all relevant knowledge.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol name to look up. Use the exact identifier name including underscores (e.g. 'block_on', 'Sleep', 'consume')."}, "def_only": {"type": "boolean", "default": false, "description": "Return ONLY the definition location. Use for 'where is X defined'."}, "usage_only": {"type": "boolean", "default": false, "description": "Return ONLY call sites (non-test files). Use for 'who calls X' or 'callers of X'."}, "methods": {"type": "boolean", "default": false, "description": "List methods on a type. Use for 'what methods does X have'."}, "dead_only": {"type": "boolean", "default": false, "description": "Find unused code. Pass path to scope the search."}, "path": {"type": "string", "description": "Project directory (also selects which project to query). Required for dead_only. Defaults to the client's workspace root, else '.'."}, "path_filter": {"type": "string", "description": "Restrict to one module. Examples: 'io/util/' for tokio io utilities, 'crates/reliary-search/' for a Rust subdirectory. Use when question mentions a specific module."}, "file_only": {"type": "boolean", "default": false, "description": "Return only the distinct list of files that mention this symbol (no file:line, no qualified names). Use for 'which files use X' or 'find files importing X' queries. Cheaper than full references."}, "limit": {"type": "integer", "default": 12, "minimum": 1, "maximum": 5000, "description": "Maximum call sites to list. Raise it when the answer says '(+N more)' and you need the rest."}, "include_tests": {"type": "boolean", "default": false, "description": "Include call sites in tests/, examples/ and benches/. Default false. Set true when the change must be complete everywhere, e.g. before renaming a symbol."} }, "required": [], "input_examples": [ { "name": "block_on", "def_only": true }, { "name": "spawn", "usage_only": true }, { "name": "Sleep", "methods": true }, { "name": "consume", "path_filter": "io/util/" }, { "name": "", "dead_only": true, "path": "src/" }, { "name": "HashMap", "file_only": true } ] } }),
             // 3. GOTO_DEF: Jump to the definition of a symbol.
             serde_json::json!({ "name": "reliary_goto_def", "description": "DEPRECATED: use reliary_find_references(name=X, def_only=true) instead — it returns the same information in a structured format. This tool still works but is not the preferred entry point.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string"}, "anchor_file": {"type": "string", "description": "Optional. Path to file containing the usage."}, "anchor_line": {"type": "integer", "description": "Optional. 1-based line of the usage."}, "path": {"type": "string"} }, "required": ["name"] } }),
             // 4. CALL_GRAPH: Who calls X? What does X call? Absorbs callgraph, callgraph_v2, trace_path, call_graph.
@@ -704,7 +804,18 @@ pub enum DispatchResult {
 ///     for q4 call-chain to surface — truncation hides depth-2 callees)
 fn truncate_result(result: &mut DispatchResult, args: &serde_json::Map<String, serde_json::Value>, name: &str) {
     if is_no_truncate() { return; }
-    let limit = truncate_limit();
+    let mut limit = truncate_limit();
+    // V95: an explicit `limit` is a request for that many results, so the
+    // character budget must not silently cut them. Default answers stay at
+    // 4 KB; `limit=500` gets room for 500 `file.rs:123 in fn name` entries.
+    // Without this, `Buf` (1,323 non-test occurrences in tokio) was truncated
+    // mid-list at 4 KB with no "(+N more)" marker, so the caller could not
+    // tell how many sites were missing.
+    if let Some(n) = args.get("limit").and_then(|v| v.as_u64()) {
+        if n > 12 {
+            limit = limit.max((n as usize).saturating_mul(64));
+        }
+    }
     // V58 P6c: describe() gets a tighter budget — the model reads the answer
     // line first; evidence beyond ~1200 chars is re-billed, rarely used.
     let limit = if name == "reliary_describe" { limit.min(1200) } else { limit };
@@ -1755,7 +1866,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             // 60 callers was previously unanswerable: the answer said
             // "(+48 more)" and offered no way to retrieve them.
             let ref_limit = args.get("limit").and_then(|v| v.as_u64())
-                .map(|n| n.clamp(1, 500) as usize).unwrap_or(12);
+                .map(|n| n.clamp(1, 5000) as usize).unwrap_or(12);
             // V91d: usage_only excludes tests by design, which is right for
             // "who calls this in production" and wrong for "rename this and
             // miss nothing". The flag makes the second question answerable
@@ -1872,6 +1983,23 @@ let phrase_id = reliary_search::symbol::phrase_id_for(db, &sym_stemmed).ok().fla
             // Direct occurrence query — ORDER BY is_def DESC ranks definitions first.
             // V39: add `f.file_path LIKE '%.rs'` filter to prefer Rust source files
             // over markdown/JSON files that mention the symbol in prose.
+            // V97: build this phrase's occurrence rows on demand.
+            //
+            // `trust` deliberately leaves the occurrence table EMPTY (the lazy
+            // design: 0 rows, 3.6 MB index, 0.35 s). Every symbol tool is
+            // supposed to JIT the rows it needs. This handler queried
+            // `occurrence` directly and never did — so on a fresh index
+            // `usage_only` answered "No call sites found for Buf" for every
+            // symbol, while `def_only` worked only because it fell through to
+            // type_flow, which does JIT. That is the default configuration:
+            // `reliary trust . && find_references(usage_only)` returned nothing.
+            if let Some(pid) = phrase_id {
+                if let Ok(false) = reliary_search::lazy_occurrence::has_occurrence(db, pid) {
+                    if let Err(e) = reliary_search::lazy_occurrence::ensure_occurrence_for_phrase(db, pid) {
+                        eprintln!("[mcp] JIT occurrence build failed for phrase_id={}: {}", pid, e);
+                    }
+                }
+            }
             let hits: Vec<reliary_search::symbol::OccHit> = if let Some(pid) = phrase_id {
                 // Always use LIKE ?2 pattern — when no filter, pass "%" for match-all.
                 let pattern = if path_filter.is_empty() {
@@ -1895,7 +2023,24 @@ let phrase_id = reliary_search::symbol::phrase_id_for(db, &sym_stemmed).ok().fla
                 // `Response` in requests has 227 occurrences and usage_only
                 // answered with 4. Filter in SQL so the limit applies to the
                 // rows that actually survive, and let `limit` drive it.
-                let sql_limit = if usage_only { ref_limit.max(50) } else { 50 };
+                // V95: when the caller asks for N call sites, the SQL budget
+                // must cover them AFTER filtering — not a fixed 50 that a
+                // single noisy hub symbol exhausts. `Buf` has 1,323 non-test
+                // occurrences in tokio; `limit=500` answered with 489 because
+                // 50 rows were fetched, 11 of them test files, then the
+                // caller's 489-row take could not be filled. Ask for
+                // `limit + slack` so the post-fetch filters cannot starve it.
+                // V96: an explicit "give me everything" request (limit >= 1000)
+                // must not be truncated by the SQL budget. `Buf` has 2,222 rows
+                // in tokio; limit=2000 with a +64 slack still cut 158 tail rows,
+                // and because the ORDER BY puts tests last those were real
+                // sites the caller asked for. Below that threshold the +64 is
+                // enough to absorb the post-fetch filters.
+                let sql_limit = if usage_only {
+                    if ref_limit >= 1000 { 100_000 } else { ref_limit.saturating_add(64) }
+                } else {
+                    50
+                };
                 let test_filter = if usage_only && !include_tests {
                     " AND f.file_path NOT LIKE '%/tests/%' \
                        AND f.file_path NOT LIKE '%/test/%' \
@@ -1905,6 +2050,10 @@ let phrase_id = reliary_search::symbol::phrase_id_for(db, &sym_stemmed).ok().fla
                 } else {
                     ""
                 };
+                // V98: the phrase key is the lowercased stem, so `Buf` and `buf`
+                // share ONE phrase (2,228 rows for 61 real `Buf` sites). The
+                // exact-case filter runs after the fetch, over the cached
+                // source line — see `filter_exact_case` below.
                 let sql = format!("SELECT f.file_path, o.line, o.col, o.is_def, o.tag
                      FROM occurrence o JOIN file_map f ON f.id = o.file_id
                      WHERE o.phrase_id = ?1 AND f.file_path LIKE ?2 AND f.is_source = 1{}
@@ -1944,6 +2093,51 @@ let phrase_id = reliary_search::symbol::phrase_id_for(db, &sym_stemmed).ok().fla
             } else {
                 Vec::new()
             };
+            // V98: keep only sites whose source line contains the requested
+            // identifier as a whole token.
+            //
+            // A phrase key is the lowercased Porter stem, so one key can hold
+            // several distinct symbols. Measured on tokio: `Buf` shares a
+            // phrase with 1,963 lowercase `buf` sites, and `peek` shares one
+            // with `peekable` (Porter strips `-able`), so "who uses peek"
+            // answered with `peekable` internals. Both are the same defect: an
+            // occurrence row proves a TOKEN stemmed to this key, not that the
+            // token IS the symbol asked for.
+            //
+            // Suppress rather than hard-filter: if the exact spelling appears
+            // anywhere in the result set, keep only those sites; otherwise keep
+            // the set unchanged so a case-insensitive intent (`request` for
+            // `Request`) still answers. Read from file_meta's cached lines, so
+            // this costs no extra disk reads.
+            let token_at = |path: &str, line: i32, needle: &str| -> Option<bool> {
+                reliary_search::file_meta::get(path).map(|m| {
+                    let Some(text) = m.lines.get(line.max(0) as usize) else {
+                        return true;
+                    };
+                    let b = text.as_bytes();
+                    let mut from = 0usize;
+                    while let Some(pos) = text[from..].find(needle) {
+                        let at = from + pos;
+                        let end = at + needle.len();
+                        let before_ok = at == 0
+                            || (!b[at - 1].is_ascii_alphanumeric() && b[at - 1] != b'_');
+                        let after_ok = end >= b.len()
+                            || (!b[end].is_ascii_alphanumeric() && b[end] != b'_');
+                        if before_ok && after_ok {
+                            return true;
+                        }
+                        from = at + 1;
+                    }
+                    false
+                })
+            };
+            let exact: Vec<reliary_search::symbol::OccHit> = hits
+                .iter()
+                .filter(|h| token_at(&h.file_path, h.line, sym).unwrap_or(true))
+                .cloned()
+                .collect();
+            let hits: Vec<reliary_search::symbol::OccHit> =
+                if exact.is_empty() { hits } else { exact };
             let _last_err = String::new();
 
             let wd = active_root().to_string_lossy().to_string();
@@ -2014,17 +2208,16 @@ if def_only {
             if path_filter.is_empty() { None } else { Some(path_filter.as_str()) };
         let trait_impls = reliary_search::callgraph_v2::find_trait_impls_scoped(db, sym, pf_opt_t);
         if !trait_impls.is_empty() {
-            let items: Vec<String> = trait_impls.iter().take(12)
-                .map(|i| format!("{} ({}:{})", i.type_name,
-                    std::path::Path::new(&i.file).file_name()
-                        .map(|x| x.to_string_lossy().to_string())
-                        .unwrap_or_else(|| i.file.clone()),
-                    i.line))
+            // V96: same shape as `trait_impls_answer` — one entry per type with
+            // its own site. Two handlers building this answer two ways is how
+            // they drifted one line apart.
+            let all_t: Vec<&str> = trait_impls.iter().map(|i| i.file.as_str()).collect();
+            let items: Vec<String> = trait_impls.iter()
+                .map(|i| format!("{} ({}:{})", i.type_name, short_path(&wd, &i.file, &all_t), i.line))
                 .collect();
-            let names: Vec<&str> = trait_impls.iter().map(|i| i.type_name.as_str()).collect();
             let text = format!(
-                "{} is implemented by {} type(s): {}.\n  {}\n",
-                sym, trait_impls.len(), names.join(", "), items.join(", "));
+                "{} is implemented by {} type(s): {}",
+                sym, trait_impls.len(), items.join(", "));
             return DispatchResult::Success(serde_json::json!({
                 "content": [{ "type": "text", "text": text }]
             }));
@@ -2166,8 +2359,9 @@ if def_only {
                 }
                 // V59l: include the ENCLOSING FUNCTION for each caller —
                 // "file:line in fn foo()" is what "who calls X" answers need.
+                let all_paths: Vec<&str> = callers.iter().map(|h| h.file_path.as_str()).collect();
                 let parts: Vec<String> = callers.iter().map(|h| {
-                    let f_short = std::path::Path::new(&h.file_path).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| h.file_path.clone());
+                    let f_short = short_path(&wd, &h.file_path, &all_paths);
                     let enc = reliary_search::file_meta::get(&h.file_path)
                         .and_then(|meta| meta.fn_names.get(h.line.max(0) as usize).cloned())
                         .filter(|s| !s.is_empty())
@@ -2717,7 +2911,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                 // handler, so a fix in only one of them changes nothing that
                 // is measured.
                 let pf_raw = args.get("path_filter").and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(text) = trait_impls_answer(db, sym, pf_raw) {
+                if let Some(text) = trait_impls_answer(db, sym, pf_raw, &active_root().to_string_lossy()) {
                     return DispatchResult::Success(serde_json::json!({
                         "content": [{ "type": "text", "text": text }]
                     }));
@@ -2751,7 +2945,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
             // "Default" that have no occurrence rows.
             if args.get("usage_only").and_then(|v| v.as_bool()).unwrap_or(false) {
                 let pf_raw = args.get("path_filter").and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(text) = trait_impls_answer(db, sym, pf_raw) {
+                if let Some(text) = trait_impls_answer(db, sym, pf_raw, &active_root().to_string_lossy()) {
                     return DispatchResult::Success(serde_json::json!({
                         "content": [{ "type": "text", "text": text }]
                     }));
@@ -2992,7 +3186,7 @@ let al_raw = args.get("anchor_line").and_then(|v| v.as_i64()).unwrap_or(0) as i3
                     "{}: {}D {}C {}f",
                     sym, n_defs, n_calls, n_files
                 );
-                if let Some(impls) = trait_impls_answer(db, sym, &path_filter) {
+                if let Some(impls) = trait_impls_answer(db, sym, &path_filter, &active_root().to_string_lossy()) {
                     let one_line = impls.lines().next().unwrap_or("").trim();
                     summary.push_str(&format!("\n{}", one_line));
                 }

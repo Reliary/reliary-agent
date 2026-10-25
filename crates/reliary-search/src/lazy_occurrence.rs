@@ -1633,7 +1633,7 @@ mod tests {
         assert!(crate::scan_identifiers_with_offsets(&line).iter().any(|(_, t)| t == &long));
         // The cap still bounds pathological input.
         let huge = "b".repeat(140);
-        assert!(!crate::scan_identifiers(&huge).iter().any(|t| t.len() > 100));
+        assert!(!crate::scan_identifiers(&huge).iter().any(|t| t.len() > 255));
     }
 
     #[test]

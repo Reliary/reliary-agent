@@ -58,8 +58,34 @@ pub fn is_known_data_ext(path: &Path) -> bool {
     };
     matches!(
         ext.to_ascii_lowercase().as_str(),
-        "toml" | "lock" | "json" | "yaml" | "yml" | "ini" | "csv" | "svg"
+        // Data/log formats. DENY-list only: an extension may exclude a file,
+        // never admit one, so a new source language still works without a list
+        // update. `jsonl`/`ndjson` are append-only logs (bench output, event
+        // streams) — indexing reliary's own tree spent 10.2s on 633 of them
+        // for zero occurrence rows.
+        "toml" | "lock" | "json" | "jsonl" | "ndjson"
+            | "yaml" | "yml" | "ini" | "csv" | "svg"
     )
+}
+
+#[cfg(test)]
+mod data_ext_tests {
+    use super::is_known_data_ext;
+    use std::path::Path;
+
+    #[test]
+    fn append_only_logs_are_data_not_source() {
+        // Benchmark output and event streams are `.jsonl`. reliary's own tree
+        // spent 10.2s indexing 633 of them for zero occurrence rows.
+        for p in ["a.jsonl", "a.ndjson", "A.JSONL", "b.json", "c.yaml"] {
+            assert!(is_known_data_ext(Path::new(p)), "{p} must be data");
+        }
+        // A source extension is never denied; unknown ones must still pass
+        // through so a new language works without a list update.
+        for p in ["a.rs", "a.py", "a.kt", "a.zig", "a.unknown"] {
+            assert!(!is_known_data_ext(Path::new(p)), "{p} must reach the content test");
+        }
+    }
 }
 
 /// Content-based binary detection.
@@ -143,7 +169,7 @@ pub fn bm25_score(idf: f32, tf: f32, doc_len: f32, avgdl: f32) -> f32 {
 /// preserves the relative weight of frequent terms so a doc with 50 hits
 /// ranks meaningfully higher than one with 1 hit.
 /// Grammar-free identifier scanning with byte offsets: yields
-/// (byte_start, identifier) for words of length 2..=100 starting with a
+/// (byte_start, identifier) for words of length 2..=255 starting with a
 /// letter/underscore. Offsets index `text` (ASCII-only vocabulary, so
 /// byte == char boundary for every word char). Used by the island
 /// backward-vocabulary feed, which needs the receiver lookbehind
@@ -161,7 +187,14 @@ pub fn scan_identifiers_with_offsets(text: &str) -> Vec<(usize, String)> {
                 i += 1;
             }
             let word = &text[s..i];
-            if (2..=100).contains(&word.len()) && seen.insert(word.to_ascii_lowercase()) {
+            // V96: dedup CASE-SENSITIVELY. Deduping on the lowercased form
+            // dropped a distinct symbol whenever one identifier differed from
+            // another only by case on the same line — `direction: Direction,`
+            // kept the local variable (`direction` -> stem `direc`) and threw
+            // the TYPE away, so `find_references("Direction")` could not see
+            // that line at all. Types and the locals that shadow them are
+            // different symbols and must both be indexed.
+            if (2..=255).contains(&word.len()) && seen.insert(word) {
                 out.push((s, word.to_string()));
             }
         } else {
@@ -194,10 +227,14 @@ pub fn scan_identifiers(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .filter(|t| {
             let len = t.len();
-            (1..=100).contains(&len)
+            (1..=255).contains(&len)
                 && t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         })
-        .filter(|t| seen.insert(t.to_ascii_lowercase()))
+        // V96: case-SENSITIVE dedup. `direction: Direction,` holds two
+        // distinct symbols that differ only by case; deduping on the lowercased
+        // form kept the local (`direction` -> stem `direc`) and dropped the
+        // TYPE, so the line was invisible to `find_references("Direction")`.
+        .filter(|t| seen.insert(*t))
         .map(|t| t.to_string())
         .collect()
 }
@@ -242,7 +279,7 @@ pub fn scan_identifiers_iter(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .filter(|t| {
             let len = t.len();
-            (1..=100).contains(&len)
+            (1..=255).contains(&len)
                 && t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         })
 }

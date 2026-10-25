@@ -20,11 +20,36 @@ pub struct FileMeta {
     pub brace_graph: Arc<BraceNode>,
 }
 
-type MetaCache = (AHashMap<String, Arc<FileMeta>>, std::collections::VecDeque<String>);
+type MetaCache = (AHashMap<String, Arc<FileMeta>>, std::collections::VecDeque<String>, usize);
+
+/// Soft cap on the bytes the file_meta cache may retain.
+///
+/// The cap used to be an entry count (200), which is the wrong unit: a file
+/// costs ~74 bytes per line (`Vec<String>` header + heap), so 200 small files
+/// is 3 MB while 200 large ones is 40+. Measured on tokio, the cache reached
+/// 37 MB RSS after 400 queries; the competitor's server sat at 20 MB. Cap the
+/// retained bytes instead, keeping the hot working set and dropping the rest.
+const FILE_META_MAX_BYTES: usize = 1024 * 1024;
+
+/// Approximate retained size of one parsed file.
+fn meta_bytes(m: &FileMeta) -> usize {
+    let lines: usize = m.lines.iter().map(|l| l.len() + 24).sum();
+    let names: usize = m.fn_names.iter().map(|s| s.len() + 24).sum();
+    let impls: usize = m.impl_targets.iter().map(|s| s.len() + 24).sum();
+    let arities = m.arities.len() * std::mem::size_of::<Option<usize>>();
+    // Brace graph: rough 96 bytes per node is enough for a soft budget.
+    lines + names + impls + arities + 96 * 64
+}
 
 fn cache() -> &'static Mutex<MetaCache> {
     static C: OnceLock<Mutex<MetaCache>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new((AHashMap::with_capacity(200), std::collections::VecDeque::new())))
+    C.get_or_init(|| {
+        Mutex::new((
+            AHashMap::with_capacity(200),
+            std::collections::VecDeque::new(),
+            0usize,
+        ))
+    })
 }
 
 pub fn get(path: &str) -> Option<Arc<FileMeta>> {
@@ -108,13 +133,15 @@ pub fn compute_from_content(path: &str, content: &str) -> Option<Arc<FileMeta>> 
         c.1.push_back(path.to_string());
         return c.0.get(path).cloned();
     }
-    if c.0.len() >= 200 {
-        while c.0.len() >= 100 && !c.1.is_empty() {
-            if let Some(oldest) = c.1.pop_front() {
-                c.0.remove(&oldest);
-            }
+    let size = meta_bytes(&meta);
+    // Evict until the new entry fits, always leaving the most recent one.
+    while c.2 + size > FILE_META_MAX_BYTES && !c.1.is_empty() {
+        let Some(oldest) = c.1.pop_front() else { break };
+        if let Some(old) = c.0.remove(&oldest) {
+            c.2 = c.2.saturating_sub(meta_bytes(&old));
         }
     }
+    c.2 += size;
     c.0.insert(path.to_string(), Arc::clone(&meta));
     c.1.push_back(path.to_string());
     Some(meta)

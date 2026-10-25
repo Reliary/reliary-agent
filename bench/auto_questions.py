@@ -412,23 +412,35 @@ def generate(index_path, seed=42, rust_only=True, skip=("bench", "scripts", "fix
             mods.setdefault(mod, []).append((ph, f, line))
     if mods:
         mod = max(mods, key=lambda m: len(mods[m]))
-        sample = mods[mod][:5]
-        visible = 0
-        for (_s, fl, ln) in sample:
+        # V96: the GT may only contain functions that MATCH THE QUESTION —
+        # "exported/public". The old code took the first 5 dead candidates and
+        # only required that ONE of them was public, so a correct answer that
+        # listed exactly the public ones scored 0.4 recall against private
+        # helpers the tool deliberately excludes (and, in Rust, `#[test]`
+        # functions, which are also excluded). Filter the facts themselves.
+        visible: list[tuple[str, str, int]] = []
+        for (sym, fl, ln) in mods[mod][:10]:
             try:
-                src = _read_cached_lines(fl)[ln - 1]
-            except IndexError:
+                lines = _read_cached_lines(fl)
+            except OSError:
                 continue
-            # A declaration carrying `pub`/`export`/`public` (any language's
-            # visibility spelling) — grammar-free substring test on the
-            # definition line only.
-            if re.search(r"\b(pub|export|public)\b", _strip_strings_and_comments(src)):
-                visible += 1
-        if sample and visible >= 1:
+            if ln - 1 >= len(lines):
+                continue
+            src = lines[ln - 1]
+            if not re.search(r"\b(pub|export|public)\b", _strip_strings_and_comments(src)):
+                continue
+            # A test function is not "exported code" in any language whose
+            # tests are annotated rather than path-separated.
+            lo = max(0, ln - 4)
+            window = " ".join(lines[lo:ln])
+            if re.search(r"#\[test\]|#\[tokio::test|@Test|\[Fact\]|\[Test\]", window):
+                continue
+            visible.append((sym, fl, ln))
+        if visible:
             add("q5_dead",
                 f"Find unused exported/public functions in `{mod}/`. "
                 f"List name + file:line for any you find.",
-                [{"sym": s, "file": fl, "line": ln} for (s, fl, ln) in sample])
+                [{"sym": s, "file": fl, "line": ln} for (s, fl, ln) in visible[:5]])
 
     # q6: which struct implements Default (derived)
     default_impls = []
@@ -446,7 +458,48 @@ def generate(index_path, seed=42, rust_only=True, skip=("bench", "scripts", "fix
             "Which structs in this codebase implement (or derive) the `Default` trait? List name + file:line.",
             [{"sym": n, "file": fl, "line": ln} for (n, fl, ln) in sample])
 
-    print(json.dumps({"repo": repo, "questions": questions, "n_files": len(files)}, indent=2))
+    # V96: drop facts whose symbol is not a real identifier in the source.
+    # The dead-code fact used a stemmed name (`chang` for `changed`,
+    # `decre` for `decrement`), so a CORRECT answer could never match it and
+    # the query scored 0 no matter which tool answered. A fact that cannot be
+    # satisfied is a measurement bug, not a tool failure — verify every symbol
+    # appears verbatim (whole word) in its cited file before emitting it.
+    kept: list[dict] = []
+    dropped = 0
+    for q in questions:
+        facts = q.get("gt") or []
+        good = []
+        for f in facts:
+            sym = f.get("sym", "")
+            path = f.get("file", "")
+            try:
+                text = open(path, encoding="utf-8", errors="ignore").read()
+            except OSError:
+                dropped += 1
+                continue
+            pat = r"(?<![A-Za-z0-9_])" + re.escape(sym) + r"(?![A-Za-z0-9_])" if sym else None
+            at_line = False
+            ln = f.get("line")
+            if pat and ln:
+                all_lines = text.split("\n")
+                for cand in (ln - 1, ln, ln - 2):
+                    if 0 <= cand < len(all_lines) and re.search(pat, all_lines[cand]):
+                        at_line = True
+                        break
+            # Accept the fact if the symbol exists in the file AND either it
+            # sits on the cited line (±1) or the fact is a file-level claim.
+            if pat and re.search(pat, text) and (at_line or not ln):
+                good.append(f)
+            else:
+                dropped += 1
+        if facts and not good:
+            # Every fact was unverifiable — the question cannot be scored.
+            continue
+        q["gt"] = good
+        kept.append(q)
+    if dropped:
+        print(f"[auto_questions] dropped {dropped} unverifiable GT fact(s)", file=sys.stderr)
+    print(json.dumps({"repo": repo, "questions": kept, "n_files": len(files)}, indent=2))
 
 
 if __name__ == "__main__":
