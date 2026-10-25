@@ -518,7 +518,22 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     // `function foo() {` has `(` before `{`. `struct Foo {` does not.
     // P3-1: use pre-scanned positions from scan_delimiters.
     let _paren_pos = delims.first_paren_pos();
-    let brace_pos = if ends_with_brace { delims.first_brace_pos() } else { None };
+    // V98: an opening brace ANYWHERE on the line makes it a block start, not
+    // only a brace at end-of-line. A one-line declaration with a non-empty
+    // body (`pub struct Alpha { pub tag: u8 }`, `class Foo { int x; }`,
+    // `enum E { A, B }`) ends with `}` and matched no branch, so it was water:
+    // `def_only` skipped it, `list_methods` had no impl target, and qualified
+    // names lost the type. The `{}` shape was special-cased; a populated body
+    // was not. Found by the v0.9.1 install smoke test on a six-line file.
+    //
+    // Safe because the V95 rule below already requires a declaration word in
+    // the head, so `if x { y(); }` and `match v { A => 1 }` stay water.
+    let has_open_block = bytes.contains(&b'{');
+    let brace_pos = if ends_with_brace || has_open_block {
+        delims.first_brace_pos()
+    } else {
+        None
+    };
     let colon_pos = if ends_with_colon {
         if delims.colon_mask != 0 {
             Some(delims.colon_mask.trailing_zeros() as usize)
@@ -645,8 +660,9 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
             return StructuralResult { tag: 0, is_def: false, defined_name: None };
         }
         delim_char = b'(';
-    } else if ends_with_brace && brace_pos.is_some() {
-        // Type: `struct Foo {`, `enum Bar {`, `class Baz {`
+    } else if (ends_with_brace || has_open_block) && brace_pos.is_some() {
+        // Type: `struct Foo {`, `enum Bar {`, `class Baz {`, and the one-line
+        // forms `struct Foo { x: u8 }` / `class Baz { int x; }`.
         delim_pos = brace_pos;
         delim_char = b'{';
     } else if ends_with_colon && colon_pos.is_some() {
@@ -3188,6 +3204,23 @@ mod tests {
         }
     }
 
+    /// V98: a declaration with a populated body on one line.
+    ///
+    /// Found by the 0.9.1 install smoke test: `pub struct Alpha { pub tag: u8 }`
+    /// was water because only a brace at END of line opened the block branch.
+    #[test]
+    fn v98_one_line_declaration_with_body() {
+        let r = classify_structural("pub struct Alpha { pub tag: u8 }", 0, false, false);
+        assert!(r.is_def, "one-line struct with a body must be a definition");
+        assert_eq!(r.defined_name, Some("Alpha"));
+        let r = classify_structural("pub enum E { A, B }", 0, false, false);
+        assert_eq!(r.defined_name, Some("E"));
+        // Control flow with a populated body must stay water.
+        for line in ["if x { y(); }", "match v { A => 1 }", "while go { step() }"] {
+            assert!(!classify_structural(line, 1, false, false).is_def, "{line:?}");
+        }
+    }
+
     /// V95/V97: the false-definition reject and the exact-token filter.
     ///
     /// A definition row that is not a definition is worse than a miss:
@@ -3984,3 +4017,4 @@ mod tests {
         let r = classify_structural(line, 1, true, false);
         eprintln!("tag={} is_def={} name={:?}", r.tag, r.is_def, r.defined_name);
     }
+

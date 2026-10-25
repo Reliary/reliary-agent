@@ -167,10 +167,24 @@ pub fn derive_qualified_name(
             meta.lines.get(line_0idx).and_then(|l| fn_name_from_line(l))
         });
 
-    let result = match (enclosing_type, fn_name) {
-        (Some(t), Some(f)) => format!("{}::{}", t, f),
-        (Some(t), None) => format!("{}::*", t),
-        (None, Some(f)) => {
+    // V98: the line may BE the type's own declaration. The brace graph gives
+    // the enclosing type of a line, and a declaration line is not inside
+    // itself, so `pub struct Alpha {` fell through to the path-derived name —
+    // `def_only("Alpha")` answered "Src::*" (the `src/` directory) instead of
+    // "Alpha". Use the classifier's own name for the line, the same one the
+    // index stored.
+    let self_type = meta
+        .lines
+        .get(line_0idx)
+        .map(|l| crate::structural::classify_structural(l, 0, false, false))
+        .filter(|r| r.is_def && r.tag == 2)
+        .and_then(|r| r.defined_name.map(|n| n.to_string()));
+
+    let result = match (self_type, enclosing_type, fn_name) {
+        (Some(t), _, _) => t,
+        (None, Some(t), Some(f)) => format!("{}::{}", t, f),
+        (None, Some(t), None) => format!("{}::*", t),
+        (None, None, Some(f)) => {
             let path_type = type_name_from_path(file_path);
             if !path_type.is_empty() {
                 format!("{}::{}", path_type, f)
@@ -178,7 +192,7 @@ pub fn derive_qualified_name(
                 f
             }
         }
-        (None, None) => {
+        (None, None, None) => {
             let path_type = type_name_from_path(file_path);
             if !path_type.is_empty() {
                 format!("{}::*", path_type)

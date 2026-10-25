@@ -5,6 +5,25 @@ All notable changes to Reliary will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-10-25
+
+Two defects found by installing and exercising the 0.9.1 release rather than by
+any of the test suites:
+
+- **A one-line declaration with a populated body was invisible.**
+  `pub struct Alpha { pub tag: u8 }` ends with `}` and contains `{`, and no
+  classifier branch accepted that shape — only a brace at end-of-line, or the
+  empty `{}` pair. The line was water, so `def_only` skipped the declaration and
+  fell through to a path-derived name, answering `Src::*` (the `src/`
+  directory); `list_methods` had no impl target either. Six lines of Rust were
+  enough to see it.
+- **`def_only` named the directory instead of the type** when the hit line is
+  the declaration itself: the brace graph reports the type a line is INSIDE, and
+  a declaration is not inside itself.
+
+Both have regression tests, and both were caught only after 0.9.1 shipped —
+crates.io versions are immutable, so this is 0.9.2.
+
 ## [0.9.1] - 2026-10-25
 
 ### Recall is now 1.000 with 1.000 precision on all three corpora
@@ -38,6 +57,7 @@ Also fixed:
   counts as resident even when untouched.
 - `.jsonl`/`.ndjson` are on the data deny-list, so indexing this repository spent
   10.2 s on 633 benchmark logs for zero occurrence rows.
+
 
 Three measurement bugs in the harness were found and fixed too, disclosed rather
 than quietly recomputed: the oracle merged lines after a line-continuation
