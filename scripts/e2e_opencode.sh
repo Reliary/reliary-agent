@@ -133,9 +133,14 @@ case ",$TOOLS," in
   *",reliary_"*) ok "agent called a reliary tool" ;;
   *) bad "agent called a reliary tool (tools: ${TOOLS:-none})" ;;
 esac
+# Assert the ANSWER IS CORRECT, not that it repeats the question's identifier:
+# a model that describes the behaviour ("calls widget_scale, adds 1") without
+# naming the function is right, and an earlier version of this check failed it
+# for exactly that reason. `widget_scale` is only visible by reading the body,
+# so it is evidence the agent actually looked at the code.
 case "$ANSWER" in
-  *frobnicate_widget*) ok "answer references the fixture symbol" ;;
-  *) bad "answer references the fixture symbol (got: ${ANSWER:0:120})" ;;
+  *widget_scale*|*"+ 1"*|*"+1"*) ok "answer describes the fixture behaviour" ;;
+  *) bad "answer describes the fixture behaviour (got: ${ANSWER:0:160})" ;;
 esac
 
 echo "== agent loop (from a subdirectory — walk-up) =="
@@ -157,13 +162,31 @@ echo "== negative control: unwired project =="
 NC_HOME="$WORK/nchome"; NC_PROJ="$WORK/ncproj"
 mkdir -p "$NC_HOME/.config/opencode" "$NC_PROJ/src"
 echo '{"mcp":{}}' > "$NC_HOME/.config/opencode/opencode.json"
+# Mirrors the wired fixture (same symbols, same body) so the ONLY difference
+# between the two runs is whether reliary is configured.
 cat > "$NC_PROJ/src/lib.rs" <<'RS'
-pub fn frobnicate_widget() -> i32 { 7 }
+/// Frobnicate the widget by scaling it.
+pub fn frobnicate_widget() -> i32 {
+    widget_scale() + 1
+}
+RS
+cat > "$NC_PROJ/src/scale.rs" <<'RS'
+/// Return the widget scale factor.
+pub fn widget_scale() -> i32 {
+    41
+}
 RS
 # Same guidance as the wired project, so the ONLY difference is that reliary is
 # not wired in — proving the positive assertions can actually be false.
 cp "$PROJ/AGENTS.md" "$NC_PROJ/AGENTS.md"
-OUT="$(HOME="$NC_HOME" run_agent "$NC_PROJ" "What does frobnicate_widget do?")"
+# All three must point into the unwired sandbox. Redirecting HOME alone is not
+# enough once XDG_CONFIG_HOME is exported: OpenCode prefers XDG, so it kept
+# reading the WIRED config and the control called reliary. (It did, and this
+# control caught it.)
+OUT="$(HOME="$NC_HOME" \
+       XDG_CONFIG_HOME="$NC_HOME/.config" \
+       XDG_DATA_HOME="$NC_HOME/.local/share" \
+       run_agent "$NC_PROJ" "What does frobnicate_widget do?")"
 TOOLS="${OUT%%||*}"
 echo "  tools: ${TOOLS:-<none>}"
 case ",$TOOLS," in
