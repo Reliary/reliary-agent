@@ -50,17 +50,15 @@ jobs:
       # `cargo install reliary-agent` builds from the published tarball, which
       # contains only what is inside the crate directory. An `include_str!`
       # reaching above it (the hooks used to live at the repo root) compiles
-      # locally and ships broken. `cargo package` verifies the tarball
-      # compiles; run it for every crate so it cannot regress.
-      - name: crates are publishable (package + verify)
-        run: |
-          for crate in reliary-core reliary-memory reliary-compress reliary-sift \
-                       reliary-risk reliary-fix reliary-dead reliary-edit \
-                       reliary-search reliary-output reliary-pack reliary-agent; do
-            echo "::group::package $crate"
-            cargo package -p "$crate" --allow-dirty
-            echo "::endgroup::"
-          done
+      # locally and ships broken.
+      #
+      # Plain `cargo package` also resolves sibling crates from the REGISTRY,
+      # so the moment a crate uses a new API from a sibling the release commit
+      # cannot verify until that sibling is published. The script extracts the
+      # tarballs and patches the siblings to the extracted copies, so the check
+      # stays strict without the ordering trap.
+      - name: crates are publishable (package + verify tarballs)
+        run: bash scripts/verify_crate_tarballs.sh
 
       - name: cargo test
         run: cargo test --workspace --release

@@ -467,6 +467,16 @@ fn short_paths<'a>(root: &str, paths: &[&'a str]) -> std::collections::HashMap<&
     }
 }
 
+/// Project-relative path for a single path (no basename shortening).
+///
+/// `short_path` resolves collisions *within an answer set*, so a set of one
+/// returns a bare basename — wrong for a definition hint, where the caller
+/// needs the same form the other tools emit.
+fn project_relative(root: &str, path: &str) -> String {
+    let prefix = if root.ends_with('/') { root.to_string() } else { format!("{root}/") };
+    path.strip_prefix(prefix.as_str()).unwrap_or(path).to_string()
+}
+
 /// Display form of one path within a set of paths from the same answer.
 fn short_path(root: &str, path: &str, all: &[&str]) -> String {
     short_paths(root, all)
@@ -737,7 +747,7 @@ pub fn tool_definitions() -> &'static Vec<serde_json::Value> {
             serde_json::json!({ "name": "reliary_describe", "description": "Explain a symbol: its purpose, signature, location, callers, and methods. methods=true → 'list methods on Type X' (replaces list_methods). dead_only=true → 'find dead code in module X' (replaces find_dead_code). Use for 'explain X', 'what does X do', 'list methods on X', 'find dead code in X'.", "inputSchema": { "type": "object", "properties": { "name": {"type": "string", "description": "Symbol to describe (e.g. 'block_on', 'Sleep', 'BufWriter')"}, "file": {"type": "string", "description": "File path to show structure of (alternative to name)"}, "context": {"type": "string", "description": "Optional filter: 'callers', 'signature', 'behavior'"}, "path": {"type": "string", "description": "Project directory to query. Defaults to the client's workspace root, else '.'."}, "methods": {"type": "boolean", "default": false, "description": "List methods on a type. Replaces list_methods."}, "dead_only": {"type": "boolean", "default": false, "description": "Find dead code in a module. Replaces find_dead_code. Pass path to scope to a module."}, "limit": {"type": "integer", "default": 30, "description": "Max dead code items to return"}, "functions_only": {"type": "boolean", "default": true} } } }),
             serde_json::json!({ "name": "reliary_similar", "description": "Find functions structurally similar to the named function (near-clone detection via hypervector token-set similarity). Use for 'find duplicate code', 'similar functions to X', 'is this copied elsewhere'.", "inputSchema": { "type": "object", "properties": { "name": { "type": "string", "description": "Function name" }, "path": { "type": "string" }, "limit": { "type": "integer", "default": 8 } }, "required": ["name"] } }),
             // 9. VERIFY: mechanically verify claims (symbol at file:line) against the index.
-            serde_json::json!({ "name": "reliary_verify", "description": "Mechanically verify claims about the codebase against the index. Pass text containing 'symbol at file.rs:line' claims; returns VERIFIED or FALSE with the actual location. Use before asserting a location, or to check a statement from another source.", "inputSchema": { "type": "object", "properties": { "text": { "type": "string", "description": "Claim text, e.g. 'classify_structural at structural.rs:31'" }, "path": { "type": "string", "description": "Project directory. Defaults to the client workspace root, else '.'." }, "tol": { "type": "integer", "default": 1, "description": "Line tolerance: how many lines off a claim may be and still verify" } }, "required": ["text"] } }),
+            serde_json::json!({ "name": "reliary_verify", "description": "Mechanically verify claims about the codebase against the SOURCE, cross-checked with the index. Pass text containing 'symbol at file.rs:line' claims; returns VERIFIED (index and file agree), FALSE with the actual location when known, or UNVERIFIED when the file could not be read because it moved or was deleted since indexing. Use before asserting a location, or to check a statement from another source.", "inputSchema": { "type": "object", "properties": { "text": { "type": "string", "description": "Claim text, e.g. 'classify_structural at structural.rs:31'" }, "path": { "type": "string", "description": "Project directory. Defaults to the client workspace root, else '.'." }, "tol": { "type": "integer", "default": 1, "description": "Line tolerance: how many lines off a claim may be and still verify" } }, "required": ["text"] } }),
         ]
     })
 }
@@ -998,8 +1008,53 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
             match get_cached_db_for(hint) {
                 Some(db) => {
                     let results = reliary_search::search::search_fts5(&db, query, limit);
-                        DispatchResult::Success(serde_json::json!({
-                        "content": [{ "type": "text", "text": serde_json::to_string(&results.iter().map(|r| serde_json::json!({"file": r.file, "score": r.score})).collect::<Vec<_>>()).unwrap_or_default() }]
+                    // V101: if the query is exactly one identifier and that
+                    // identifier is DEFINED in the index, say so on the first
+                    // line. `search` is documented for "I do not know the
+                    // name", but models call it for symbol questions too (the
+                    // q9 failure), and a bare file list leaves them without the
+                    // definition. Additive: the file list is unchanged.
+                    let hint_root = match index_root_for(args.get("path").and_then(|v| v.as_str())) {
+                        crate::index_root::Resolution::Found(p) => p.to_string_lossy().to_string(),
+                        crate::index_root::Resolution::NotFound(p) => p.to_string_lossy().to_string(),
+                    };
+                    let def = reliary_search::search::exact_definition(&db, query);
+                    // If the definition is already the top-ranked file, the hint
+                    // REPLACES that entry instead of being prepended. Measured:
+                    // prepending raised tokio's mean answer by 25% (212->266 B),
+                    // over the 20% gate, purely by repeating the same path.
+                    let mut rows: Vec<serde_json::Value> = results
+                        .iter()
+                        .map(|r| serde_json::json!({"file": r.file, "score": r.score}))
+                        .collect();
+                    // Dedupe only when something remains afterwards: a query
+                    // with a single result must not answer with an empty list.
+                    if let Some((f, _)) = &def {
+                        let first_is_def = rows
+                            .first()
+                            .and_then(|r| r.get("file"))
+                            .and_then(|v| v.as_str())
+                            == Some(f.as_str());
+                        if first_is_def {
+                            // The hint already names this file, so the entry is
+                            // pure duplication. Removing it when it was the only
+                            // result is correct too: the hint is the answer.
+                            rows.remove(0);
+                        }
+                    }
+                    let body = serde_json::to_string(&rows).unwrap_or_default();
+                    let text = match def {
+                        Some((f, ln)) => format!(
+                            "{} is defined at {}:{}\n{}",
+                            query.trim(),
+                            project_relative(&hint_root, &f),
+                            ln + 1,
+                            body
+                        ),
+                        None => body,
+                    };
+                    DispatchResult::Success(serde_json::json!({
+                        "content": [{ "type": "text", "text": text }]
                     }))
                 }
                 None => {
@@ -1177,12 +1232,17 @@ pub fn dispatch_tool_call(name: &str, args: &serde_json::Map<String, serde_json:
                         crate::verify::Verdict::False { actual } => {
                             let actual_str = actual.as_ref()
                                 .map(|(f, l)| format!(" -> actual: {}:{}", f, l))
-                                .unwrap_or_else(|| " -> not found in index".to_string());
+                                .unwrap_or_else(|| " -> not found in source".to_string());
                             out.push_str(&format!("FALSE {}{}\n", subject, actual_str));
+                        }
+                        crate::verify::Verdict::UnverifiedStale { reason } => {
+                            out.push_str(&format!("UNVERIFIED {} -> {}\n", subject, reason));
                         }
                     }
                 }
-                out.push_str(&format!("\n{} verified, {} false\n", summary.verified, summary.falsified));
+                out.push_str(&format!(
+                    "\n{} verified, {} false, {} unverified\n",
+                    summary.verified, summary.falsified, summary.unverified));
                 out
             };
             DispatchResult::Success(serde_json::json!({ "content": [{ "type": "text", "text": text_out }] }))

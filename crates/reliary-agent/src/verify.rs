@@ -20,16 +20,22 @@ pub struct Claim {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Verdict {
-    /// The claim matches the index.
+    /// The claim matches the index AND the source on disk.
     Verified { actual: Option<(String, i32)> },
-    /// The claim does not match the index (symbol+file+line not found).
+    /// The claim does not match. `actual` is a source-backed hint when the
+    /// source was readable, index-derived otherwise.
     False { actual: Option<(String, i32)> },
+    /// The claim could not be checked against the source: the file is gone, or
+    /// it changed after the index was built. Not the same as FALSE — reporting
+    /// it as FALSE would call a correct claim a lie because the index is old.
+    UnverifiedStale { reason: String },
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct VerifySummary {
     pub verified: usize,
     pub falsified: usize,
+    pub unverified: usize,
     pub claims: Vec<(Claim, Verdict)>,
 }
 
@@ -197,6 +203,56 @@ pub fn extract_claims(text: &str) -> Vec<Claim> {
     out
 }
 
+/// Read a bounded window of a file from DISK and return the lines.
+///
+/// `None` when the file cannot be read (deleted, moved, permissions). This is
+/// the difference between "the index says no" and "the source is gone": the
+/// first is a verdict, the second is not.
+fn read_source_window(path: &str, first: i64, last: i64) -> Option<Vec<String>> {
+    use std::io::{BufRead, BufReader};
+    let f = std::fs::File::open(path).ok()?;
+    let lo = first.max(1) as usize;
+    let hi = last.max(first) as usize;
+    if hi.saturating_sub(lo) > 500 {
+        return None; // bounded: never read a large window into memory
+    }
+    let mut out = Vec::new();
+    for (i, line) in BufReader::new(f).lines().enumerate() {
+        let n = i + 1;
+        if n > hi {
+            break;
+        }
+        if n >= lo {
+            out.push(line.ok()?);
+        }
+    }
+    Some(out)
+}
+
+/// Does `line` contain `symbol` as a whole identifier?
+///
+/// Whole-word only: `Buf` must not match `buffer`, and `peek` must not match
+/// `peekable`. This is what stops a phantom index row from verifying, because
+/// the source is the authority on whether the name is there.
+fn contains_whole_ident(line: &str, symbol: &str) -> bool {
+    if symbol.is_empty() {
+        return true;
+    }
+    let b = line.as_bytes();
+    let mut from = 0usize;
+    while let Some(pos) = line[from..].find(symbol) {
+        let at = from + pos;
+        let end = at + symbol.len();
+        let before_ok = at == 0 || (!b[at - 1].is_ascii_alphanumeric() && b[at - 1] != b'_');
+        let after_ok = end >= b.len() || (!b[end].is_ascii_alphanumeric() && b[end] != b'_');
+        if before_ok && after_ok {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
 /// Verify one claim against the index (±tol lines).
 pub fn verify_claim(db: &Connection, claim: &Claim, tol: i32) -> Verdict {
     // Clamp tolerance and the line number so `line - 1 - tol` / `line - 1 + tol`
@@ -264,7 +320,20 @@ pub fn verify_claim(db: &Connection, claim: &Claim, tol: i32) -> Verdict {
                 }
             }
         }
-        return Verdict::Verified { actual: None };
+        // V99: the index says this file has that many lines; the SOURCE says
+        // whether it still exists. A deleted file is unverified, never verified.
+        return match read_source_window(&path, claim.line as i64, claim.line as i64) {
+            Some(window) => {
+                if window.is_empty() {
+                    Verdict::False { actual: None }
+                } else {
+                    Verdict::Verified { actual: None }
+                }
+            }
+            None => Verdict::UnverifiedStale {
+                reason: format!("cannot read {path} (file moved or deleted since indexing)"),
+            },
+        }
     }
     // Symbol claim: resolve phrase then check occurrence at file ±tol.
     let stemmed = reliary_search::stem_identifier(&claim.symbol);
@@ -293,10 +362,38 @@ pub fn verify_claim(db: &Connection, claim: &Claim, tol: i32) -> Verdict {
                     |r| r.get(0),
                 )
                 .unwrap_or(0);
-            return if location_ok > 0 {
-                Verdict::Verified { actual: None }
-            } else {
-                Verdict::False { actual: None }
+            // V99: a prose word is only accepted when the INDEX knows nothing
+            // of it (unknown-name case). If the source line cannot be read we
+            // say so instead of guessing.
+            if location_ok == 0 {
+                return Verdict::False { actual: None };
+            }
+            let path: Option<String> = db
+                .query_row(
+                    "SELECT file_path FROM file_map WHERE file_path LIKE ?1 LIMIT 1",
+                    params![format!("%/{}", claim.file)],
+                    |r| r.get(0),
+                )
+                .optional()
+                .unwrap_or(None);
+            return match path.and_then(|p| {
+                read_source_window(&p, (claim.line - tol) as i64, (claim.line + tol) as i64)
+            }) {
+                Some(window) => {
+                    // The prose word must be present in the source line, not
+                    // merely "some token is here".
+                    if window.iter().any(|l| contains_whole_ident(l, &claim.symbol)) {
+                        Verdict::Verified { actual: None }
+                    } else {
+                        Verdict::False { actual: None }
+                    }
+                }
+                None => Verdict::UnverifiedStale {
+                    reason: format!(
+                        "cannot read {} (file moved or deleted since indexing)",
+                        claim.file
+                    ),
+                },
             };
         }
         return Verdict::False { actual: None };
@@ -323,9 +420,31 @@ pub fn verify_claim(db: &Connection, claim: &Claim, tol: i32) -> Verdict {
         .inspect_err(|e| eprintln!("[verify] occurrence lookup failed: {}", e))
         .unwrap_or(None); // None = no occurrence at this line → FALSE
     match hit {
-        Some((path, line0)) => Verdict::Verified {
-            actual: Some((basename(&path), line0 + 1)),
-        },
+        Some((path, line0)) => {
+            let actual = Some((basename(&path), line0 + 1));
+            // Source is the authority. The index can hold a phantom definition
+            // (a stale row, a misclassified line) and it can lag the working
+            // tree; verifying against it alone answers "the index agrees",
+            // which is not what a caller is asking.
+            match read_source_window(&path, (line0 + 1 - tol) as i64, (line0 + 1 + tol) as i64) {
+                Some(window) => {
+                    if claim.symbol.is_empty()
+                        || window.iter().any(|l| contains_whole_ident(l, &claim.symbol))
+                    {
+                        Verdict::Verified { actual }
+                    } else {
+                        // The index has a def here but the source does not carry
+                        // the name: the entry is stale or wrong. Search the
+                        // window's neighbours is not worth a second read; report
+                        // FALSE with the index's claim as the hint.
+                        Verdict::False { actual }
+                    }
+                }
+                None => Verdict::UnverifiedStale {
+                    reason: format!("cannot read {path} (file moved or deleted since indexing)"),
+                },
+            }
+        }
         None => {
             // Best-effort actual location for the FALSE message.
             let actual: Option<(String, i32)> = db
@@ -354,6 +473,7 @@ pub fn verify_text(db: &Connection, text: &str, tol: i32) -> VerifySummary {
         match verdict {
             Verdict::Verified { .. } => summary.verified += 1,
             Verdict::False { .. } => summary.falsified += 1,
+            Verdict::UnverifiedStale { .. } => summary.unverified += 1,
         }
         summary.claims.push((claim, verdict));
     }
@@ -363,6 +483,37 @@ pub fn verify_text(db: &Connection, text: &str, tol: i32) -> VerifySummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_backed_verdicts() {
+        let dir = std::env::temp_dir().join(format!("reliary-verify-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("s.rs");
+        std::fs::write(&f, "fn alpha() {}\nfn beta() { let buffer = 1; }\n").unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        reliary_search::schema::create_new_db(&db).unwrap();
+        reliary_search::ingest::index_directory(&db, dir.to_str().unwrap()).unwrap();
+        reliary_search::lazy_occurrence::build_all_occurrence(&db).unwrap();
+
+        // 1. A real symbol at the real line verifies.
+        let c = Claim { symbol: "alpha".into(), file: "s.rs".into(), line: 1 };
+        assert!(matches!(verify_claim(&db, &c, 1), Verdict::Verified { .. }));
+
+        // 2. Whole-identifier only: `beta` must not verify because `buffer`
+        //    contains it, and vice versa. This is the rule that stops a phantom
+        //    match from being accepted.
+        let c = Claim { symbol: "bet".into(), file: "s.rs".into(), line: 2 };
+        assert!(matches!(verify_claim(&db, &c, 1), Verdict::False { .. } | Verdict::UnverifiedStale { .. }));
+
+        // 3. A deleted file is UNVERIFIED, not FALSE: the index still holds it.
+        std::fs::remove_file(&f).unwrap();
+        let c = Claim { symbol: "alpha".into(), file: "s.rs".into(), line: 1 };
+        match verify_claim(&db, &c, 1) {
+            Verdict::UnverifiedStale { .. } => {}
+            other => panic!("deleted file must be stale, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn extracts_six_claim_forms() {

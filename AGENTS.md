@@ -8,6 +8,14 @@ Use `reliary_*` tools for code intelligence questions instead of grep/read
 cycles. reliary is grammar-free (no AST, no tree-sitter), works on every
 language, and answers most symbol questions in a single call.
 
+Nix note: attribute paths are separate tokens, so ask for the leaf
+(`def_only("git")`, not `"programs.git"`). Nix indented strings are NOT
+modelled, so shell code inside a module doc still indexes as code.
+
+Ruby note: `attr_reader :x` / `define_method(:x) do` do define `x`, but only
+the first symbol on a multi-symbol `attr_accessor` line. `attr_*` with a
+receiver (`self.attr_reader`) is not a declaration.
+
 ## Tool selection guide
 
 | Question | Tool |

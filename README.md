@@ -110,7 +110,7 @@ The default MCP menu exposes six tools plus one verifier:
 | `reliary_list_methods` | Methods declared on a type, with file:line. |
 | `reliary_find_dead_code` | Unused functions, path-scoped. |
 | `reliary_describe` | Symbol overview: purpose, signature, callers, methods. |
-| `reliary_verify` | Check a `symbol at file:line` claim against the index. |
+| `reliary_verify` | Check a `symbol at file:line` claim against the source and the index. |
 
 Every response ends with a freshness stamp `[idx:xxxxxxxx]` that changes only
 when the index changes.
@@ -208,17 +208,39 @@ mechanically against an independent lexical oracle with no model in the loop.
 Every call site, no wrong ones, 0.8-0.9 KB per answer against grep's 2.7-5.0 KB.
 The scrambled corpus has no training signal in any identifier or filename.
 
-Cost, output size and zero dead-ends are the corpus-independent wins; the
-comprehension figures below are on a familiar corpus and are labelled as such.
+Nix is the weakest corpus measured (home-manager, 3,763 `.nix` files). Nix has
+no ctags parser, so there is no blind oracle and **no recall number**: the
+honest statement is that plain lookups work (`mkIf` → 58 call sites,
+`mkOption` → 67, `mkEnableOption` → 65).
+
+TypeScript (zod, 477 files, ctags oracle) is at **0.947** of modelled
+definitions; interface 1.000, class 0.987, function 0.981. That number is what
+found four general classifier defects, none of them TypeScript-specific.
+
+Two Nix gaps are known and not fixed. Attribute paths (`programs.git`) are two
+tokens, so ask for the leaf. And Nix indented strings are not modelled: a `''`
+pair is only masked within its own line, because Ruby writes the empty string
+with the same two bytes and opening it there blanks the rest of the file. Shell
+snippets inside Nix documentation are therefore still tokenized as code.
+
+The comprehension figures below are on a familiar corpus and are labelled as
+such. Cost and output size are measured, not claimed: on this corpus
+codebase-memory-mcp is cheaper and smaller than reliary, and grep is the most
+expensive of the three.
 
 | | F1 | Billed cost | Tool bytes | Dead-ends | Wall (median) |
 |---|---|---|---|---|---|
-| reliary | **0.944** | **23,515** | **11.4K** | **0.0** | **28.5 s** |
-| codebase-memory-mcp | 0.442 | 25,006 | 14.9K | 2.5 | 34.3 s |
-| grep | 0.590 | 34,868 | 29.1K | 0.0 | 37.3 s |
+| reliary | **0.948** | 23,920 | 13.0K | **0.0** | 36.9 s |
+| codebase-memory-mcp | 0.495 | **21,751** | **11.1K** | 2.0 | 33.9 s |
+| grep | 0.596 | 32,698 | 23.2K | **0.0** | 40.4 s |
+
+Two rows are not flattering and are left in: codebase-memory-mcp is both
+cheaper and smaller than reliary on this corpus. Reliary's measured advantage
+is claim precision and recall — 0.985/0.913 against 0.876/0.348 — and zero
+dead-ends.
 
 99% of all three wall times is model round-trip; the tool itself accounts for
-about 1%, so the difference is turn count (14 vs 20 vs 14), not tool latency.
+about 1%, so turn count is what moves it (24 for all three here).
 
 Earlier comparisons against codebase-memory-mcp are **retracted**: the harness
 called its tracer with the wrong parameter name, which silently disabled

@@ -1574,6 +1574,76 @@ mod v87_prose_tests {
     /// `A symbol mentioned only inside a string ("... write_vocab() ...")`
     /// inside a Python docstring was classified as code, producing a
     /// definition of `string` that `def_only("String")` answered with.
+    /// Structural guard for the lexer-desync bug class
+    /// (docs/forensics/2026-10-25-doc-comments-parsed-as-regex.md).
+    ///
+    /// A scanner entering a state from inside a comment silently masks a
+    /// *contiguous band* of following lines. Two earlier instances of the class
+    /// were fixed at the symptom (a Python stray backtick, a Ruby empty string);
+    /// this test asserts the shape of the failure rather than a specific trigger,
+    /// so it catches the next one wherever it comes from.
+    ///
+    /// It needs no oracle and no tool output: it compares the lines the pipeline
+    /// produced phrases for against the lines that declare something.
+    #[test]
+    fn no_declaration_is_lost_in_a_token_free_band() {
+        // Every shape that once desynced the lexer, plus the real regex and
+        // division cases that must keep working.
+        let content = concat!(
+            "/** See `classic/in-out.ts`. */\n",
+            "export interface ZodError<T = unknown> {\n",
+            "  issues: string[];\n",
+            "}\n",
+            "\n",
+            "  /** @deprecated Use `z.core.$ZodIssue` from `@zod/core` instead. */\n",
+            "  isOptional(): boolean;\n",
+            "\n",
+            "/* A `path/to/file` reference */\n",
+            "export type ZodIssue = core.$ZodIssue;\n",
+            "\n",
+            "let x = /}/;\n",
+            "let y = (/{)/;\n",
+            "let r = a / b;\n",
+            "export function afterRegex(): number {\n",
+            "  return 1;\n",
+            "}\n",
+        );
+        let (locs, _) = extract_file_phrases_for_path(content, "src/x.ts");
+
+        let with_phrases: std::collections::HashSet<usize> = locs
+            .values()
+            .flat_map(|v| v.iter().map(|l| l.0))
+            .collect();
+        let lines: Vec<&str> = content.lines().collect();
+
+        let mut lost: Vec<(usize, String)> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let t = line.trim_start();
+            let declares = t.starts_with("export interface ")
+                || t.starts_with("export type ")
+                || t.starts_with("export function ")
+                || t.starts_with("isOptional(");
+            // A declaration-shaped line that produced no phrase at all means a
+            // band was masked.
+            if declares && !with_phrases.contains(&i) {
+                lost.push((i + 1, t.to_string()));
+            }
+        }
+        assert!(
+            lost.is_empty(),
+            "declarations inside a token-free band (lexer desync): {lost:?}"
+        );
+        // And the declarations actually became definitions.
+        let defined = defs(&locs);
+        for want in ["ZodError", "ZodIssue", "afterRegex"] {
+            assert!(
+                defined.iter().any(|d| d.contains(&want.to_ascii_lowercase())
+                    || d.contains(want)),
+                "{want} must be a definition, got {defined:?}"
+            );
+        }
+    }
+
     #[test]
     fn lines_inside_a_docstring_never_define() {
         let content = "def real_fn():\n    \"\"\"Docs.\n\n    A symbol mentioned in a string (\"... call_me() ...\")\n    \"\"\"\n    return 1\n";

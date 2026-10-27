@@ -42,7 +42,7 @@ fn has_any_decl_keyword(before_name: &str) -> bool {
         "pub", "fn", "def", "func", "function", "async", "unsafe", "extern",
         "const", "static", "public", "private", "protected", "internal",
         "export", "void", "virtual", "override", "abstract", "sealed",
-        "partial", "final", "synchronized", "native",
+        "partial", "final", "synchronized", "native", "explicit", "operator",
     ];
     before_name
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -123,6 +123,14 @@ fn has_return_type_shape(before_name: &str, has_body: bool) -> bool {
                 || (!after.is_empty()
                     && after.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'))
             {
+                // A qualified name is a definition only when a RETURN TYPE
+                // precedes it (`int Foo::bar(`). A call of a qualified function
+                // (`std::sort(`, `tokio::spawn(`) has no space in the prefix.
+                // Without this, `std::sort(a, b, [](...) {` was a definition of
+                // `sort` — a phantom definition at every such call site.
+                if !s[..pos].bytes().any(|b| b == b' ' || b == b'\t') {
+                    return false;
+                }
                 t = s[..pos].trim_end();
                 continue;
             }
@@ -180,6 +188,141 @@ pub(crate) fn has_decl_keyword_before(before_name: &str) -> bool {
         || before_name.ends_with("interface")
         || before_name.ends_with("mod")
         || before_name.ends_with("module")
+}
+
+/// First word of the line is a module/function declarator.
+///
+/// Used only to gate the `do`-terminated block form (`def foo do`), where the
+/// absence of `{`/`:` leaves no other positional signal. `defp`/`defmodule`/
+/// `defmacro` are `def` plus a suffix letter, so the check is a prefix test on
+/// the first word rather than a list of every Elixir form.
+/// A `do`-block declarator that names a TYPE rather than a function.
+/// A type, then a `.`-qualified member name: `void ICollection<JToken>.Add`.
+///
+/// The caller of `ICollection<JToken>.Add` asks for `Add`, and the line is a
+/// declaration because a type word precedes the qualified group. A call
+/// (`x.Add(y)`) has no type word before the dot.
+/// A C++ lambda bound to a name: `auto f = [](x) { ... }`.
+///
+/// Positional: a `[` that opens a capture list after a top-level `=`, with an
+/// `auto`/`constexpr`/`static` binder before the name. The declared name is the
+/// identifier immediately before that `=`. Brace-bodied lambdas assigned to a
+/// name were invisible (276 fmtlib sites, mostly `auto x = [](...) {`).
+fn cpp_lambda_binding(line: &str) -> Option<&str> {
+    let b = line.as_bytes();
+    let mut i = 0usize;
+    let mut in_s = false;
+    let mut esc = false;
+    let mut eq: Option<usize> = None;
+    let mut bracket: Option<usize> = None;
+    while i < b.len() {
+        let c = b[i];
+        if esc { esc = false; i += 1; continue; }
+        if c == b'\\' && in_s { esc = true; i += 1; continue; }
+        if c == b'"' { in_s = !in_s; i += 1; continue; }
+        if in_s { i += 1; continue; }
+        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'/' { break; }
+        if c == b'[' && bracket.is_none() { bracket = Some(i); }
+        if c == b'=' {
+            let nx = b.get(i + 1).copied().unwrap_or(0);
+            let pv = if i > 0 { b[i - 1] } else { 0 };
+            if nx != b'=' && nx != b'>' && pv != b'=' && pv != b'!' && pv != b'<' && pv != b'>'
+                && eq.is_none()
+            {
+                eq = Some(i);
+            }
+        }
+        i += 1;
+    }
+    let (eq, br) = (eq?, bracket?);
+    if eq > br { return None; }
+    let before = line[..eq].trim_end();
+    if !before.split_whitespace().any(|w| w == "auto" || w == "constexpr" || w == "static") {
+        return None;
+    }
+    let name = before.split_whitespace().last().unwrap_or("");
+    if name.is_empty() || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
+        return None;
+    }
+    Some(name)
+}
+
+/// `TEST(suite, name) {` / `TYPED_TEST(suite, name) {` declares `name`.
+///
+/// Positional: the first token is SCREAMING_CASE and is directly followed by
+/// `(`, and the line has a `{` body. The declared symbol is the LAST
+/// comma-separated argument, which is where every such test macro puts it.
+/// fmtlib: 651 sites, 24% of every function ctags reports.
+fn macro_test_case_name(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    let paren = t.find('(')?;
+    let head = t[..paren].trim();
+    if head.is_empty()
+        || !head.bytes().all(|c| c.is_ascii_uppercase() || c == b'_')
+        || !head.bytes().any(|c| c.is_ascii_uppercase())
+    {
+        return None;
+    }
+    if !t.ends_with('{') { return None; }
+    let close = t.rfind(')')?;
+    if close <= paren { return None; }
+    let last = t[paren + 1..close].rsplit(',').next()?.trim();
+    if last.is_empty() || !last.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
+        return None;
+    }
+    Some(last)
+}
+
+fn is_explicit_interface_member(head: &str) -> bool {
+    let Some(dot) = head.rfind('.') else { return false };
+    let after = head[dot + 1..].trim();
+    if after.is_empty()
+        || !after.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+    {
+        return false;
+    }
+    let prefix = head[..dot].trim_end();
+    // The prefix must contain WHITESPACE: an explicit interface implementation
+    // is `void ICollection<JToken>.Add` — a return type, a space, then the
+    // qualified member. A member-access chain (`lock.idle.sleepers.contains`)
+    // has no space anywhere before the last dot. Without this test every
+    // `a.b.c.m()` call was typed as a definition of `m`, and
+    // `def_only("contains")` answered with a call site at
+    // runtime/scheduler/multi_thread/idle.rs:154.
+    if !prefix.bytes().any(|c| c == b' ' || c == b'\t') {
+        return false;
+    }
+    // ...and the qualifier must look like a TYPE, not an instance chain: the
+    // last segment before the dot is PascalCase or carries a generic list.
+    let last_seg = prefix
+        .rsplit(|c: char| c.is_whitespace())
+        .next()
+        .unwrap_or(prefix);
+    let seg_tail = last_seg.rsplit('.').next().unwrap_or(last_seg);
+    let type_like = seg_tail.contains('<')
+        || seg_tail
+            .as_bytes()
+            .first()
+            .map(|b| b.is_ascii_uppercase())
+            .unwrap_or(false);
+    type_like && has_return_type_shape(prefix, false)
+}
+
+/// `defp name(` with nothing after the paren — an Elixir head that continues.
+fn rest_is_call_like(head: &str) -> bool {
+    head.trim_end().ends_with('(')
+}
+
+fn is_type_declarator_word(line: &str) -> bool {
+    let w = line.split([' ', '\t', '(']).next().unwrap_or("");
+    matches!(w, "defmodule" | "defprotocol" | "defimpl" | "defstruct" | "defexception")
+}
+
+fn first_word_is_module_declarator(line: &str) -> bool {
+    let w = line.split(|c: char| c.is_whitespace() || c == '(').next().unwrap_or("");
+    matches!(w, "def" | "defp" | "defmodule" | "defmacro" | "defmacrop"
+                | "defprotocol" | "defimpl" | "defstruct" | "defdelegate"
+                | "defguard" | "defguardp" | "defexception" | "defoverridable")
 }
 
 pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: bool, _in_impl: bool) -> StructuralResult<'a> {
@@ -250,7 +393,7 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     // V80: a namespace is a scope container, not a symbol. `namespace App {`
     // (C#/C++) was tagged as a type_def named `App`, so every namespace showed
     // up as a bogus symbol and its whole body looked like one type.
-    if start_keyword.starts_with("namespace ") {
+    if start_keyword.starts_with("namespace ") && !trimmed.ends_with(';') {
         return StructuralResult { tag: 0, is_def: false, defined_name: None };
     }
     // A-MED-10: bare `} ` (for } else/catch without keyword) — skip as def.
@@ -266,9 +409,54 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     // => ...` is not an equation: `=>` fails the top-level-assign scan).
     // Runs BEFORE the block-start branch only; the `type X =` / B1-B2
     // declaration rules live below and must keep priority.
+    // V99 P3: a `type`/`interface` declaration is unambiguous by its first
+    // word, and it must be resolved BEFORE the equation rules: `type
+    // optionalKeys<T extends object> = {` has a top-level `=` after the
+    // generic list, so the Haskell/OCaml equation rule claimed it and named
+    // `extends` (tag 1). Positional, because the declaration word is the
+    // language's own spelling for "this names a type".
+    if let Some(name) = type_alias_name(trimmed) {
+        return StructuralResult { tag: 2, is_def: true, defined_name: Some(name) };
+    }
+
     if let Some(name) = equation_name(line, block_depth) {
         return StructuralResult { tag: 1, is_def: true, defined_name: Some(name) };
     }
+    // V99 P1b: a `def` with no parameter list.
+    //
+    //   def route_missing
+    //   def self.call(env)
+    //
+    // The signature branches all need a `(` (or a trailing `:` for Python), so
+    // a Ruby `def` without parentheses matched nothing and was water. Measured
+    // on sinatra + ruby: 485 such lines, 32% of all `def`s in those corpora.
+    // Positional: the name is the identifier after the `def` word, skipping a
+    // `self.` receiver; a `def` inside a string was already blanked upstream.
+    if let Some(name) = keywordless_def_name(trimmed) {
+        return StructuralResult { tag: 1, is_def: true, defined_name: Some(name) };
+    }
+
+    // V99 P1: Ruby metaprogramming declarations.
+    //
+    // `attr_reader :entry` contains no `def`; it CREATES a method named
+    // `entry`. So does `define_method(:foo) do`. Without a rule the created
+    // method has no definition row at all, so "where is `entry` defined"
+    // answers nothing while the file's every `entry` becomes a call site.
+    //
+    // The six names are the Ruby standard-library declarations that mint a
+    // symbol, and the NAME still comes from position: the first `:symbol`
+    // literal, which is the shape Ruby itself reads. A word list is
+    // unavoidable here — no token shape separates `attr_reader :x` (a
+    // declaration) from `before_action :x` (a reference to an existing
+    // method); both are `ident :sym`. Measured on sinatra + ruby: 64 sites.
+    //
+    // Multi-symbol lines (`attr_accessor :a, :b, :c`) index only the first,
+    // because the index model carries ONE defined name per line for every
+    // language (`struct Foo { int a; int b; }` defines only `Foo` too).
+    if let Some(name) = ruby_dsl_defined(line) {
+        return StructuralResult { tag: 1, is_def: true, defined_name: Some(name) };
+    }
+
     // V84 P-D: module-scope point-free/constant definitions
     // (`arrayValues = List.map f`, `MAX_RETRIES = 5`). Runs after the
     // argument-carrying equation rule so `foo x =` keeps priority.
@@ -283,6 +471,25 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
             return StructuralResult { tag: 2, is_def: true, defined_name: Some(name) };
         }
     }
+    // V100: explicit interface implementation (`void IFace<T>.Add(T x)`).
+    // Checked before the delimiter search so the trailing-delimiter branches do
+    // not claim it: `is_trait_method_decl` is true for it (`is_bodyless_decl`),
+    // which named the INTERFACE instead of the member.
+    if let Some(paren) = crate::structural::first_signature_paren(trimmed) {
+        let head = trimmed[..paren].trim_end();
+        if find_top_level_eq(head).is_none() && is_explicit_interface_member(head) {
+            let dot = head.rfind('.').unwrap_or(0);
+            let after = head[dot + 1..].trim_start();
+            let start = head.len() - after.len();
+            let end = start + after.len();
+            return StructuralResult {
+                tag: 1,
+                is_def: true,
+                defined_name: Some(&trimmed[start..end]),
+            };
+        }
+    }
+
     // Step 1: Find the block-start delimiter.
     // The delimiter is one of: `(`, `<`, `{`, `:` at end of line.
     // For brace languages: `{` at end (struct/class body), `(` (function signature).
@@ -330,12 +537,65 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
             if c == b'"' { in_str = !in_str; k += 1; continue; }
             if in_str { k += 1; continue; }
             if c == b'/' && k + 1 < bytes.len() && bytes[k + 1] == b'/' { break; }
-            if c == b'=' && bytes[k + 1] == b'>' { found = true; break; }
+            // V99 P2: a `=>` INSIDE parentheses or angle brackets is a
+            // function type (`(z: typeof zod4) => T`) or a generic constraint,
+            // not a match arm. Treating it as one made the whole line water:
+            // `export function makeSchema<T>(factory: (z) => T) {` produced no
+            // definition at all (measured: 227 such lines in zod).
+            if c == b'=' && bytes[k + 1] == b'>' {
+                let mut paren = 0i32;
+                let mut angle = 0i32;
+                for &b in &bytes[..k] {
+                    match b {
+                        b'(' | b'[' => paren += 1,
+                        b')' | b']' => paren -= 1,
+                        b'<' => angle += 1,
+                        b'>' if angle > 0 => angle -= 1,
+                        _ => {}
+                    }
+                }
+                if paren <= 0 && angle <= 0 {
+                    found = true;
+                    break;
+                }
+            }
             k += 1;
         }
         found
     };
-    if has_match_arrow {
+    // V100: `json: (req, res) => {` is an object-literal member whose value is
+    // an arrow function. It carries a top-level `=>`, so the match-arm guard
+    // below would reject it. The `name:` prefix is the declaration; a match arm
+    // never has one. Computed here because the arrow guard runs before the
+    // delimiter flags.
+    let has_member_colon_prefix = {
+        let t = trimmed;
+        let b = t.as_bytes();
+        let mut i = 0usize;
+        while i < b.len() && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'{' || b[i] == b',') {
+            i += 1;
+        }
+        let ns = i;
+        while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'$') {
+            i += 1;
+        }
+        let named = i > ns;
+        while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+            i += 1;
+        }
+        // The value must start with the arrow/`function` keyword right after
+        // the `:`. A match arm (`Scheduler::CurrentThread(exec) => ...`) has a
+        // `::` path before its `=>`, so the byte after the `:` is another `:`
+        // and this test rejects it by position, not by scanning the line.
+        named
+            && i + 1 < b.len()
+            && b[i] == b':'
+            && b[i + 1] != b':'
+            && (t[i + 1..].trim_start().starts_with("function")
+                || t[i + 1..].trim_start().starts_with('(')
+                || t[i + 1..].trim_start().starts_with("=>"))
+    };
+    if has_match_arrow && !has_member_colon_prefix {
         // B8: assignment-arrow shape is a definition, not a match arm.
         // `const foo = (x) => x + 1` has a standalone `=` (not part of
         // `=>`/`==`/`>=`/`<=`/`!=`) before the first `(` outside strings,
@@ -391,7 +651,54 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     // depth at the paren position separates the two by position alone.
     let first_sig_paren = first_signature_paren(trimmed);
     let has_open_paren = first_sig_paren.is_some();
-    let is_function_signature = has_open_paren && !ends_with_eq && !ends_with_semi && !ends_with_comma;
+    // V100: a signature whose parameter list continues on the next line ends
+    // with `,` (`void RegisterTypeParameterizedTestSuite(const char* name,`).
+    // 1,507 such starts in express and 740 in fmtlib were invisible. Admitted
+    // only when a declaration keyword precedes the name, so `foo(a,` calls and
+    // multi-line array literals stay water.
+    // Elixir's one-line body forms: `defp f(a), do: expr` and `defp f(a), do: (`
+    // end with `do:` rather than ` do`. Same declarator gate.
+    let elixir_head_continues = first_word_is_module_declarator(trimmed)
+        && (trimmed.ends_with(',') || trimmed.contains(", do:") || trimmed.contains("), do:"));
+    let ends_with_do = trimmed.ends_with(" do")
+        || trimmed.ends_with(" do |")
+        || elixir_head_continues;
+    // V100: an object-literal member whose value is a function:
+    //   html: function(){ ... }
+    //   json: (req, res) => { ... }
+    // The `name:` prefix is the definition form; a call never has it. Positional
+    // (a colon before the paren group on the same line, nothing before the name
+    // but whitespace or `{`/`,`), and it requires a function/arrow keyword, so a
+    // `case x:` / label: statement stays water.
+    let is_member_fn_value = {
+        let b = trimmed.as_bytes();
+        let mut i = 0usize;
+        while i < b.len() && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'{' || b[i] == b',') {
+            i += 1;
+        }
+        let name_start = i;
+        while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'$') {
+            i += 1;
+        }
+        let has_name = i > name_start;
+        while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+            i += 1;
+        }
+        let colon = i < b.len() && b[i] == b':';
+        has_name
+            && colon
+            && (trimmed.contains("function") || trimmed.contains("=>"))
+            && !trimmed[..name_start].contains('?')
+    };
+    let is_function_signature =
+        has_open_paren && !ends_with_eq && !ends_with_semi && !ends_with_comma;
+    let is_multiline_sig_start = has_open_paren && ends_with_comma && {
+        let head = &trimmed[..first_sig_paren.unwrap_or(0)];
+        has_any_decl_keyword(head) || has_return_type_shape(head, false)
+            || first_word_is_module_declarator(trimmed)
+            // Elixir multi-line head: `defp add_new_presence_or_metas(`
+            || (first_word_is_module_declarator(trimmed) && rest_is_call_like(head))
+    };
 
     // C9: trait method declaration has `(self`/`(&self`/`(&mut self` as first param
     // and ends with `;` (no body). Detect this to mark it as a function def.
@@ -405,12 +712,73 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
         && !ends_with_eq
         && {
             let head = trimmed[..first_sig_paren.unwrap_or(0)].trim_end();
+            // A declaration word immediately before the name (`fn bar(`, `def f(`).
             head.split_whitespace().rev().take(3).any(|w| {
                 let w = w.trim_end_matches(['<', '>']);
                 matches!(w, "fn" | "def" | "func" | "function")
             })
+            // V100: a return-type shape before the name (`FilterResult check(`
+            // `abstract boolean canAccess(`, `public delegate void Action()`).
+            // Java/C#/C++ declare a bodyless method or a prototype exactly this
+            // way — a type, then the name, then `;`. Gson lost 91 method sites
+            // and Newtonsoft 179 `delegate` sites to this gap.
+            //
+            // A call statement (`foo(x);`, `self.save(x);`, `a.b(c);`) has no
+            // type word before the name, so `has_return_type_shape` rejects it.
+            // An assignment before the paren (`let x = foo();`, `total =
+            // compute();`) is an expression whatever precedes it.
+            || (find_top_level_eq(head).is_none() && has_return_type_shape(head, false))
+            // V100: an explicit interface implementation,
+            // `void ICollection<JToken>.Add(JToken item)`: a type, then
+            // `.Member`. The member name is what a caller asks for, and the
+            // shape is a type word before a `Type<...>.` group.
+            || is_explicit_interface_member(head)
         };
-    let is_trait_method_decl = if is_bodyless_decl {
+    // V99 P2: a METHOD SIGNATURE with a return type.
+    //
+    //   format(): ZodFormattedError<T>;
+    //   abstract run(): void | Promise<void>;
+    //   constructor(name: string);
+    //
+    // `is_bodyless_decl` requires a `fn`/`def` word before the paren, which a
+    // TypeScript interface member does not have. The positional discriminator
+    // is the `:` immediately after the closing paren (a return type). A call
+    // statement (`foo(x);`) has `;` or end-of-line there instead. Measured on
+    // zod: 408 method sites, 180 were found and 228 were this shape.
+    let is_return_typed_decl = !is_bodyless_decl
+        && ends_with_semi
+        && has_open_paren
+        && {
+            let start = first_sig_paren.unwrap_or(0);
+            let mut depth = 0i32;
+            let b = trimmed.as_bytes();
+            let mut k = start;
+            let mut close: Option<usize> = None;
+            while k < b.len() {
+                match b[k] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(k);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+            match close {
+                Some(cp) => {
+                    let after = trimmed[cp + 1..].trim_start();
+                    // `): T` — a return type follows the parameter list.
+                    after.starts_with(':') && after.len() > 1
+                }
+                None => false,
+            }
+        };
+
+    let is_trait_method_decl = if is_bodyless_decl || is_return_typed_decl {
         true
     } else if ends_with_semi && has_open_paren && !ends_with_eq {
         let paren_idx = first_sig_paren;
@@ -431,7 +799,39 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
         false
     };
 
-    let is_block_start = has_open_block || ends_with_brace || ends_with_colon || is_function_signature || is_trait_method_decl;
+    // V100: `do`-terminated declaration blocks.
+    //
+    //   defp __match_route_catch_all__(_path, _host) do
+    //   defmodule MyApp.Router do
+    //
+    // Elixir's block opener is the word `do` at end of line, not `{` or `:`.
+    // Phoenix has 1,027 such definition sites and every one was invisible.
+    // Gated on a declaration word in first position — the language's own
+    // spelling — because a `do`-terminated line is otherwise a call with a
+    // block (`routes.draw do`, Ruby `it "x" do`) and must stay water.
+    let is_do_block_decl = ends_with_do
+        && first_word_is_module_declarator(trimmed);
+    // V100: `typedef` declarations. `typedef ::std::tuple<T, Second> ArgTuple;`
+    // has no `{`, `(`, `:` or `do` — only `;` — so it matched nothing. 425 sites
+    // in fmtlib. Positional: the declared name is the last identifier before
+    // the `;`, and `typedef` is the language's own declarator word.
+    let is_typedef_decl = ends_with_semi
+        && {
+            let t = trimmed.trim_end_matches(';').trim_end();
+            t.starts_with("typedef ") || t.contains(" typedef ")
+        };
+    // V100: `use Foo\Bar as Alias;` / `namespace Foo;` (PHP). A header-only
+    // file names its imports this way and nothing else on the line declares.
+    // The declared name is the token after `as`, else the last path segment.
+    let is_use_alias_decl = ends_with_semi && {
+        let t = trimmed.trim_end_matches(';').trim_end();
+        t.starts_with("namespace ")
+            || (t.starts_with("use ") && t.contains('\\'))
+    };
+    let is_block_start = has_open_block || ends_with_brace || ends_with_colon
+        || is_typedef_decl || is_use_alias_decl
+        || is_function_signature || is_multiline_sig_start || is_member_fn_value
+        || is_trait_method_decl || is_do_block_decl;
 
     if !is_block_start {
         // V78: type declarations whose line ends in neither `{`, `(`, nor `:`
@@ -557,7 +957,114 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
         }
     }
 
-    if is_function_signature && first_sig_paren.is_some() {
+    if is_do_block_decl {
+        // Elixir: the declared name follows the declarator word.
+        // `defmodule MyApp.Router do` -> `MyApp.Router`; `defp foo(a) do` -> `foo`.
+        // Runs BEFORE the signature branch because `defp foo(...) do` carries a
+        // paren and would otherwise be consumed there. Returned directly: the
+        // delimiter machinery below indexes `trimmed` and this form has no
+        // delimiter to point at.
+        //
+        // Offsets are absolute within `trimmed`. An earlier version measured
+        // them inside the post-keyword slice, which truncated every name by the
+        // keyword length and named `defmodule MyApp.Router` as `My`.
+        let head = trimmed.trim_end_matches(" do |").trim_end_matches(" do");
+        let kw_end = head
+            .find(|c: char| c.is_whitespace())
+            .map(|i| i + 1)
+            .unwrap_or(head.len());
+        let rest = head[kw_end..].trim_start();
+        let rest_off = kw_end + (head[kw_end..].len() - rest.len());
+        // The name ends at the first `(` (argument list) or `,` (Elixir's
+        // `defp f(a), do: ...` one-line body). Taking the last identifier run of
+        // the whole tail would name `abort` inside `throw(:abort)`.
+        let name_slice = rest
+            .split(['(', ','])
+            .next()
+            .unwrap_or(rest)
+            .trim_end();
+        let keep = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'.';
+        let b = name_slice.as_bytes();
+        let mut end = b.len();
+        while end > 0 && !keep(b[end - 1]) {
+            end -= 1;
+        }
+        let mut start = end;
+        while start > 0 && keep(b[start - 1]) {
+            start -= 1;
+        }
+        if start == end {
+            return StructuralResult { tag: 0, is_def: false, defined_name: None };
+        }
+        let name = &trimmed[rest_off + start..rest_off + end];
+        let tag = if is_type_declarator_word(trimmed) { 2 } else { 1 };
+        let _ = (block_depth, has_open_block, name_slice, name_slice.len());
+        return StructuralResult { tag, is_def: true, defined_name: Some(name) };
+    }
+    if is_use_alias_decl {
+        let t = trimmed.trim_end_matches(';').trim_end();
+        let after = match t.split_once(" as ") {
+            Some((_, a)) => a.trim(),
+            None => t.rsplit('\\').next().unwrap_or(t).trim(),
+        };
+        let b = after.as_bytes();
+        let mut end = b.len();
+        while end > 0 && !(b[end - 1].is_ascii_alphanumeric() || b[end - 1] == b'_') {
+            end -= 1;
+        }
+        let mut start = end;
+        while start > 0 && (b[start - 1].is_ascii_alphanumeric() || b[start - 1] == b'_') {
+            start -= 1;
+        }
+        if start == end {
+            return StructuralResult { tag: 0, is_def: false, defined_name: None };
+        }
+        let name = &after[start..end];
+        return StructuralResult { tag: 2, is_def: true, defined_name: Some(name) };
+    }
+    if is_typedef_decl {
+        let t = trimmed.trim_end_matches(';').trim_end();
+        let b = t.as_bytes();
+        let mut end = b.len();
+        while end > 0 && !(b[end - 1].is_ascii_alphanumeric() || b[end - 1] == b'_') {
+            end -= 1;
+        }
+        let mut start = end;
+        while start > 0 && (b[start - 1].is_ascii_alphanumeric() || b[start - 1] == b'_') {
+            start -= 1;
+        }
+        if start == end {
+            return StructuralResult { tag: 0, is_def: false, defined_name: None };
+        }
+        let name = &t[start..end];
+        return StructuralResult { tag: 2, is_def: true, defined_name: Some(name) };
+    } else if let Some(name) = macro_test_case_name(trimmed) {
+        return StructuralResult { tag: 1, is_def: true, defined_name: Some(name) };
+    } else if let Some(name) = cpp_lambda_binding(trimmed) {
+        return StructuralResult { tag: 1, is_def: true, defined_name: Some(name) };
+    } else if is_member_fn_value && first_sig_paren.is_some() {
+        // `html: function(){` — the member name is the identifier before `:`.
+        // The generic signature path would walk back from the `(` and find
+        // `function`, naming the keyword instead of the member.
+        let colon = trimmed.find(':').unwrap_or(0);
+        let head = trimmed[..colon].trim_end();
+        let b = head.as_bytes();
+        let mut end = b.len();
+        while end > 0 && !(b[end - 1].is_ascii_alphanumeric() || b[end - 1] == b'_' || b[end - 1] == b'$') {
+            end -= 1;
+        }
+        let mut start = end;
+        while start > 0 && (b[start - 1].is_ascii_alphanumeric() || b[start - 1] == b'_' || b[start - 1] == b'$') {
+            start -= 1;
+        }
+        if start == end {
+            return StructuralResult { tag: 0, is_def: false, defined_name: None };
+        }
+        delim_pos = Some(end);
+        delim_char = b'(';
+    } else if (is_function_signature || is_multiline_sig_start)
+        && first_sig_paren.is_some()
+    {
         // P3-1 principled: the function name is the LAST identifier whose
         // next non-whitespace char is `(` or `<`, restricted to the part of
         // the line before any inline body (`{`). Without that restriction a
@@ -619,6 +1126,9 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
                 // stays rejected (top-level bare calls). JS ASI call+block
                 // on one line is the accepted residual (<0.1%).
                 has_body && block_depth >= 1
+            } else if is_member_fn_value {
+                // `html: function(){` — the `name:` prefix IS the declaration.
+                true
             } else {
                 let last_c = before_bytes[before_bytes.len() - 1];
                 let keyword_before = has_decl_keyword_before(before_name);
@@ -665,11 +1175,11 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
         // forms `struct Foo { x: u8 }` / `class Baz { int x; }`.
         delim_pos = brace_pos;
         delim_char = b'{';
-    } else if ends_with_colon && colon_pos.is_some() {
+    } else if let (true, Some(cp)) = (ends_with_colon, colon_pos) {
         // Python-style block: `def foo(x):`, `class Foo:`, `if x:`, etc.
         // V21: Grammar-free Python definition detection using 5 structural rules.
         // No keyword lists, no language detection. Pure token-shape analysis.
-        return classify_python_colon_line(trimmed, &delims, colon_pos.unwrap(), block_depth);
+        return classify_python_colon_line(trimmed, &delims, cp, block_depth);
     } else {
         return StructuralResult { tag: 0, is_def: false, defined_name: None };
     }
@@ -702,6 +1212,30 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
         if let Some(eq) = find_top_level_eq(&trimmed[..delim_pos]) {
             let lhs = &trimmed[..eq];
             let name = scan_last_identifier_before(lhs).unwrap_or("");
+            // V99 P2: a TYPE declaration whose value happens to open a block
+            // is not a local binding.
+            //     `type NestedData = { user: { name: string } }`
+            // The `=`-before-brace rule exists for `let ones: Vec<i32> = {`,
+            // and that rule must not swallow a type alias: measured on zod,
+            // 280 `type X = {` lines were tagged local_binding and invisible.
+            let declares_type = lhs
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|w| matches!(w, "type" | "interface" | "class" | "enum" | "struct"
+                    | "trait" | "union" | "record" | "typedef" | "namespace" | "module"));
+            if declares_type {
+                // The name is before the GENERIC LIST, not before the `=`;
+                // `type X<T, U = string> = {` would otherwise name `string`.
+                if let Some(n) = type_alias_name(trimmed) {
+                    return StructuralResult { tag: 2, is_def: true, defined_name: Some(n) };
+                }
+                if is_valid_identifier(name) {
+                    return StructuralResult {
+                        tag: 2,
+                        is_def: true,
+                        defined_name: Some(name),
+                    };
+                }
+            }
             return StructuralResult {
                 tag: 6, // local_binding — a value, not a symbol definition
                 is_def: false,
@@ -879,7 +1413,18 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
             // stopped at the `->`'s `>`, leaving `O` as the name.
             let depths = angle_depth_at(trimmed_before);
             let mut cut: Option<usize> = None;
-            for (i, d) in depths.iter().enumerate() {
+            // `angle_depth_at` returns one entry per byte PLUS a trailing entry
+            // for the final depth, so its length is `bytes_b.len() + 1`.
+            // Indexing `bytes_b` with that last offset panicked on every
+            // continuation line that ends in `>` without a `<` of its own:
+            //
+            //   : detail::native_formatter<detail::float128, Char,
+            //                              detail::type::float_type> {};
+            //
+            // A panic in the indexer aborts the process (`panic = "abort"`), so
+            // one such line in one C++ header killed the whole `trust`. Bounded
+            // by `bytes_b.len()` instead.
+            for (i, d) in depths.iter().enumerate().take(bytes_b.len()) {
                 if *d == 0 && bytes_b[i] == b'<' {
                     cut = Some(i);
                     break;
@@ -975,7 +1520,12 @@ pub fn classify_structural<'a>(line: &'a str, block_depth: i32, has_open_block: 
     // 256-entry static array, single table lookup, zero branches.
     // Tag meanings: 0=occurrence, 1=fn_def, 2=type_def, 3=method_def.
     // Generic `<` still needs sub-check for `(` after generics.
-    let delim_char = bytes[delim_pos];
+    // `delim_pos` is an offset into `trimmed`; `bytes` is `trimmed.as_bytes()`
+    // and has the same length, but a name-extraction path may point one past the
+    // end when the declared name ends the line (a Haskell equation whose header
+    // has no trailing delimiter). Indexing without this bound panicked and
+    // `panic = "abort"` aborted the whole `trust` on aeson.
+    let delim_char = *bytes.get(delim_pos).unwrap_or(&b'(');
     let tag = if delim_char == b'<' {
         if find_byte_outside_string_from(trimmed, b'(', delim_pos + 1).is_some() { 1 } else { 2 }
     } else {
@@ -2650,6 +3200,124 @@ fn is_valid_identifier(s: &str) -> bool {
     }
     true
 }
+/// Name of a type-alias declaration with a generic parameter list.
+///
+/// `export type X<T, U = string> = ...` and `type Row = { ... }`. Positional:
+/// the declaration word, then the identifier, stopping at the first `<`, `=` or
+/// whitespace. Only fires when the declaration word is present, so an ordinary
+/// assignment never reaches it.
+fn type_alias_name(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    let mut rest = None;
+    for p in ["export ", "declare ", "default ", "pub ", "public "] {
+        if let Some(r) = t.strip_prefix(p) {
+            rest = Some(r.trim_start());
+            break;
+        }
+    }
+    let rest = rest.unwrap_or(t);
+    let rest = rest
+        .strip_prefix("type ")
+        .or_else(|| rest.strip_prefix("interface "))?;
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix('$').unwrap_or(rest);
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+        .unwrap_or(rest.len());
+    let name = &rest[..end];
+    if name.is_empty() || name.as_bytes()[0].is_ascii_digit() {
+        return None;
+    }
+    // `type X =` / `type X<T>` / `type X;` only — not `type X instanceof`.
+    let after = rest[end..].trim_start();
+    if after.starts_with('=') || after.starts_with('<') || after.starts_with(';')
+        || after.starts_with('{') || after.is_empty()
+    {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+/// Name declared by a `def`/`fn`/`func` that has no parameter list.
+///
+/// `def route_missing` and `def self.call(env)` — the second is handled by the
+/// signature path, but the receiver skip costs nothing here and keeps the rule
+/// independent of whether a parameter list is present.
+fn keywordless_def_name(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    let (rest, after) = if let Some(r) = t.strip_prefix("def ") {
+        (r, true)
+    } else if let Some(r) = t.strip_prefix("fn ") {
+        (r, true)
+    } else if let Some(r) = t.strip_prefix("func ") {
+        (r, true)
+    } else {
+        ("", false)
+    };
+    if !after {
+        return None;
+    }
+    let rest = rest.trim_start();
+    // `def self.name` — skip the receiver.
+    let rest = rest.strip_prefix("self.").unwrap_or(rest);
+    // The name may run to end of line (`def route_missing`), so a missing
+    // terminator means "the whole remainder", not "no name" — `?` here made
+    // the rule a no-op for the most common parenthesised-free form.
+    let end = rest
+        .find(|c: char| {
+            !(c.is_ascii_alphanumeric() || c == '_' || c == '?' || c == '!' || c == '=')
+        })
+        .unwrap_or(rest.len());
+    let name = &rest[..end];
+    if name.is_empty() || name.as_bytes()[0].is_ascii_digit() {
+        return None;
+    }
+    Some(name)
+}
+
+/// Ruby declarations that create a named method (`attr_reader :x`,
+/// `define_method(:foo) do`). Returns the created name.
+///
+/// Positional: the leading word selects the declaration, and the name is the
+/// first `:symbol` literal after it. `::` is a path separator, not a symbol.
+fn ruby_dsl_defined(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    let head_end = t.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))?;
+    let head = &t[..head_end];
+    if !matches!(
+        head,
+        "attr_reader" | "attr_writer" | "attr_accessor" | "attr"
+            | "define_method" | "define_singleton_method"
+    ) {
+        return None;
+    }
+    let rest = &t[head_end..];
+    let b = rest.as_bytes();
+    let mut i = 0usize;
+    while i + 1 < b.len() {
+        if b[i] == b':' && (b[i + 1] as char).is_ascii_alphabetic() {
+            if i > 0 && b[i - 1] == b':' {
+                i += 1; // `Foo::Bar` is a path, not a symbol literal
+                continue;
+            }
+            let s = i + 1;
+            let mut e = s;
+            while e < b.len()
+                && ((b[e] as char).is_ascii_alphanumeric()
+                    || b[e] == b'_' || b[e] == b'?' || b[e] == b'!')
+            {
+                e += 1;
+            }
+            if e > s {
+                return Some(&rest[s..e]);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 /// H5: Extract the target type identifier from an `impl` line.
 fn impl_target_identifier(before_brace: &str) -> Option<&str> {
     let after = before_brace.trim_start();
@@ -3201,6 +3869,338 @@ mod tests {
         ] {
             let r = classify_structural(line, 2, true, false);
             assert!(r.is_def, "{line} must stay a definition");
+        }
+    }
+
+    /// V99 P3: TypeScript shapes found by scoring zod (477 `.ts` files).
+    ///
+    /// Found by measuring rather than by reading code: 0.804 of ctags
+    /// modelled-kind defs before, 0.932 after.
+    #[test]
+    fn cpp_continuation_line_with_closing_angle_does_not_panic() {
+        // Regression: `angle_depth_at` returns one entry per byte PLUS a
+        // trailing entry, and the brace path indexed the byte buffer with that
+        // extra offset. Any continuation line ending in `>` without a `<` of
+        // its own panicked — and `panic = "abort"` turned one such line in one
+        // C++ header into a failed `trust` for the whole repository.
+        //
+        //   fmtlib/fmt include/fmt/format.h:4301-4302
+        //     : detail::native_formatter<detail::float128, Char,
+        //                                detail::type::float_type> {};
+        //
+        // The panic fired before any definition decision, so the outcome only
+        // has to be "did not panic"; the name is not asserted.
+        let cases = [
+            "detail::type::float_type> {};",
+            "  detail::type::float_type> {};",
+            "> {};",
+            "a > b;",
+            "std::is_same_v<T, U>> {};",
+        ];
+        for line in cases {
+            let r = std::panic::catch_unwind(|| {
+                let _ = classify_structural(line, 2, true, false);
+            });
+            assert!(r.is_ok(), "panicked on continuation line: {line:?}");
+        }
+        // Every byte offset of every prefix must be safe, which is the general
+        // form of the bug.
+        for line in ["x<y> {}", "a<b<c>> {}", "f() -> T> {}"] {
+            for cut in 0..=line.len() {
+                if !line.is_char_boundary(cut) {
+                    continue;
+                }
+                let head = &line[..cut];
+                let r = std::panic::catch_unwind(|| {
+                    let _ = classify_structural(head, 1, true, false);
+                });
+                assert!(r.is_ok(), "panicked on prefix {head:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn c_cpp_go_java_csharp_php_declaration_forms() {
+        // Every shape here was measured missing on a real corpus (see the
+        // numbers in the comment). Each has a negative control.
+        let defs = [
+            // fmtlib/fmt: 425 typedef sites
+            ("typedef ::std::tuple<T, Second> ArgTuple;", "ArgTuple", 2),
+            ("typedef typename Function<F>::ArgumentTuple ArgumentTuple;", "ArgumentTuple", 2),
+            // gson: 91 bodyless methods; Newtonsoft: 179 delegate sites
+            ("FilterResult check(Class<?> rawClass);", "check", 1),
+            ("abstract boolean canAccess(AccessibleObject o, Object x);", "canAccess", 1),
+            ("public delegate void Action();", "Action", 1),
+            // gmock: explicit constructors
+            ("explicit Action(ActionInterface<F>* impl)", "Action", 1),
+            // Newtonsoft: explicit interface implementations
+            ("void ICollection<JToken>.Add(JToken item)", "Add", 1),
+            // C++ template continuation
+            ("static AdjustT<MockType> Adjust(const MockType& mock) {", "Adjust", 1),
+            // express: object-literal members with function values
+            ("html: function(){", "html", 1),
+            ("json: (req, res) => {", "json", 1),
+            // go: methods with receivers
+            ("func (c *Command) GenBashCompletionV2(w io.Writer) error {", "GenBashCompletionV2", 1),
+        ];
+        for (line, name, tag) in defs {
+            let r = classify_structural(line, 1, true, false);
+            assert!(r.is_def, "must define: {line}");
+            assert_eq!(r.defined_name, Some(name), "wrong name for {line}");
+            assert_eq!(r.tag, tag, "wrong tag for {line}");
+        }
+        // Negative controls: calls and assignments are never declarations.
+        for line in [
+            "let x = foo();",
+            "total = compute();",
+            "req.accepts = function(){",
+            "self.save(x);",
+            "a.b(c);",
+            "return compute(x);",
+            "callback(handler, 1);",
+        ] {
+            let r = classify_structural(line, 2, false, false);
+            assert!(!r.is_def, "must stay water: {line} -> {r:?}");
+        }
+    }
+
+    #[test]
+    fn cpp_lambda_and_macro_test_declarations() {
+        // fmtlib: 276 brace-bodied lambdas bound to a name and 651 TEST() cases
+        // were invisible. Both name a symbol at the binding/macro site.
+        let defs = [
+            ("auto pop_one = [](std::vector<int>* data) {", "pop_one"),
+            ("constexpr auto result = []() {", "result"),
+            ("static auto handler = [&](int x) {", "handler"),
+            ("TEST(args_test, named_arg_by_ref) {", "named_arg_by_ref"),
+            ("TYPED_TEST(numeric_arg_test, make_and_visit) {", "make_and_visit"),
+        ];
+        for (line, name) in defs {
+            let r = classify_structural(line, 2, true, false);
+            assert!(r.is_def, "must define: {line}");
+            assert_eq!(r.defined_name, Some(name), "wrong name for {line}");
+        }
+        // Negative controls: a call, an array literal, a bare lambda argument.
+        // Two residuals are ACCEPTED and documented rather than hidden:
+        //
+        //  * `callback(a, b) {` — a bare `name(args) {` at depth >= 1 is the
+        //    pre-existing JS/C++ shorthand-method rule (B5). A call statement
+        //    ends with `;` or nothing, so this only misfires on a call with a
+        //    brace body on the same line.
+        //  * `CALL(x, y) {` — an all-caps macro invocation with a brace body is
+        //    textually identical to `TEST(suite, name) {`; position cannot
+        //    separate them, so the last argument is taken as the name. Measured
+        //    on fmtlib: 651 correct TEST sites against 3 other all-caps macros
+        //    (0.5%), which is why the shape is accepted.
+        for line in [
+            "items = [1, 2, 3];",
+            "std::sort(v.begin(), v.end(), [](auto a, auto b) {",
+            "auto x = compute();",
+            "foo.bar(x) {",
+        ] {
+            let r = classify_structural(line, 2, true, false);
+            assert!(!r.is_def, "must stay water: {line} -> {r:?}");
+        }
+    }
+
+    #[test]
+    fn every_prefix_of_every_line_classifies_without_panicking() {
+        // Two real crashes were an offset one past the end:
+        //   fmtlib format.h:4302  `detail::type::float_type> {};`
+        //                         (angle_depth_at returns len+1 entries)
+        //   aeson                 a Haskell equation header with no trailing
+        //                         delimiter (bytes[delim_pos] with delim_pos==len)
+        // `panic = "abort"` turns either into a failed `trust` for the whole
+        // repository, so the guard is a property over arbitrary prefixes rather
+        // than two hand-written cases.
+        let corpus = [
+            "detail::type::float_type> {};",
+            "void ICollection<JToken>.Add(JToken item)",
+            "defmodule Phoenix.ActionClauseError do",
+            "foo x = bar x",
+            "module Data.Aeson where",
+            "| otherwise = go xs",
+            "  where f = 1",
+            "let x = [1, 2, 3]",
+        ];
+        for line in corpus {
+            for cut in 0..=line.len() {
+                if !line.is_char_boundary(cut) {
+                    continue;
+                }
+                let head = &line[..cut];
+                for depth in 0..4 {
+                    for open in [false, true] {
+                        let r = std::panic::catch_unwind(|| {
+                            let _ = classify_structural(head, depth, open, false);
+                        });
+                        assert!(r.is_ok(), "panicked on {head:?} depth={depth} open={open}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn member_access_chain_is_not_a_definition() {
+        // Regression from the explicit-interface rule: `a.b.c.m()` has a dot and
+        // a paren, and was typed as a definition of `m`, so
+        // `def_only("contains")` answered with the call site in
+        // runtime/scheduler/multi_thread/idle.rs. A member-access chain has no
+        // whitespace before the last dot; a declaration does.
+        for line in [
+            "        lock.idle.sleepers.contains(&worker_id)",
+            "        self.shared.queue.push_back(t)",
+            "            config.programs.git.enable",
+            "        state.inner.map.remove(&k);",
+        ] {
+            let r = classify_structural(line, 3, false, false);
+            assert!(!r.is_def, "member-access chain must be water: {line} -> {r:?}");
+        }
+    }
+
+    #[test]
+    fn php_use_alias_and_namespace() {
+        let cases = [
+            ("use GuzzleHttp\\Client as BaseClient;", "BaseClient"),
+            ("namespace GuzzleHttp\\Handler;", "Handler"),
+        ];
+        for (line, name) in cases {
+            let r = classify_structural(line, 0, false, false);
+            assert!(r.is_def, "must define: {line}");
+            assert_eq!(r.defined_name, Some(name), "wrong name for {line}");
+        }
+    }
+
+    #[test]
+    fn elixir_do_blocks_and_multiline_heads() {
+        // Phoenix: 1,027 `def`/`defp`/`defmodule` sites were invisible because
+        // the block opener is the word `do`, not `{` or `:`. And `do`-terminated
+        // lines that are NOT declarations (`routes.draw do`, `it "x" do`,
+        // `if x do`) must stay water.
+        let defs = [
+            ("defp __match_route_catch_all__(_path, _host) do", "__match_route_catch_all__", 1),
+            ("defp abort, do: throw(:abort)", "abort", 1),
+            ("defp absolute_digested_url(url, digested_path, true),", "absolute_digested_url", 1),
+            ("def route_missing do", "route_missing", 1),
+            ("defmodule MyApp.Router do", "MyApp.Router", 2),
+            ("defmodule Phoenix.Router do", "Phoenix.Router", 2),
+        ];
+        for (line, name, tag) in defs {
+            let r = classify_structural(line, 1, false, false);
+            assert!(r.is_def, "must be a definition: {line}");
+            assert_eq!(r.defined_name, Some(name), "wrong name for {line}");
+            assert_eq!(r.tag, tag, "wrong tag for {line}");
+        }
+        for line in [
+            "routes.draw do",
+            "it \"works\" do",
+            "if x do",
+            "scope \"/\" do",
+            "describe \"x\" do",
+        ] {
+            let r = classify_structural(line, 1, false, false);
+            assert!(!r.is_def, "must stay water: {line} -> {r:?}");
+        }
+    }
+
+    #[test]
+    fn multi_line_signature_start_is_a_definition() {
+        // 1,507 express and 740 fmtlib function starts end with `,` because the
+        // parameter list continues on the next line. Admitted only with a
+        // declaration keyword or return-type shape before the name, so a call
+        // with a trailing comma stays water.
+        let defs = [
+            "void RegisterTypeParameterizedTestSuite(const char* test_suite_name,",
+            "static void PrintValue(const T& value,",
+            "public function handle($request,",
+        ];
+        for line in defs {
+            let r = classify_structural(line, 1, true, false);
+            assert!(r.is_def, "multi-line signature start must define: {line}");
+        }
+        for line in ["foo(a,", "call(x,", "return f(a,"] {
+            let r = classify_structural(line, 1, true, false);
+            assert!(!r.is_def, "a call with a trailing comma is water: {line}");
+        }
+    }
+
+    #[test]
+    fn v99_typescript_declarations() {
+        let defs = [
+            ("export interface ZodError<T = unknown> extends $ZodError<T> {", "ZodError"),
+            ("type NestedData = { user: { name: string } }", "NestedData"),
+            ("export function makeSchema<T>(factory: (z: typeof zod4) => T) {", "makeSchema"),
+            ("abstract run(): void | Promise<void>;", "run"),
+            ("format(): ZodFormattedError<T>;", "format"),
+            ("type allKeys<T> = T extends any ? keyof T : never;", "allKeys"),
+            ("export type typeToFlattenedError<T, U = string> = {", "typeToFlattenedError"),
+            ("export type DIRTY<T> = { status: \"dirty\"; value: T };", "DIRTY"),
+            ("type optionalKeys<T extends object> = {", "optionalKeys"),
+        ];
+        for (line, want) in defs {
+            let r = classify_structural(line, 0, line.contains('{'), false);
+            assert!(r.is_def, "{line:?} must be a definition");
+            assert_eq!(r.defined_name, Some(want), "{line:?}");
+        }
+        // Controls: a call statement, a const binding, and a match arm stay
+        // water even though they carry the same punctuation.
+        for line in ["foo(x);", "const x = 1;", "switch (a) { case 1: break; }"] {
+            assert!(!classify_structural(line, 1, false, false).is_def, "{line:?}");
+        }
+    }
+
+    /// V99 P1b: `def` without a parameter list.
+    #[test]
+    fn v99_parenthesis_free_def() {
+        for (line, want) in [
+            ("    def route_missing", "route_missing"),
+            ("  def setup", "setup"),
+            ("    def self.call(env)", "call"),
+            ("  def stream?", "stream?"),
+        ] {
+            let r = classify_structural(line, 2, false, false);
+            assert!(r.is_def, "{line:?} must be a definition");
+            assert_eq!(r.defined_name, Some(want), "{line:?}");
+        }
+        // Not declarations.
+        for line in ["  default = 1", "  deferred", "  defx foo"] {
+            assert!(!classify_structural(line, 2, false, false).is_def, "{line:?}");
+        }
+    }
+
+    /// V99 P1: Ruby metaprogramming declarations.
+    ///
+    /// `attr_reader :entry` and `define_method(:foo) do` create a method with
+    /// no `def` anywhere on the line. Measured on sinatra + ruby: 64 sites.
+    #[test]
+    fn v99_ruby_dsl_declarations() {
+        let defs = [
+            ("  attr_reader :entry", "entry"),
+            ("  attr_accessor :params", "params"),
+            ("  attr_writer :name", "name"),
+            ("  attr :legacy", "legacy"),
+            ("attr_accessor :app, :env, :request", "app"),
+            ("  define_method(:sprockets_app) do", "sprockets_app"),
+            ("  define_singleton_method(:reset!) do", "reset!"),
+            ("  attr_reader :stream?", "stream?"),
+        ];
+        for (line, want) in defs {
+            let r = classify_structural(line, 2, false, false);
+            assert!(r.is_def, "{line:?} must be a definition");
+            assert_eq!(r.defined_name, Some(want), "{line:?}");
+        }
+        // A call that merely passes a symbol is NOT a declaration. This is the
+        // negative control the shape alone cannot provide, and it is why the
+        // leading word is consulted.
+        for line in [
+            "  before_action :set_user",
+            "  include Foo::Bar",
+            "  logger.info :started",
+            "  validates :name, presence: true",
+            "  delegate :size, to: :items",
+        ] {
+            assert!(!classify_structural(line, 2, false, false).is_def, "{line:?}");
         }
     }
 
@@ -4017,4 +5017,3 @@ mod tests {
         let r = classify_structural(line, 1, true, false);
         eprintln!("tag={} is_def={} name={:?}", r.tag, r.is_def, r.defined_name);
     }
-

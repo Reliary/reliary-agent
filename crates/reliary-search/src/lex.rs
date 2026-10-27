@@ -246,13 +246,40 @@ fn parse_heredoc_opener(b: &[u8], i: usize) -> Option<HeredocTag> {
     if end == start {
         return None;
     }
+    // A SPACED `<<` whose left operand is an identifier, `)` or `]` is a
+    // binary operator, never a heredoc — and that holds for a QUOTED tag too.
+    // The bare-tag branch already had this test; the quoted branch did not, so
+    // every C++ stream-output line opened a bogus heredoc:
+    //
+    //   *os << "NULL";     -> tag NULL -> 200 lines masked
+    //   *os << ' ';        -> tag ' '  -> (single-quote path, same class)
+    //
+    // Measured on fmtlib/fmt: gtest.h lost 600 of 12,399 lines, starting at a
+    // `} else {` four lines after `*os << "NULL";`, and 89 named functions were
+    // unindexed. The rule is positional and mirrors the bare-tag one.
+    if spaced {
+        let mut j = i;
+        while j > 0 && (b[j - 1] == b' ' || b[j - 1] == b'\t') {
+            j -= 1;
+        }
+        // `>` too: a quoted tag after a closing string literal is a
+        // concatenation (`s << "a" << "b"`), where the second `<<` follows
+        // the `"` of the first operand.
+        if j > 0
+            && (b[j - 1].is_ascii_alphanumeric()
+                || b[j - 1] == b'_'
+                || b[j - 1] == b')'
+                || b[j - 1] == b']'
+                || b[j - 1] == b'"'
+                || b[j - 1] == b'\'')
+        {
+            return None;
+        }
+    }
     if quote {
         // Closing quote must exist.
         if end >= b.len() || b[end] != b[k] {
             return None;
-        }
-        if spaced {
-            // Quoted tags are unambiguous; spaced form is fine.
         }
     } else {
         // Bare tag: uppercase-only, unless it is directly attached (`<<EOF`
@@ -264,19 +291,6 @@ fn parse_heredoc_opener(b: &[u8], i: usize) -> Option<HeredocTag> {
         // Require at least one letter so `<<2` is a shift.
         if !b[start..end].iter().any(|c| c.is_ascii_uppercase()) {
             return None;
-        }
-        if spaced {
-            // `x << MASK` is a legal shift of an uppercase constant. Reject
-            // unless the tag is the last token on the line and the operator
-            // is not preceded by an identifier (which would make it a
-            // binary expression). This keeps `x << MASK` as code.
-            let mut j = i;
-            while j > 0 && (b[j - 1] == b' ' || b[j - 1] == b'\t') {
-                j -= 1;
-            }
-            if j > 0 && (b[j - 1].is_ascii_alphanumeric() || b[j - 1] == b'_' || b[j - 1] == b')' || b[j - 1] == b']') {
-                return None;
-            }
         }
     }
     // The tag must not be followed by an operator that makes it an
@@ -496,6 +510,37 @@ fn walk_code(line: &str, st: &mut LexState, hash_comment: bool, on_code: &mut dy
         if c == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
             break;
         }
+        // Block comment must be tested BEFORE the regex literal below.
+        //
+        // `regex_can_start` returns true at line start and after `( = , : [ ! &`
+        // `| ? { ;` — all of which precede a doc comment. So `/** ... */` was
+        // reaching `scan_regex`, which ran from the leading `/` and terminated
+        // at the first unescaped `/` *inside the comment text* (a URL, a file
+        // path, `@zod/core`). The leftover tail was then lexed as code, and if
+        // it held an odd number of backticks it opened a template literal that
+        // masked every following line (bounded only by ML_MAX_LINES).
+        //
+        //   `/** See \`classic/in-out.ts\`. */`
+        //    ^ scan_regex start      ^ it stopped here
+        //    leftover: `in-out.ts\`. */`  -> one backtick -> Ml::Backtick
+        //
+        // Measured on zod: 9 files lost 20 declaration-shaped lines, including
+        // `export interface ZodError`. See docs/forensics/2026-10-25-*.
+        //
+        // A `/*` at value position is always a block-comment opener: no regex
+        // literal can begin with a bare `*` (the regex for an asterisk is
+        // `/\*/`, which starts `/` then `\`). This is a positional test.
+        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            st.block_comment = true;
+            i += 2;
+            continue;
+        }
+        if hash_comment
+            && c == b'#'
+            && !(i + 1 < b.len() && (b[i + 1] == b'[' || b[i + 1] == b'"'))
+        {
+            break;
+        }
         // V84 P-B: regex literal. A `/` in VALUE position (`x = /}/`,
         // `(/\{)/`, `return /}/;`) opens a regex; in OPERATOR position
         // (`a / b`) it is division. The previous significant byte decides:
@@ -513,17 +558,6 @@ fn walk_code(line: &str, st: &mut LexState, hash_comment: bool, on_code: &mut dy
             }
             // No closing `/` on this line: treat as division (fail-safe,
             // current behavior).
-        }
-        if hash_comment
-            && c == b'#'
-            && !(i + 1 < b.len() && (b[i + 1] == b'[' || b[i + 1] == b'"'))
-        {
-            break;
-        }
-        if c == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
-            st.block_comment = true;
-            i += 2;
-            continue;
         }
         // Strings: emit the DELIMITER bytes as code (shape-preserving —
         // header patterns and token columns stay stable) and blank the
@@ -581,6 +615,30 @@ fn walk_code(line: &str, st: &mut LexState, hash_comment: bool, on_code: &mut dy
             continue;
         }
         if c == b'\'' {
+            // Nix indented string: `''` followed by something other than a third
+            // quote. Nix is a language whose only multi-line literal is this
+            // one, and every one of its 3,763 `.nix` files in home-manager was
+            // being tokenized as code inside them. Opening on `''` (not `'''`)
+            // keeps Python and Ruby triple quotes on their existing path.
+            // V99: `''` is NOT opened as a cross-line literal.
+            //
+            // Nix's indented string is `'' ... ''` and Ruby's empty string is
+            // the same pair. At end of line the two are textually identical:
+            // Nix `x = ''` opens a multi-line literal, Ruby `x = ''` is a
+            // complete empty string. A grammar-free lexer cannot tell them
+            // apart, and the failure modes are wildly asymmetric:
+            //
+            //   open-in-Ruby  -> the rest of the FILE is masked (measured:
+            //                    1,596 of sinatra/base.rb's 2,174 lines, so
+            //                    `def accept` and everything after vanished)
+            //   open-in-Nix   -> the string interior is tokenized as code
+            //                    (measured: 1,157 false definitions from shell
+            //                    snippets in module docs)
+            //
+            // Ruby is a measured corpus and Nix is not, so the lexer takes the
+            // Ruby reading: a `''` pair is masked only within its own line.
+            // Nix indented strings are therefore NOT modelled, and that is
+            // documented as a Nix limitation rather than papered over.
             if i + 2 < b.len() && b[i + 1] == b'\'' && b[i + 2] == b'\'' {
                 on_code(i);
                 on_code(i + 1);
@@ -734,6 +792,69 @@ mod tests {
     }
 
     #[test]
+    fn doc_comment_with_slash_and_one_backtick_is_not_a_regex() {
+        // Regression (docs/forensics/2026-10-25-*): the regex-literal branch was
+        // tested before the block-comment branch, and `regex_can_start` is true
+        // at line start, so `/** ... */` was scanned as a regex. `scan_regex`
+        // terminated at the first `/` inside the comment text, leaving a tail
+        // with an odd number of backticks that opened a template literal.
+        //
+        //   zod src/v4/mini/in-out.ts:10 lost the next five definitions this way
+        //
+        // Both shapes below contain a `/` in the comment text and an odd number
+        // of backticks. Neither may change the lexer state.
+        for line in [
+            "/** See `classic/in-out.ts`. */",
+            "  /** @deprecated Use `z.core.$ZodIssue` from `@zod/core` instead. */",
+            "/* A `path/to/file` reference */",
+        ] {
+            let mut st = LexState::new();
+            let _ = masked_line(line, &mut st, false);
+            assert_eq!(st.ml, Ml::None, "a doc comment must not open a literal: {line}");
+            // The comment is prose: nothing after the opener is code.
+            let m = masked_line(line, &mut st, false);
+            assert!(
+                !m.contains("in-out") && !m.contains("ZodIssue") && !m.contains("path"),
+                "comment body leaked into code: {m:?}"
+            );
+            // The very next declaration classifies normally.
+            let m = masked_line("export interface ZodError<T = unknown> {", &mut st, false);
+            assert!(m.contains("ZodError"), "declaration after the comment was masked: {m:?}");
+        }
+    }
+
+    #[test]
+    fn a_real_regex_literal_still_opens_after_the_reorder() {
+        // The fix must not cost regex literals: a `/*` is a comment, but `/` in
+        // value position followed by anything else is still a regex, and a `{`
+        // inside it must not count as a brace.
+        //
+        // Only the positions `regex_can_start` actually recognises are asserted
+        // here. A regex after a bare keyword (`return /a{2}/;`) is NOT
+        // recognised — that is a pre-existing gap, recorded rather than encoded
+        // as expected behaviour.
+        let cases = ["let x = /}/;", "let y = (/\\{)/;", "f(/,/);"];
+        for line in cases {
+            let (open, close) = brace_counts(line, &mut LexState::new(), false);
+            assert_eq!(
+                (open, close),
+                (0, 0),
+                "braces inside a regex must be blanked: {line}"
+            );
+            let m = mask1(line, false);
+            assert!(
+                !m.contains('{') && !m.contains('}'),
+                "regex interior leaked into code: {line} -> {m:?}"
+            );
+        }
+        // Division is still division: `a / b` must not swallow the rest.
+        let (o, c) = brace_counts("let r = a / b;", &mut LexState::new(), false);
+        assert_eq!((o, c), (0, 0));
+        assert!(mask1("let r = a / b;", false).contains("a / b"),
+                "division must not be blanked as a regex interior");
+    }
+
+    #[test]
     fn unpaired_backtick_in_prose_does_not_swallow_the_file() {
         // Regression: one stray backtick in a comment opened a template
         // literal that never closed, so every later definition in the file was
@@ -878,6 +999,51 @@ mod tests {
     }
 
     #[test]
+    fn stream_output_is_not_a_heredoc() {
+        // Regression: a SPACED `<<` with a QUOTED tag skipped the left-operand
+        // test, so every C++ stream-output line opened a bogus heredoc and
+        // masked the next 200 lines. fmtlib/fmt gtest.h lost 600 of 12,399
+        // lines and 89 named functions.
+        for line in [
+            "  *os << \"NULL\";",
+            "  *os << '}';",
+            "  std::cout << \"x\";",
+            "  buf << \"suffix\";",
+            "  s << \"a\" << \"b\";",
+            "  vec.push_back(x) << \"y\";",
+            "  a[0] << \"y\";",
+        ] {
+            let mut st = LexState::default();
+            let _ = masked_line(line, &mut st, false);
+            assert!(st.heredoc.is_none(), "stream output must not open a heredoc: {line}");
+            // And the next line is still code.
+            assert!(
+                starts_in_code("    } else {", &mut st, false),
+                "the line after {line:?} must still be code"
+            );
+        }
+        // Real heredocs still open, spaced or not, bare or quoted.
+        //
+        // NOT asserted: `cat << EOF`. A bare uppercase tag after a command word
+        // is indistinguishable by position from `x << MASK`, and the existing
+        // bare-tag rule resolves that ambiguity toward "shift". That false
+        // negative predates this change and is recorded rather than hidden.
+        for line in [
+            "x = <<EOF",
+            "x = <<-EOF",
+            "x = <<~EOF",
+            "x = <<'EOF'",
+            "x = <<\"EOF\"",
+            "x = <<<EOF",
+            "sql = <<~SQL",
+        ] {
+            let mut st = LexState::default();
+            let _ = masked_line(line, &mut st, false);
+            assert!(st.heredoc.is_some(), "must still open a heredoc: {line}");
+        }
+    }
+
+    #[test]
     fn heredoc_opener_forms() {
         for line in ["x = <<EOF", "x = <<-EOF", "x = <<~EOF", "x = <<'EOF'", "x = <<\"EOF\"", "x = <<<EOF"] {
             let mut st = LexState::default();
@@ -963,6 +1129,29 @@ mod tests {
         assert!(!mask1(&fstr, true).contains('{'));
         let qstr = ["q = ", "'", "a { b } c", "'"].concat();
         assert!(!mask1(&qstr, true).contains('{'));
+    }
+
+    /// V99: a `''` pair never masks past its own line.
+    ///
+    /// Nix opens an indented string with `x = ''` and Ruby writes the empty
+    /// string with the same bytes, so at end of line the two are identical. The
+    /// asymmetry decides the rule: opening in Ruby blanks the rest of the FILE
+    /// (1,596 of sinatra/base.rb's 2,174 lines vanished), while not opening in
+    /// Nix merely tokenizes a string interior. The lexer takes the Ruby reading.
+    #[test]
+    fn double_quote_pair_never_spans_lines() {
+        let mut st = LexState::default();
+        // Ruby: `doodle = ''` is a complete empty string.
+        masked_line("  doodle = ''", &mut st, true);
+        assert!(st.ml == Ml::None, "an empty `\'\'` must not open a literal");
+        // Nothing after it is masked.
+        assert!(masked_line("  def two", &mut st, true).contains("two"));
+        // A Nix-style opener is likewise closed on its own line, so a Nix
+        // module body is indexed as code (the documented Nix limitation).
+        let mut st2 = LexState::default();
+        masked_line("  text = ''", &mut st2, true);
+        assert!(st2.ml == Ml::None);
+        assert!(masked_line("    function inner() {", &mut st2, true).contains("inner"));
     }
 
     #[test]

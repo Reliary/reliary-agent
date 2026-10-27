@@ -1011,9 +1011,23 @@ pub fn def_name_matches_token(def_name: &str, token: &str) -> bool {
     }
     if def_name.len() > token.len() && def_name.starts_with(token) {
         let next = def_name[token.len()..].bytes().next().unwrap();
-        return !next.is_ascii_alphanumeric() && next != b'_';
+        if !next.is_ascii_alphanumeric() && next != b'_' {
+            return true;
+        }
     }
-    false
+    // A DOTTED or PATH-QUALIFIED name also defines its LAST segment.
+    //
+    //   `defmodule Phoenix.ActionClauseError do`  -> defines ActionClauseError
+    //   `void ICollection<JToken>.Add(...)`       -> defines Add
+    //
+    // Before this, only the FIRST segment could match (the `.` after `Phoenix`
+    // is a boundary), so the segment a caller actually asks for got `is_def=0`.
+    // On Phoenix that was 285 `defmodule` sites whose module could not be found.
+    //
+    // Compared case-insensitively because one caller passes the lowercased
+    // classifier name and the other the source-case one.
+    let last = def_name.rsplit(['.', ':']).next().unwrap_or(def_name);
+    last.eq_ignore_ascii_case(token)
 }
 /// The structural anchor terminating the header span, if any.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1093,5 +1107,23 @@ mod tests {
         let counts = count_patterns(lines.into_iter());
         assert_eq!(counts[0].1, 2);
         assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn dotted_definition_matches_its_last_segment() {
+        // `defmodule Phoenix.ActionClauseError do` defines `ActionClauseError`;
+        // `void ICollection<JToken>.Add(x)` defines `Add`. Before this the
+        // segment after the dot never got is_def, so 285 Phoenix modules were
+        // unfindable by the name a caller types.
+        assert!(def_name_matches_token("Phoenix.ActionClauseError", "ActionClauseError"));
+        assert!(def_name_matches_token("ICollection<JToken>.Add", "Add"));
+        assert!(def_name_matches_token("tokio::runtime::Runtime", "Runtime"));
+        // The FIRST segment legitimately matches too: it is a prefix delimited
+        // by the dot, which is the pre-existing rule. A segment that is not
+        // present at all must not match.
+        assert!(def_name_matches_token("Phoenix.ActionClauseError", "Phoenix"));
+        assert!(!def_name_matches_token("A.B", "C"));
+        assert!(!def_name_matches_token("Phoenix.ActionClauseError", "ActionClause"));
+        assert!(!def_name_matches_token("Phoenix.ActionClauseError", "ActionClauseErrorX"));
     }
 }

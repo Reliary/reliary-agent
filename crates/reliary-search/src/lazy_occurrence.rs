@@ -188,6 +188,17 @@ fn bump_phrase_gen(_db: &Connection, phrase_id: i64) {
 /// strings, or prose).
 ///
 /// Returns true if >30% of non-blank sampled lines look code-bearing.
+/// Diagnostic sink for guard rejections.
+///
+/// Silent unless `RELIARY_VERBOSE` is set. Rejecting a doc, config or data file
+/// is normal operation: a repo is mostly those. Printing on every rejection
+/// produced ~136 lines of stderr noise per `warrant` run.
+fn guard_log(msg: &str) {
+    if std::env::var_os("RELIARY_VERBOSE").is_some() {
+        eprintln!("[guard:is_source_like] {msg}");
+    }
+}
+
 pub fn is_source_like(content: &str) -> bool {
     let all_lines: Vec<&str> = content.lines().collect();
     if all_lines.is_empty() { return false; }
@@ -525,8 +536,11 @@ pub fn is_source_like(content: &str) -> bool {
         }
     }
 
+    // V102: guard rejections are routine (a repo has many docs, configs and
+    // data files), so they are DIAGNOSTIC, not warnings. Unconditional eprintln
+    // here printed ~136 lines per `warrant` run. Gated behind RELIARY_VERBOSE.
     if non_blank == 0 {
-        eprintln!("[guard:is_source_like] skipped (empty content)");
+        guard_log("skipped (empty content)");
         return false;
     }
     // V84: the population is CONTENT lines — comments and data payloads are
@@ -535,10 +549,10 @@ pub fn is_source_like(content: &str) -> bool {
     // counting comments in the denominator was what rejected it.
     let content = non_blank.saturating_sub(comment_lines + data_lines);
     if content == 0 {
-        eprintln!(
-            "[guard:is_source_like] skipped (no content lines: comments={}, data={}, non_blank={})",
+        guard_log(&format!(
+            "skipped (no content lines: comments={}, data={}, non_blank={})",
             comment_lines, data_lines, non_blank
-        );
+        ));
         return false;
     }
     let ratio = code_lines as f64 / content as f64;
@@ -551,16 +565,19 @@ pub fn is_source_like(content: &str) -> bool {
         && markdown_lines as f64 / non_blank as f64 > 0.5
         && (strong_lines as f64 / content as f64) < 0.20;
     if marker_dominant {
-        eprintln!("[guard:is_source_like] skipped (markdown-dominant: {}/{} marker lines, strong={}/{})", markdown_lines, non_blank, strong_lines, content);
+        guard_log(&format!(
+            "skipped (markdown-dominant: {}/{} marker lines, strong={}/{})",
+            markdown_lines, non_blank, strong_lines, content
+        ));
         return false;
     }
     // V61: small comment-heavy files (e.g. 11 doc lines + 1 fn) were rejected
     // at ratio <= 0.10 — accept any file with >= 1 code line when tiny.
     if ratio <= 0.10 && !(content < 20 && code_lines >= 1) {
-        eprintln!(
-            "[guard:is_source_like] skipped (ratio={:.3} <= 0.10, code={}, content={}, non_blank={})",
+        guard_log(&format!(
+            "skipped (ratio={:.3} <= 0.10, code={}, content={}, non_blank={})",
             ratio, code_lines, content, non_blank
-        );
+        ));
         return false;
     }
     // V84 (P-A'): binding-only files are data. `name = "tokio"`, `edition =
@@ -571,10 +588,10 @@ pub fn is_source_like(content: &str) -> bool {
     // imports and defs; a hypothetical file of nothing but `k = v` bindings
     // is indistinguishable from config and is treated as such.
     if strong_lines == 0 {
-        eprintln!(
-            "[guard:is_source_like] skipped (binding-only: strong=0, content={}, non_blank={})",
+        guard_log(&format!(
+            "skipped (binding-only: strong=0, content={}, non_blank={})",
             content, non_blank
-        );
+        ));
         return false;
     }
     true

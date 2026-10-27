@@ -358,6 +358,83 @@ fn e2e_mcp_search_never_returns_empty() {
 
 // ── 4. Error handling / protocol robustness ───────────────────────────────
 
+/// `search` and `find_references` must agree about the index.
+///
+/// They did not: the index stores `stem_identifier` of every token, but
+/// `search` lowercased the query without stemming it. `getEnumValues` is
+/// indexed as `getenumvalu`; the query `getenumvalues` matched nothing and
+/// every fallback returned empty, so `search` answered `[]` for a symbol that
+/// `find_references` found. Reported as 70/80 misses on zod.
+#[test]
+fn e2e_mcp_search_finds_a_camel_case_symbol_that_porter_stems() {
+    let fx = Fixture::new();
+    fx.trust();
+    // The fixture has `beta` only; add a name whose Porter stem differs from
+    // its lowercase form, which is the shape that broke.
+    std::fs::write(
+        fx.path().join("src/stemmed.rs"),
+        "/// Collects enum values.\npub fn getEnumValues(entries: &[u8]) -> Vec<u8> {\n    entries.to_vec()\n}\n",
+    )
+    .unwrap();
+    fx.trust();
+
+    let mut mcp = Mcp::start(fx.path());
+    mcp.initialize();
+
+    let text = mcp.call_tool_text("reliary_search", json!({ "query": "getEnumValues" }));
+    assert!(
+        text.contains("stemmed.rs"),
+        "search must find a camelCase symbol whose stem differs from its lowercase form; got: {text}"
+    );
+    // ...and the two tools must agree.
+    let refs = mcp.call_tool_text(
+        "reliary_find_references",
+        json!({ "name": "getEnumValues", "def_only": true }),
+    );
+    assert!(
+        refs.contains("stemmed.rs"),
+        "find_references must find the same symbol; got: {refs}"
+    );
+}
+
+/// `search` must answer a symbol query with the definition, not just files.
+///
+/// Models call `search` for symbol questions even though it is documented for
+/// "I do not know the name" (the q9 failure). A file list leaves them without
+/// the definition, so the exact-identifier hint was added. Two bugs had to be
+/// fixed for it to work at all:
+///
+///  1. a bare `trust` populates `phrases` but not `occurrence`, so the hint
+///     was silently absent until someone ran `build-all` — the V77 class;
+///  2. ordering definitions by line number across files answered
+///     `classify_structural` from a 1-use test file because 80 < 184. Rank by
+///     the name's use count in the defining file instead.
+#[test]
+fn e2e_mcp_search_answers_a_symbol_query_with_its_definition() {
+    let fx = Fixture::new();
+    fx.trust();          // bare trust: no occurrence rows yet
+    let mut mcp = Mcp::start(fx.path());
+    mcp.initialize();
+
+    let text = mcp.call_tool_text("reliary_search", json!({ "query": "alpha" }));
+    let first = text.lines().next().unwrap_or("");
+    assert!(
+        first.starts_with("alpha is defined at "),
+        "search must lead with the definition for an exact identifier; got: {first:?}"
+    );
+    assert!(
+        first.contains("lib.rs"),
+        "the hint must name the defining file; got: {first:?}"
+    );
+
+    // A natural-language query must be unchanged: no definition line.
+    let prose = mcp.call_tool_text("reliary_search", json!({ "query": "how does alpha work" }));
+    assert!(
+        !prose.lines().next().unwrap_or("").contains(" is defined at "),
+        "a multi-word query must not emit a definition hint; got: {prose:?}"
+    );
+}
+
 #[test]
 fn e2e_mcp_unknown_method_returns_method_not_found() {
     let fx = Fixture::new();

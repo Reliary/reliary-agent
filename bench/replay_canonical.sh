@@ -19,7 +19,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CORPUS_COMMIT="5c8b6244"          # public commit this tape was recorded against
-TAPE="$ROOT/bench/cassettes/canonical-v10"
+TAPE="$ROOT/bench/cassettes/canonical-v11"
 BIN="$ROOT/target/release/reliary"
 CORPUS_DIR="${HOME}/src/v75-canon-replay"
 
@@ -109,4 +109,4 @@ python3 "$ROOT/bench/run_snapshot_bench.py" \
 echo >&2
 echo "results: $OUT" >&2
 echo "compare against the recorded run:" >&2
-echo "  python3 bench/compare_replay.py bench/cassettes/canonical-v10/record.jsonl $OUT" >&2
+echo "  python3 bench/compare_replay.py bench/cassettes/canonical-v11/record.jsonl $OUT" >&2

@@ -22,10 +22,23 @@ pub fn search_fts5(db: &Connection, query: &str, top_n: usize) -> Vec<SearchResu
     // term — `foo-bar` never matched because scan_identifiers splits on `-`,
     // so no phrase contains it (AND/OR/rarest all returned empty despite
     // `foo` and `bar` being indexed).
+    // The INDEX stores `stem_identifier` of every token. The query must be
+    // stemmed the same way or a camelCase name whose Porter stem differs from
+    // its lowercase form is unfindable:
+    //
+    //   getEnumValues -> indexed as `getenumvalu`
+    //   getenumvalues -> query term (no match, no fallback fires)
+    //
+    // Measured on zod: `reliary_search("getEnumValues")` returned `[]` for a
+    // symbol defined at src/v4/core/util.ts:276, and the same for every
+    // `-s`/`-ed`/`-ing`-shaped name that does not contain an underscore.
+    // `find_references` already stemmed (it goes through `phrase_id_for`);
+    // only `search` used the raw lowercase form, so the two tools disagreed
+    // about the same index.
     let terms: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|t| t.len() >= 2)
-        .map(|t| t.to_lowercase())
+        .map(|t| crate::stem_identifier(&t.to_lowercase()))
         .filter(|s| !s.is_empty())
         .collect();
     if terms.is_empty() { return vec![]; }
@@ -654,6 +667,106 @@ pub fn get_index_stats(db: &Connection) -> (i64, i64, i64) {
     let phrases = db.query_row("SELECT COUNT(*) FROM phrases", [], |r| r.get(0)).unwrap_or(0);
     let occs = db.query_row("SELECT COUNT(*) FROM phrase_occ", [], |r| r.get(0)).unwrap_or(0);
     (files, phrases, occs)
+}
+
+/// Definition site for a query that is exactly one identifier.
+///
+/// The phrase key is a lowercased stem, so a query of `Default` and a lowercase
+/// function named `default` share one key. The hint therefore checks the
+/// **exact spelling** in the source line before answering, and prefers
+/// non-test source files.
+///
+/// Why this exists: `reliary_search` is documented as the tool for "I do not
+/// know the symbol name", but models call it for symbol questions anyway (that
+/// was the q9 failure). Returning the definition from both entry points makes
+/// the answer correct regardless of which one the model picked.
+pub fn exact_definition(db: &Connection, query: &str) -> Option<(String, i32)> {
+    let q = query.trim();
+    if q.is_empty() || q.len() > 120 {
+        return None;
+    }
+    let mut bytes = q.bytes();
+    let first = bytes.next()?;
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return None;
+    }
+    if !q.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    let pid = crate::symbol::phrase_id_for(db, q).ok().flatten()?;
+    // A plain `trust` populates `phrases` but not `occurrence` (it is built
+    // lazily). Without this, the hint silently disappears until someone runs
+    // `build-all` — the same class as the V77 default-path bug where
+    // `usage_only` returned "no call sites" after a bare trust. Build the rows
+    // for THIS phrase only, and only when there are none.
+    let have: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM occurrence WHERE phrase_id = ?1 LIMIT 1",
+            params![pid],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if have == 0 {
+        let _ = crate::lazy_occurrence::ensure_occurrence_for_phrase(db, pid);
+    }
+    // Rank by how often the name occurs in the defining file. A definition's
+    // own file is usually its busiest user, and ordering definitions by raw
+    // line number across different files is meaningless: `classify_structural`
+    // was answered from `test_plan.rs:80` simply because 80 < 184.
+    let mut stmt = db
+        .prepare_cached(
+            "SELECT f.file_path, o.line,
+                    (SELECT COUNT(*) FROM occurrence o2
+                      WHERE o2.file_id = o.file_id AND o2.phrase_id = o.phrase_id) AS uses
+             FROM occurrence o
+             JOIN file_map f ON f.id = o.file_id
+             WHERE o.phrase_id = ?1 AND o.is_def = 1 AND f.is_source = 1
+             ORDER BY
+               (CASE WHEN f.file_path LIKE '%/tests/%' OR f.file_path LIKE '%/test/%'
+                      OR f.file_path LIKE '%/benches/%' OR f.file_path LIKE '%/examples/%'
+                      OR f.file_path LIKE '%/fixtures/%' OR f.file_path LIKE '%/oracle/%'
+                     THEN 1 ELSE 0 END),
+               uses DESC,
+               o.line ASC
+             LIMIT 24",
+        )
+        .ok()?;
+    let rows: Vec<(String, i32)> = stmt
+        .query_map(params![pid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i32>(1)?)))
+        .ok()?
+        .filter_map(|r| r.ok())
+        .collect();
+    for (file, line) in rows {
+        if line_has_exact_token(&file, line, q) {
+            return Some((file, line));
+        }
+    }
+    None
+}
+
+/// Whole-token, case-exact match in the source line at `line` (0-based).
+fn line_has_exact_token(file: &str, line: i32, needle: &str) -> bool {
+    let meta = match crate::file_meta::get(file) {
+        Some(m) => m,
+        None => return false,
+    };
+    let text = match meta.lines.get(line as usize) {
+        Some(t) => t,
+        None => return false,
+    };
+    let b = text.as_bytes();
+    let mut from = 0usize;
+    while let Some(pos) = text[from..].find(needle) {
+        let at = from + pos;
+        let end = at + needle.len();
+        let before_ok = at == 0 || (!b[at - 1].is_ascii_alphanumeric() && b[at - 1] != b'_');
+        let after_ok = end >= b.len() || (!b[end].is_ascii_alphanumeric() && b[end] != b'_');
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
 }
 
 #[cfg(test)]

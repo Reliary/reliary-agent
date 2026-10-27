@@ -5,6 +5,314 @@ All notable changes to Reliary will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.9.3] - 2026-10-27
+
+### `search` now answers a symbol query with the definition
+
+`reliary_search` is documented for "I do not know the symbol name", but models
+call it for symbol questions anyway (the measured q9 failure). A bare file list
+leaves them without the definition, so an exact-identifier query now leads with
+`X is defined at path:line` and the file list follows. Multi-word queries are
+unchanged.
+
+Three defects surfaced while building it, each with a regression test that fails
+when the fix is reverted:
+
+1. A bare `reliary trust` populates `phrases` but not `occurrence` (built
+   lazily), so the hint silently disappeared until someone ran `build-all` —
+   the V77 default-path bug class.
+2. Definitions were ordered by raw line number across files, so
+   `classify_structural` answered from a 1-use test file at line 80 instead of
+   its definition at line 328. Now ranked by the name's use count in the
+   defining file.
+3. The hint emitted a bare basename, because `short_path` only disambiguates
+   within an answer set. Now project-relative.
+
+Cost gate: the hint initially raised tokio's mean search answer by 25%. It now
+replaces the duplicate top-ranked entry, so tokio is 223 B against a 212 B
+baseline (+5%).
+
+### The retrieval bench was measuring a broken key
+
+`bench/search_bench.py` resolved gold paths with an `endswith` fallback against
+tagfiles that had been generated with cwd inside a subdirectory. 85% of zod and
+54% of requests gold paths did not exist under the corpus root, so those
+metrics passed by accident. Gold paths now resolve **against the filesystem**,
+require a **unique basename**, and the scorer has no fallback.
+
+| corpus | valid golds | recall@8 | recall@1 |
+|---|---:|---:|---:|
+| tokio | 2,137 | 1.000 | 0.983 |
+| requests | 91 | 0.989 | 0.967 |
+| zod | 570 | 0.983 | 0.925 |
+| sinatra | 331 | 0.992 | 0.842 |
+
+Superseded: the previously quoted zod 0.792 / sinatra 0.758.
+
+### Re-recorded the canonical tape (canonical-v11)
+
+The `search` change alters a tool result, which appears in later requests, so
+condition A's cassette entries missed and the README's "$0 replay" claim was
+false. Re-recorded A (B and C entries are unchanged and were carried over):
+$0.08 of API spend, then verified `VERDICT: byte-identical (excl. timing)` on
+all three conditions.
+
+Fresh tape figures — and two of them are not flattering:
+
+| | F1 | Billed | Tool bytes | Dead-ends | Wall |
+|---|---:|---:|---:|---:|---:|
+| A reliary | **0.948** | 23,920 | 13.0K | **0.0** | 36.9 s |
+| B codebase-memory-mcp | 0.495 | **21,751** | **11.1K** | 2.0 | **33.9 s** |
+| C grep | 0.596 | 32,698 | 23.2K | 0.0 | 40.4 s |
+
+On this corpus codebase-memory-mcp is cheaper, smaller and faster than reliary.
+Reliary's measured advantage is claim precision/recall (0.985/0.913 vs
+0.876/0.348) and zero dead-ends. README and BENCHMARKS now say so explicitly
+instead of quoting the older, more favourable row set.
+
+### Crate tarball verification no longer deadlocks the release
+
+`cargo package` builds a tarball and then compiles it with siblings resolved
+from **crates.io**. The moment a crate uses a new API from a sibling, the
+release commit cannot verify until that sibling is published, so CI went red on
+the release commit and green on the next push — exactly the signal that trains
+people to ignore a gate.
+
+`scripts/verify_crate_tarballs.sh` packages all 12 crates, extracts each tarball,
+points `[patch.crates-io]` at the extracted siblings and compiles every tarball.
+Missing files, bad `include_str!` paths and API mismatches inside the tarball
+still fail; only the registry-ordering dependency is removed. The agent tarball
+was also verified by installing it into a clean root and running a fixture:
+`Alpha is defined at lib.rs:1` from a one-line populated struct, which is the
+shape that shipped broken in v0.9.1.
+
+### `[guard:is_source_like]` noise silenced
+
+Rejecting a doc, config or data file is normal operation, but each rejection
+printed to stderr unconditionally: ~136 lines per `warrant` run. Now behind
+`RELIARY_VERBOSE`; verified 0 lines by default and the messages still appear
+when the variable is set.
+
+### The three measured query failures are already fixed
+
+q9 (trait impls), q4 (callgraph callee precision) and q10 (dead-code ordering)
+all pass a mechanical check against the current binary. The residual gap in
+those questions is model tool choice, not a tool defect. Recorded rather than
+re-fixed.
+
+
+### `search` could not find a camelCase symbol whose Porter stem differs
+
+`reliary_search` lowercased the query and looked it up in `phrases`, but
+`phrases` stores `stem_identifier` of every token. `getEnumValues` is indexed as
+`getenumvalu`; the query term `getenumvalues` matched nothing, and all three
+fallbacks (AND, OR, rarest-term) therefore also matched nothing, so the tool
+answered `[]`.
+
+- On zod, `reliary_search("getEnumValues")` returned `[]` for a symbol defined
+  at `src/v4/core/util.ts:276`. `reliary_find_references` found it, because that
+  path goes through `phrase_id_for`, which stems.
+- Same class for every `-s`, `-ed`, `-ing`-shaped name without an underscore
+  (`tally`, `thrower` were also empty).
+
+Known-item retrieval over 120 queries per corpus, ground truth from
+universal-ctags, definition names that occur in exactly one source file:
+
+| corpus | recall@8 before | after | recall@1 before | after |
+|---|---:|---:|---:|---:|
+| zod (TS) | 0.812 | **0.975** | 0.650 | **0.783** |
+| sinatra (Ruby) | 0.975 | **0.992** | 0.700 | **0.758** |
+| tokio (Rust) | 0.992 | 0.992 | 0.942 | 0.942 |
+| requests (Python) | 0.988 | **0.992** | 0.950 | 0.950 |
+
+New harness: `bench/search_bench.py`. It has no LLM in the loop and no
+tool-supplied ground truth, so it is deterministic and free to re-run.
+
+### Research notes
+
+`docs/research/2026-10-26-code-retrieval-papers.md` records the October 2026
+literature, including the two findings that predict a change is worthless
+(q-log IDF is neutralised by identifier-aware tokenization; agent memory is a
+patch for weak models) and the one strong argument for path-aware retrieval.
+
+
+### Two indexer crashes, and ten declaration shapes across nine languages
+
+Found by indexing nine further public repositories through universal-ctags and
+comparing definition-by-definition. Recall over modelled kinds, source files
+only, `docs/` and vendored assets excluded:
+
+| corpus | language | before | after |
+|---|---|---:|---:|
+| `google/gson` | Java | 0.780 | **0.986** |
+| `guzzle/guzzle` | PHP | 0.768 | **0.994** |
+| `JamesNK/Newtonsoft.Json` | C# | 0.738 | **0.904** |
+| `phoenixframework/phoenix` | Elixir | 0.521 | **0.914** |
+| `spf13/cobra` | Go | 0.837 | **0.972** |
+| `fmtlib/fmt` | C++ | 0.512 | **0.748** |
+| `lihaoyi/upickle` | Scala | 0.916 | **0.979** |
+| aeson | Haskell | crash | **0.647** |
+| ocaml-lsp | OCaml | 0.352 | 0.352 |
+
+TypeScript, Rust and Python were re-measured and held: zod 0.947, tokio
+1.000/1.000, requests 1.000/1.000.
+
+**Two crashes.** Both were an offset one past the end, and because the binary
+is built with `panic = "abort"` either one aborted the whole `trust`:
+
+- `angle_depth_at` returns one entry per byte *plus a trailing entry*; the
+  brace-path loop indexed the byte buffer with that extra offset. Any C++
+  continuation line ending in `>` without a `<` of its own panicked —
+  `fmtlib` `include/fmt/format.h:4302` is one.
+- `bytes[delim_pos]` with `delim_pos == trimmed.len()`, reachable from a
+  Haskell equation header with no trailing delimiter. `aeson` could not be
+  indexed at all.
+
+Both now have a property test: every prefix of eight representative lines must
+classify at four depths without panicking.
+
+**Lexer.** A heredoc opener skipped its left-operand test for *quoted* tags, so
+every C++ stream-output line opened a bogus heredoc that masked the next 200
+lines. `*os << "NULL";` cost `gtest.h` 600 of its 12,399 lines and 89 named
+functions.
+
+**Declarations** (all positional, no per-language keyword lists beyond a
+declarator word the language itself spells):
+
+| shape | corpus evidence |
+|---|---|
+| `typedef ... Name;` | 425 fmtlib sites |
+| bodyless method with a return type (`FilterResult check(Class<?> c);`) | 91 gson, 179 Newtonsoft delegates |
+| explicit interface member (`void ICollection<T>.Add(T x)`) | 1,016 Newtonsoft sites |
+| explicit constructor (`explicit Action(...)`) | gmock |
+| `name: function(){}` / `name: (x) => {}` object member | 113 express |
+| `auto f = [](x) {` lambda binding | 276 fmtlib |
+| `TEST(suite, name) {` macro case | 651 fmtlib |
+| Elixir `def`/`defp`/`defmodule ... do` | 1,027 phoenix |
+| multi-line signature start (`void f(const char* name,`) | 1,507 express, 740 fmtlib |
+| `use A\B as C;` / `namespace A\B;` | 860 guzzle aliases |
+
+Two residuals are documented rather than hidden: a bare `name(args) {` at depth
+>= 1 remains the pre-existing shorthand-method rule, and an all-caps macro
+invocation with a brace body is textually identical to `TEST(...)`.
+
+**`def_name_matches_token` now matches a dotted name's LAST segment.** Only the
+first segment could match before, so `defmodule Phoenix.ActionClauseError do`
+never marked `ActionClauseError` as defined — 285 Phoenix modules were
+unfindable by the name a caller types.
+
+**Regression found and fixed in this same change:** the explicit-interface rule
+initially read `lock.idle.sleepers.contains(...)` as a declaration of
+`contains`, so `def_only("contains")` answered with a call site. A declaration's
+qualified prefix contains whitespace; a member-access chain does not.
+
+
+### Doc comments were parsed as regex literals
+
+`walk_code` tested the regex-literal branch before the block-comment branch, and
+`regex_can_start` is true at line start. So `/** ... */` reached `scan_regex`,
+which ran from the leading `/` and stopped at the first unescaped `/` *inside
+the comment text* — a URL, a file path, `@zod/core`. The leftover tail was lexed
+as code, and if it carried an odd number of backticks it opened a template
+literal that masked every following line, bounded only by `ML_MAX_LINES`.
+
+Measured on zod (477 `.ts` files): 9 files lost declaration-shaped lines,
+including `export interface ZodError`. TypeScript modelled-definition recall was
+**0.940 → 0.947** after the fix (interface 0.999 → **1.000**, function
+0.968 → 0.981). Nine other corpora — tokio, reliary, sinatra, ruby, requests,
+haskell, ocaml, home-manager — were unaffected: none combined a `/` and an odd
+backtick inside a doc comment.
+
+Fix: the `/*` branch now runs before the regex branch. A `/*` at value position
+is always a block-comment opener, because no regex literal can begin with a bare
+`*` (`/\*/` starts `/` then `\`). Positional; no keyword, no new state.
+
+This is the third instance of one bug class — a scanner entering a state from
+inside a comment — after the Python stray backtick and the Ruby empty string.
+Both earlier ones were fixed at the symptom. The guard added here asserts the
+*failure shape* instead: no declaration-shaped line may fall in a token-free
+band, measured through the real ingest pipeline. It needs no oracle, fails on
+the old ordering, and would have caught both earlier instances.
+
+Forensic report: `docs/forensics/2026-10-25-doc-comments-parsed-as-regex.md`.
+
+### Ruby: parenthesised-free `def` and metaprogramming declarations
+
+Two Ruby defects, both found by indexing sinatra (147 `.rb` files) rather than
+by any test.
+
+**A `def` with no parameter list was invisible.** `def route_missing` has no
+`(` and no trailing `:`, so it matched no classifier branch. 485 lines in
+sinatra + ruby — 32% of every `def` in those corpora — produced no definition.
+
+**A `''` pair at end of line blanked the rest of the file.** Nix opens a
+multi-line indented string with `''`; Ruby writes the empty string with the same
+bytes. The lexer had been taught the Nix reading, so `doodle = ''` in a Ruby test
+opened a literal that ran to EOF: 1,596 of `sinatra/base.rb`'s 2,174 lines
+disappeared, taking `def accept` and everything after it. The Nix reading is
+removed — a `''` pair is now masked only within its own line — and that makes Nix
+indented strings an explicitly documented limitation rather than a silent
+file-level data loss. The asymmetry decided it: opening in Ruby destroys the
+file, not opening in Nix only tokenizes a string interior, and Ruby is the
+measured corpus.
+
+**Ruby DSL declarations now define their names.** `attr_reader :entry` and
+`define_method(:foo) do` create methods with no `def` on the line; 64 such sites
+in sinatra + ruby. The six leading words (`attr`, `attr_reader`, `attr_writer`,
+`attr_accessor`, `define_method`, `define_singleton_method`) are a word list, and
+that is deliberate: no token shape separates `attr_reader :x` (a declaration)
+from `before_action :x` (a reference to an existing method) — both are
+`ident :sym`. The negative controls cover the second form. Multi-symbol lines
+(`attr_accessor :a, :b, :c`) index only the first, because the index carries one
+defined name per line in every language.
+
+sinatra after the fix: `base.rb` goes from 194 indexed lines to 1,439 of 2,174,
+definition rows from 1,088 to 1,256, `entry` resolves to `base.rb:96`, and
+`route_missing` to `base_test.rb:109`.
+
+### verify is source-backed (the promise from the Reddit thread)
+
+The drafted reply said `verify` would read a bounded window from the real file,
+require the whole identifier, and distinguish "wrong location" from
+"unreadable". It read only the index. Now it does what was promised:
+
+- **VERIFIED** requires the index AND the source line to agree.
+- **FALSE** when they disagree — a phantom index row can no longer verify, and
+  the whole-identifier rule means `Buf` does not match `buffer`.
+- **UNVERIFIED** (new verdict, exit 3) when the file cannot be read because it
+  moved or was deleted after indexing. Reporting that as FALSE called a correct
+  claim a lie because the index was old.
+
+Demonstrated on a three-line fixture: renaming the symbol in source makes the
+claim FALSE; deleting the file makes it UNVERIFIED with exit 3; an unchanged
+tree verifies with exit 0.
+
+### TypeScript measured for the first time
+
+zod, 477 `.ts` files, universal-ctags oracle: **0.940** of modelled definitions
+(interface 0.999, class 0.987, function 0.968, alias 0.919, method 0.843). It
+was 0.804 before the measurement existed, and all four defects the number found
+are general:
+
+- a `=>` inside a parameter list was read as a match arm, so
+  `export function makeSchema<T>(factory: (z) => T) {` was invisible (227 lines);
+- `type X = { ... }` was read as a local binding (280 lines);
+- an interface method with a return type, `format(): T;`, was rejected as a call
+  (228 sites);
+- a `type X<T, U = string> =` alias was named after the generic default
+  (`string`) or the constraint (`extends`) instead of the alias.
+
+Barrels (`export * from "./x.js"`) still create no definition. That is correct:
+the definition lives in the re-exported file and lookups resolve there.
+
+### Docs
+
+README, `docs/BENCHMARKS.md` and `AGENTS.md` now state the two Nix gaps
+(attribute paths, unmodelled indented strings) instead of the earlier claim that
+the strings were handled, and carry the first TypeScript measurement.
+
 ## [0.9.2] - 2026-10-25
 
 Two defects found by installing and exercising the 0.9.1 release rather than by

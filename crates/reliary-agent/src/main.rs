@@ -1050,7 +1050,9 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Verify a claim about the codebase against the index.
+    /// Verify a claim about the codebase against the source, cross-checked
+    /// with the index. Exit 0 = all verified, 1 = at least one false,
+    /// 3 = nothing could be checked (files moved or deleted since indexing).
     /// Example: reliary verify "classify_structural at structural.rs:31"
     Verify {
         /// The claim text (quote it)
@@ -3339,11 +3341,17 @@ fn main() {
                             "verdict": "false",
                             "actual": actual.as_ref().map(|(f, l)| format!("{}:{}", f, l)),
                         }),
+                        verify::Verdict::UnverifiedStale { reason } => serde_json::json!({
+                            "symbol": c.symbol, "file": c.file, "line": c.line,
+                            "verdict": "unverified",
+                            "reason": reason,
+                        }),
                     }
                 }).collect();
                 println!("{}", serde_json::json!({
                     "verified": summary.verified,
                     "falsified": summary.falsified,
+                    "unverified": summary.unverified,
                     "claims": claims,
                 }));
             } else if summary.claims.is_empty() {
@@ -3360,14 +3368,28 @@ fn main() {
                         verify::Verdict::False { actual } => {
                             let actual_str = actual.as_ref()
                                 .map(|(f, l)| format!(" → actual: {}:{}", f, l))
-                                .unwrap_or_else(|| " → not found in index".to_string());
+                                .unwrap_or_else(|| " → not found in source".to_string());
                             println!("FALSE     {}{}", subject, actual_str);
+                        }
+                        verify::Verdict::UnverifiedStale { reason } => {
+                            println!("UNVERIFIED {} → {}", subject, reason);
                         }
                     }
                 }
-                println!("\n{} verified, {} false", summary.verified, summary.falsified);
+                println!(
+                    "\n{} verified, {} false, {} unverified",
+                    summary.verified, summary.falsified, summary.unverified);
             }
-            let exit = if summary.falsified > 0 { 1 } else { 0 };
+            // 0 = every claim verified; 1 = at least one false; 3 = nothing was
+            // checked against the source. A stale index must not read as either
+            // "all good" or "you lied".
+            let exit = if summary.falsified > 0 {
+                1
+            } else if summary.unverified > 0 {
+                3
+            } else {
+                0
+            };
             std::process::exit(exit);
         }
         Commands::Fix { task, path, max_iters, verify, dry_run, json } => {
