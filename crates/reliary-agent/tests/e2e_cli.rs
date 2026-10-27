@@ -90,6 +90,7 @@ fn e2e_cli_trust_is_idempotent() {
 
 // ── search ────────────────────────────────────────────────────────────────
 
+
 #[test]
 fn e2e_cli_search_finds_symbol_file() {
     let fx = Fixture::new();

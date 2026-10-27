@@ -48,15 +48,43 @@ pub fn is_reliary_index(db_path: &Path) -> bool {
 
 /// Walk up from `start` (inclusive) to the nearest ancestor with a usable
 /// index. `start` may be a file (its parent is used).
+/// Lexically normalize `.` and `..` components without touching the filesystem.
+///
+/// `resolve(Some("."))` used to return `cwd.join(".")`, i.e. `/repo/.`. Two
+/// spellings of one project then produced two connection-cache entries, and
+/// the definition hint's project-relative prefix strip failed, so
+/// `search("Alpha", path=".")` answered with an absolute path while every
+/// other tool answered relative. Symlinks are deliberately not resolved:
+/// canonicalizing would change which index is found.
+fn lexical_normalize(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Only pop a normal component; never climb past the root.
+                match out.components().next_back() {
+                    Some(Component::Normal(_)) => { out.pop(); }
+                    Some(Component::RootDir) | Some(Component::Prefix(_)) => {}
+                    _ => out.push(".."),
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() { PathBuf::from(".") } else { out }
+}
+
 pub fn nearest_index_root(start: &Path) -> Option<PathBuf> {
     // Absolutize a relative start: `Path::new(".").pop()` returns false, so a
     // walk-up from a relative path (the CLI's default `.`) never climbed to the
     // parent project. Resolve against the CWD first.
-    let base = if start.is_absolute() {
+    let base = lexical_normalize(&if start.is_absolute() {
         start.to_path_buf()
     } else {
         std::env::current_dir().ok()?.join(start)
-    };
+    });
     let mut cur = if base.is_dir() {
         base
     } else {
@@ -99,7 +127,7 @@ pub fn resolve(path_hint: Option<&str>, client_root: Option<&Path>) -> Resolutio
 
     // 1. explicit path hint (only if it names an existing directory)
     if let Some(h) = path_hint.filter(|h| !h.is_empty()) {
-        let p = cwd.join(h);
+        let p = lexical_normalize(&cwd.join(h));
         if p.is_dir() {
             return match nearest_index_root(&p) {
                 Some(root) => Resolution::Found(root),
@@ -152,6 +180,37 @@ mod tests {
         let db = Connection::open(dir.join("index.sqlite")).unwrap();
         db.execute_batch(&format!("PRAGMA user_version = {}", version))
             .unwrap();
+    }
+
+    #[test]
+    fn dot_hint_resolves_without_a_dot_component() {
+        let tmp = std::env::temp_dir().join(format!("relroot_dot_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        make_index(&tmp, SCHEMA_VERSION);
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+        let res = resolve(Some("."), None);
+        std::env::set_current_dir(cwd).unwrap();
+        match res {
+            Resolution::Found(root) => {
+                assert!(
+                    !root.components().any(|c| c == std::path::Component::CurDir),
+                    "resolved root must not contain `.`: {root:?}"
+                );
+                assert_eq!(root, tmp);
+            }
+            Resolution::NotFound(p) => panic!("expected Found, got NotFound({p:?})"),
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn lexical_normalize_strips_dot_and_resolves_dotdot() {
+        assert_eq!(lexical_normalize(Path::new("/a/./b")), PathBuf::from("/a/b"));
+        assert_eq!(lexical_normalize(Path::new("/a/b/../c")), PathBuf::from("/a/c"));
+        assert_eq!(lexical_normalize(Path::new(".")), PathBuf::from("."));
+        assert_eq!(lexical_normalize(Path::new("/..")), PathBuf::from("/"));
     }
 
     #[test]

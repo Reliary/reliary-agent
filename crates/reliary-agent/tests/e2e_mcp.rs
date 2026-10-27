@@ -416,7 +416,10 @@ fn e2e_mcp_search_answers_a_symbol_query_with_its_definition() {
     let mut mcp = Mcp::start(fx.path());
     mcp.initialize();
 
-    let text = mcp.call_tool_text("reliary_search", json!({ "query": "alpha" }));
+    // `path: "."` is the shape that shipped broken in 0.9.3: the root came back
+    // as `<cwd>/.`, the project-relative prefix strip failed, and the hint
+    // emitted an absolute path while every other tool emitted a relative one.
+    let text = mcp.call_tool_text("reliary_search", json!({ "query": "alpha", "path": "." }));
     let first = text.lines().next().unwrap_or("");
     assert!(
         first.starts_with("alpha is defined at "),
@@ -425,6 +428,10 @@ fn e2e_mcp_search_answers_a_symbol_query_with_its_definition() {
     assert!(
         first.contains("lib.rs"),
         "the hint must name the defining file; got: {first:?}"
+    );
+    assert!(
+        !first.contains(fx.path().to_string_lossy().as_ref()),
+        "the hint must be project-relative however `path` is spelled; got: {first:?}"
     );
 
     // A natural-language query must be unchanged: no definition line.

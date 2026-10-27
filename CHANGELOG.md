@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-27
+
+### `path: "."` no longer produces absolute paths in the search hint
+
+0.9.3 resolved the index root for an explicit `path` hint as `cwd.join(hint)`,
+so `"."` became `/repo/.`. Two spellings of one project created two connection
+cache entries, and the definition hint's project-relative prefix strip failed:
+`search("Alpha", path=".")` answered `Alpha is defined at /repo/lib.rs:1` while
+every other tool answered relative.
+
+`resolve` now normalizes lexically (`.` dropped, `..` resolved, symlinks
+untouched so the index found does not change). Verified all three call shapes
+give the same relative answer: explicit `"."`, no `path` argument, and a
+subdirectory hint. Two tests: one asserts the resolved root contains no `.`
+component, one covers the normalizer's edge cases.
+
+Found by installing the published 0.9.3 from crates.io and reading its output —
+in-tree tests and the packaged-binary smoke test both passed, because neither
+had asserted the *form* of the path.
+
 ## [0.9.3] - 2026-10-27
 
 ### `search` now answers a symbol query with the definition
