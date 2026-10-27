@@ -52,11 +52,22 @@ pub fn widget_scale() -> i32 {
 }
 RS
 
+# Redirect ALL user-scoped config/data inside the sandbox.
+#
+# GitHub Actions exports XDG_CONFIG_HOME and XDG_DATA_HOME, and `reliary init`
+# honours them (correctly: OpenCode resolves `XDG_CONFIG_HOME || ~/.config`).
+# Without this the seeded config under `$HOME/.config` is invisible to `init`,
+# it prints "No OpenCode config found (optional)" and wires nothing — which is
+# exactly why this workflow was red on every run from the day it was added.
+# The Rust harness isolates the same two variables; this script did not.
+export HOME="$HOME_DIR"
+export XDG_CONFIG_HOME="$HOME_DIR/.config"
+export XDG_DATA_HOME="$HOME_DIR/.local/share"
+mkdir -p "$XDG_CONFIG_HOME/opencode" "$XDG_DATA_HOME"
+
 # Seed an empty OpenCode config so `reliary init` detects OpenCode and wires it.
 echo '{"$schema":"https://opencode.ai/config.json","mcp":{}}' \
-  > "$HOME_DIR/.config/opencode/opencode.json"
-
-export HOME="$HOME_DIR"
+  > "$XDG_CONFIG_HOME/opencode/opencode.json"
 export NO_COLOR=1
 export OPENCODE_DISABLE_AUTOUPDATE=1
 export NO_RELIARY_WATCHER=1
@@ -67,7 +78,7 @@ echo "== setup =="
 # `reliary init` writes the MCP entry using the exact path a user would take.
 printf 'y\ny\ny\ny\ny\ny\n' | "$BIN" init >/dev/null 2>&1 || true
 
-python3 - "$HOME_DIR/.config/opencode/opencode.json" <<'PY'
+python3 - "$XDG_CONFIG_HOME/opencode/opencode.json" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 entry = cfg.get("mcp", {}).get("reliary")

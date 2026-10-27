@@ -45,6 +45,10 @@ jobs:
       # No API key is provided on purpose: with OPENCODE_API_KEY unset, OpenCode
       # sends anonymous requests to its free tier and enables only zero-cost
       # models. This is the keyless path we want to exercise.
+      #
+      # The runner exports XDG_CONFIG_HOME/XDG_DATA_HOME. The script isolates
+      # them inside its sandbox; without that, `init` looked at the runner's
+      # config, found nothing, and this job was red from its first run.
       - name: Run OpenCode agent e2e
         env:
           RELIARY_BIN: ${{ github.workspace }}/target/release/reliary
