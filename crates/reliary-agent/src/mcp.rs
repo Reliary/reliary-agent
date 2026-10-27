@@ -2288,7 +2288,13 @@ if def_only {
         let qn = obj["qualified_name"].as_str().unwrap_or(sym);
         let f = obj["file"].as_str().unwrap_or("");
         let ln = obj["line"].as_i64().unwrap_or(0);
-        let f_short = std::path::Path::new(f).file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| f.to_string());
+        // Project-relative, not basename. A bare `a.rs` is ambiguous whenever
+        // two modules share a filename (tokio has 97 colliding basenames,
+        // 54 of them `mod.rs`) and it disagrees with `search`, which was
+        // fixed to print the relative path in 0.9.4. Two tools answering the
+        // same question in two path conventions is how callers learn to
+        // distrust both.
+        let f_short = project_relative(&wd, f);
         let code_evidence = reliary_search::file_meta::get(&h.file_path)
             .and_then(|meta| meta.lines.get(h.line as usize).cloned())
             .map(|s| format!("\n{}:{}    {}", f_short, ln, s.trim()))

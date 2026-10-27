@@ -60,6 +60,15 @@ jobs:
       - name: crates are publishable (package + verify tarballs)
         run: bash scripts/verify_crate_tarballs.sh
 
+      # Pre-tag gate. The post-publish smoke test in publish.yml is an alarm,
+      # not a fix: crates.io versions are immutable, so a failure there costs a
+      # patch release. This runs the identical assertions against the workspace
+      # binary BEFORE any tag exists.
+      - name: release smoke (pre-tag)
+        run: |
+          cargo build --release -p reliary-agent
+          bash scripts/smoke_published.sh --local target/release/reliary
+
       - name: cargo test
         run: cargo test --workspace --release
 

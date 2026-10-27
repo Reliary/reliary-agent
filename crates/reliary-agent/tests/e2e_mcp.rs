@@ -440,6 +440,31 @@ fn e2e_mcp_search_answers_a_symbol_query_with_its_definition() {
         !prose.lines().next().unwrap_or("").contains(" is defined at "),
         "a multi-word query must not emit a definition hint; got: {prose:?}"
     );
+
+    // def_only must use the SAME path convention as search. It used to print a
+    // bare basename (`a.rs`), which is ambiguous whenever two modules share a
+    // filename — tokio has 97 colliding basenames, 54 of them `mod.rs`.
+    let def = mcp.call_tool_text(
+        "reliary_find_references",
+        json!({ "name": "alpha", "path": ".", "def_only": true }),
+    );
+    let def_first = def.lines().next().unwrap_or("");
+    // The DIRECTORY component is what distinguishes the two conventions: a
+    // bare basename check passes vacuously, which is how the first version of
+    // this test passed with the bug still in place.
+    assert!(
+        def_first.contains("src/lib.rs:"),
+        "def_only must print the project-relative path, not a bare basename; got: {def_first:?}"
+    );
+    assert!(
+        !def_first.contains(fx.path().to_string_lossy().as_ref()),
+        "def_only must be project-relative; got: {def_first:?}"
+    );
+    // The two tools must agree on the spelling of the same file.
+    assert!(
+        first.contains("src/lib.rs:") && def_first.contains("src/lib.rs:"),
+        "search and def_only must use one path convention: {first:?} vs {def_first:?}"
+    );
 }
 
 #[test]

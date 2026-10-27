@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-10-27
+
+### `def_only` uses the same path convention as `search`
+
+`find_references` with `def_only` printed a bare basename (`a.rs`) while
+`search` printed the project-relative path (`src/a.rs`). A bare basename is
+ambiguous whenever two modules share a filename — tokio has 97 colliding
+basenames, 54 of them `mod.rs` — and two tools answering the same question in
+two conventions is how callers learn to distrust both. `def_only` now prints
+the relative path.
+
+Found by the new published-artifact smoke test, on the 0.9.4 release, within a
+minute of writing it. That is the third release bug in a row that only the
+shipped binary revealed.
+
+### The release gate is now automated
+
+Two releases in a row (0.9.1, 0.9.3) passed every in-tree check and
+`cargo package`, and were wrong once installed from crates.io.
+
+`scripts/smoke_published.sh` installs the crate and asserts its behaviour:
+version string, `trust`, CLI search, and MCP `search` + `find_references`
+against a Rust/Python fixture that includes the one-line populated struct which
+broke 0.9.1. It runs in two places:
+
+- **CI, pre-tag** (`--local` against the workspace binary) — so a broken
+  release is red before a tag exists;
+- **publish.yml, post-tag** (from crates.io, with index-propagation retries) —
+  so a registry-only failure is still caught.
+
+Both matter: crates.io versions are immutable, so the post-publish run can only
+raise an alarm, while the pre-tag run is the one that can prevent the release.
+
+
 ## [0.9.4] - 2026-10-27
 
 ### `path: "."` no longer produces absolute paths in the search hint
